@@ -3,7 +3,7 @@ import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
-TOKEN = "AQUÍ_TU_TOKEN"
+TOKEN = "8179287095:AAGYbsj3XDWmCS5Z9PyKj2YzFkCSNiGjiQ4"
 
 # Mensajes programados
 async def enviar_mensajes_programados(context: ContextTypes.DEFAULT_TYPE):
