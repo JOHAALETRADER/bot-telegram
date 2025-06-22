@@ -1,1 +1,1 @@
-worker: python main_corregido_final_utf8.py
+worker: python main_original_messages_v20.py
