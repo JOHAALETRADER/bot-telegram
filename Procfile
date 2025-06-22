@@ -1,1 +1,1 @@
-worker: python main_corregido_completo_con_timers.py
+worker: python main_corregido_emoji_fix.py
