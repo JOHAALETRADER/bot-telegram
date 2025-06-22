@@ -1,1 +1,1 @@
-worker: python main_corregido_emoji_fix.py
+worker: python main_corregido_final.py
