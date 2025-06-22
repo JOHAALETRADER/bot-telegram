@@ -1,1 +1,1 @@
-worker: python main_corregido_actualizado.py
+worker: python main_corregido_actualizado_completo.py
