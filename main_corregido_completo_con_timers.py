@@ -24,7 +24,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     mensaje = (
-        "👋 ¡Hola! Soy *JOHAALETRADER*.
+        "👋 ¡Hola! Soy "👋 ¡Hola! Soy *JOHAALETRADER*."
 
 "
         "Estoy aquí para ayudarte a empezar en el mundo del trading de opciones binarias de forma segura, guiada y rentable.
