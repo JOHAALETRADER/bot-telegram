@@ -1,1 +1,1 @@
-worker: python main_original_messages_v20.py
+python main_v20_johanna.py
