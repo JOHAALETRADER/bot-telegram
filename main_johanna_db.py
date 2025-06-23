@@ -108,3 +108,15 @@ async def enviar_mensaje_3h(context: ContextTypes.DEFAULT_TYPE):
 
 async def enviar_mensaje_24h(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=context.job.chat_id, text=MENSAJE_24H)
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.post_init = init_db  # Ejecuta la creación de la tabla 'usuarios'
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, registrar_mensaje_usuario))
+
+    print("Bot con BD corriendo...")
+    app.run_polling()
