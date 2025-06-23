@@ -1,139 +1,87 @@
-# -*- coding: utf-8 -*-
-import logging, os, asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
+import os
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+import asyncio
+
+# Configuración básica
+TOKEN = os.environ['BOT_TOKEN']
+WHATSAPP_LINK = os.environ.get("WHATSAPP_LINK", "https://wa.me/573508354350")
+CANAL_RESULTADOS = os.environ.get("CANAL_RESULTADOS", "https://t.me/+wyjkDFenUMlmMTUx")
+ENLACE_REFERIDO = os.environ.get("ENLACE_REFERIDO", "https://binomo.com?a=95604cd745da&t=0&sa=JT")
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 
-# === CONFIGURACIÓN PERSONAL ===
-TOKEN            = os.getenv("BOT_TOKEN")
-WHATSAPP_LINK    = "https://wa.me/573508354350"
-CANAL_RESULTADOS = "https://t.me/+wyjkDFenUMlmMTUx"
-ENLACE_REFERIDO  = "https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
-IMAGEN_PORTADA   = "https://chatgpt-images.s3.amazonaws.com/johaletrader_portada.png"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    image_url = "https://i.imgur.com/ONzYWvZ.jpeg"  # Imagen motivacional
 
-# === MENSAJES ===
-MENSAJE_BIENVENIDA = """👋 ¡Hola! Soy JOHAALETRADER.
-Estoy aquí para ayudarte a empezar en el mundo del trading de opciones binarias de forma segura, guiada y rentable.
-¿Lista o listo para registrarte y empezar a ganar?
-"""
+    keyboard = [
+        [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_cuenta")],
+        [InlineKeyboardButton("📲 Registrarme ahora", url=ENLACE_REFERIDO)]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-MENSAJE_REGISTRO = f"""🔗 Este es tu enlace de registro:
-{ENLACE_REFERIDO}
-
-💵 Depósito mínimo: $50 USD
-
-🎁 Beneficios que recibirás:
-- Acceso a 5 cursos (binarias, forex, índices sintéticos), uno con certificación.
-- Clases grabadas, clases privadas y acompañamiento en vivo.
-- Guías, PDF, audiolibros, tablas de plan de trading y gestión de riesgo.
-- Más de 200 señales diarias de lunes a sábado generadas con software propio.
-- Bot de señales automático en tiempo real 24/7.
-- Señales de CRYPTO IDX, pares de divisas, forex e índices sintéticos.
-- Bot y plantilla para MT4 (forex) y MT5 (CRASH y BOOM).
-"""
-
-MENSAJE_VALIDAR_ID = (
-    "📩 Si ya realizaste el registro con mi enlace, por favor envíame tu ID de Binomo "
-    "antes de hacer tu inversión personal."
-)
-
-MENSAJE_1H = """📊 Recuerda que este camino no lo recorrerás sol@.
-Tendrás acceso a cursos, señales y acompañamiento paso a paso.
-Estoy aquí para ayudarte a lograr resultados reales en el trading. ¡Activa ya tu cuenta y empecemos!
-"""
-
-MENSAJE_3H = """📈 ¿Aún no te has registrado?
-No dejes pasar esta oportunidad. Cada día que pasa es una nueva posibilidad de generar ingresos y adquirir habilidades reales.
-✅ ¡Recuerda que solo necesitas $50 para comenzar con todo el respaldo!
-"""
-
-MENSAJE_24H = f"""🚀 Tu momento es ahora.
-Tienes acceso a una comunidad, herramientas exclusivas y formación completa para despegar en el trading.
-Haz tu primer paso y asegúrate de enviarme tu ID de Binomo para recibir todos los beneficios.
-🔗 Canal de resultados: {CANAL_RESULTADOS}
-"""
-
-# === UTILIDADES ===
-async def mostrar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_photo(
-        chat_id=update.effective_chat.id,
-        photo=IMAGEN_PORTADA,
-        caption="🎯 *JOHAALETRADER*\n_Tu camino al éxito financiero comienza aquí_",
+        chat_id=user_id,
+        photo=image_url,
+        caption="🌟 *Bienvenido a JOHAALETRADER* 🌟\n\n📈 Obtén acceso a señales, clases, bots y contenido exclusivo.\n\n👇 Elige una opción para continuar:",
         parse_mode="Markdown",
+        reply_markup=reply_markup
     )
 
-# === /START ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+    # Temporizadores
+    await asyncio.sleep(3600)
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="⏰ *Hace 1 hora te registraste.* ¿Necesitas ayuda para empezar?",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(7200)
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="📊 *Hace 3 horas tomaste acción.* ¿Quieres saber cómo aprovechar al máximo los recursos?",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(75600)
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="💡 *Han pasado 24 horas.* ¡Recuerda que el primer paso hacia el éxito es tomar acción!",
+        parse_mode="Markdown"
+    )
 
-    await mostrar_imagen(update, context)
-    await update.message.reply_text(MENSAJE_BIENVENIDA)
-    await update.message.reply_text(MENSAJE_REGISTRO)
-    await update.message.reply_text(MENSAJE_VALIDAR_ID)
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    botones = [
-        [InlineKeyboardButton("🟢 Registro",      callback_data="registro")],
-        [InlineKeyboardButton("🔵 Ya tengo cuenta", callback_data="ya_cuenta")],
-        [InlineKeyboardButton("💬 Enviar mensaje por WhatsApp", url=WHATSAPP_LINK)],
-        [InlineKeyboardButton("🔎 Ver canal de resultados",     url=CANAL_RESULTADOS)],
-    ]
-    await update.message.reply_text("👇 Opciones rápidas:", reply_markup=InlineKeyboardMarkup(botones))
+    if query.data == "ya_cuenta":
+        keyboard = [
+            [InlineKeyboardButton("📈 Canal de Resultados", url=CANAL_RESULTADOS)],
+            [InlineKeyboardButton("💬 Escríbeme por WhatsApp", url=WHATSAPP_LINK)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Mensajes programados
-    context.job_queue.run_once(lambda c: c.bot.send_message(chat_id, MENSAJE_1H),  3600)
-    context.job_queue.run_once(lambda c: c.bot.send_message(chat_id, MENSAJE_3H), 10800)
-    context.job_queue.run_once(lambda c: c.bot.send_message(chat_id, MENSAJE_24H), 86400)
-
-# === RESPUESTA A BOTONES ===
-async def responder_boton(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    if q.data == "registro":
-        await q.edit_message_text(
-            "🟢 *¿Quieres acceder a todo mi contenido exclusivo?*\n\n"
-            "Es muy sencillo. Solo debes abrir tu cuenta de trading en Binomo usando este enlace:\n"
-            "👉 [https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS](https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS)\n\n"
-            "🧾 Luego de crear tu cuenta, es *muy importante* que me envíes tu *ID de Binomo* antes de realizar tu depósito, para poder validar tu registro.\n\n"
-            "💵 *Depósito mínimo:* 50 USD\n\n"
-            "🎁 *Mi comunidad es 100% gratuita*. Al seguir estos pasos recibirás:\n"
-            "✅ Acceso completo al contenido VIP\n"
-            "✅ Cursos, clases, herramientas y bots\n"
-            "✅ Participación automática en nuestro *nuevo sorteo exclusivo*\n\n"
-            "📲 ¡Te espero!",
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="🔐 *Perfecto*\n\n📌 Te invito a validar tu registro:\n✅ Revisa el canal de resultados\n✅ Escríbeme al WhatsApp",
             parse_mode="Markdown",
+            reply_markup=reply_markup
         )
 
-    elif q.data == "ya_cuenta":
-        await q.edit_message_text(
-            "🔐 *¿Ya tienes una cuenta en Binomo?*\n\n"
-            "Para acceder a mi comunidad VIP y todas las herramientas, debes realizar tu registro correctamente con *mi enlace de referido*.\n\n"
-            "🔁 *¿Qué debes hacer?*\n"
-            "1️⃣ Copia y pega este enlace en una ventana de incógnito:\n"
-            "👉 [https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS](https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS)\n"
-            "2️⃣ O activa una *VPN* temporal\n"
-            "3️⃣ Usa un *correo* nunca usado en Binomo\n"
-            "4️⃣ Regístrate manualmente\n"
-            "5️⃣ 📩 Envíame tu *ID de Binomo* para validar tu registro\n\n"
-            "💰 *Fondos en tu cuenta actual?*\n"
-            "✅ Si puedes retirar: hazlo y deposítalo en tu nueva cuenta\n"
-            "🗑 Si no tienes fondos: elimínala desde tu perfil\n\n"
-            "🔒 *¿Cómo eliminarla?*\n"
-            "➡️ Perfil → *Bloquear cuenta*\n\n"
-            "📲 Escríbeme y activamos tu acceso VIP. 💼",
-            parse_mode="Markdown",
-        )
+def main():
+    application = Application.builder().token(TOKEN).build()
 
-# === MAIN ===
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(responder_boton))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button))
 
-    # SOLO POLLING (funciona en Railway sin variables extra)
-    app.run_polling()
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8443)),
+        webhook_url=f"https://{os.environ['RAILWAY_STATIC_URL']}/{TOKEN}"
+    )
+
+if __name__ == '__main__':
+    main()
