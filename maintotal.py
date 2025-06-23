@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -7,7 +7,6 @@ from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler,
 )
-import asyncio
 import os
 
 # === CONFIGURACIÓN PERSONAL ===
@@ -56,6 +55,7 @@ Haz tu primer paso y asegúrate de enviarme tu ID de Binomo para recibir todos l
 🔗 Canal de resultados: {CANAL_RESULTADOS}
 """
 
+# === IMAGEN DE BIENVENIDA ===
 async def mostrar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_photo(
         chat_id=update.effective_chat.id,
@@ -64,6 +64,7 @@ async def mostrar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# === COMANDO /START ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
@@ -84,6 +85,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.job_queue.run_once(lambda ctx: ctx.bot.send_message(chat_id, MENSAJE_3H), 10800)
     context.job_queue.run_once(lambda ctx: ctx.bot.send_message(chat_id, MENSAJE_24H), 86400)
 
+# === RESPUESTA A BOTONES ===
 async def responder_boton(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -124,6 +126,7 @@ async def responder_boton(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
+# === EJECUCIÓN PRINCIPAL ===
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     app = ApplicationBuilder().token(TOKEN).build()
