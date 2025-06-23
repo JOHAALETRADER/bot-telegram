@@ -1,1 +1,1 @@
-worker: python main_johanna_db.py
+worker: python main.py
