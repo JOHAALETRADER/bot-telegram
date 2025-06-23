@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 import logging
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -41,9 +41,11 @@ MENSAJE_REGISTRO = f"""🔗 Este es tu enlace de registro:
 MENSAJE_VALIDAR_ID = "📩 Si ya realizaste el registro con mi enlace, por favor envíame tu ID de Binomo antes de hacer tu inversión personal."
 
 MENSAJE_1H = "📊 Recuerda que este camino no lo recorrerás sol@. Tendrás acceso a cursos, señales y acompañamiento paso a paso. Estoy aquí para ayudarte a lograr resultados reales en el trading. ¡Activa ya tu cuenta y empecemos!"
+
 MENSAJE_3H = "📈 ¿Aún no te has registrado? No dejes pasar esta oportunidad. Cada día que pasa es una nueva posibilidad de generar ingresos y adquirir habilidades reales. ✅ ¡Recuerda que solo necesitas $50 para comenzar con todo el respaldo!"
-MENSAJE_24H = "🚀 Tu momento es ahora. Tienes acceso a una comunidad, herramientas exclusivas y formación completa para despegar en el trading. Haz tu primer paso y asegúrate de enviarme tu ID de Binomo para recibir todos los beneficios.
-🔗 Canal de resultados: {CANAL_RESULTADOS}"
+
+MENSAJE_24H = f"""🚀 Tu momento es ahora. Tienes acceso a una comunidad, herramientas exclusivas y formación completa para despegar en el trading. Haz tu primer paso y asegúrate de enviarme tu ID de Binomo para recibir todos los beneficios.
+🔗 Canal de resultados: {CANAL_RESULTADOS}"""
 
 # === FUNCIONES BOT ===
 async def mostrar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
