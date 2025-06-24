@@ -40,6 +40,20 @@ class Usuario(Base):
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
+from sqlalchemy import text
+
+def agregar_columna_fecha():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE usuarios ADD COLUMN fecha_registro TIMESTAMP;"))
+            print("✅ Columna 'fecha_registro' agregada correctamente.")
+    except Exception as e:
+        if "already exists" in str(e):
+            print("ℹ️ La columna 'fecha_registro' ya existe.")
+        else:
+            print(f"⚠️ Error al agregar la columna: {e}")
+
+agregar_columna_fecha()
 
 # === ENLACES Y CONSTANTES ===
 WHATSAPP_LINK   = "https://wa.me/573508354350"
