@@ -1,1 +1,1 @@
-worker: python main_johanna_final_sin_errores.py
+worker: python main_johanna_final_100.py
