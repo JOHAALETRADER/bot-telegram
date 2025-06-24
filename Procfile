@@ -1,1 +1,1 @@
-worker: main_johanna_asyncpg_final.py
+worker: python main_johanna_final_sin_errores.py
