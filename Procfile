@@ -1,1 +1,1 @@
-worker: main_johanna_db_final.py
+worker: main_johanna_asyncpg_final.py
