@@ -119,7 +119,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Enviar imagen + bienvenida
     try:
-        with open("bienvenida_johanna.jpg", "rb") as img:
+        with open("bienvenida_v20_johanna.jpg", "rb") as img:
             await update.message.reply_photo(photo=InputFile(img), caption=MENSAJE_BIENVENIDA)
     except FileNotFoundError:
         await update.message.reply_text(MENSAJE_BIENVENIDA)
