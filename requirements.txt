@@ -1,5 +1,5 @@
-python-telegram-bot==13.14
-sqlalchemy
-asyncpg
-psycopg2-binary
-urllib3==1.26.16
+python-telegram-bot==20.8          # versión con ApplicationBuilder
+SQLAlchemy==2.0.30
+asyncpg==0.29.0
+psycopg2-binary==2.9.9             # driver síncrono (lo necesitamos para SQLAlchemy)
+urllib3                            # deja que pip instale la versión adecuada
