@@ -1,4 +1,4 @@
-python-telegram-bot==20.7
-SQLAlchemy==2.0.30
-asyncpg==0.29.0
-python-dotenv==1.0.1
+python-telegram-bot==13.15
+SQLAlchemy
+asyncpg
+psycopg2-binary
