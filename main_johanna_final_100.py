@@ -84,7 +84,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.close()
 
     # Imagen y botones
-    with open("bienvenida_johanna.jpg", "rb") as img:
+    with open("bienvenida.jpg", "rb") as img:
         await context.bot.send_photo(chat_id=chat_id, photo=InputFile(img), caption=MENSAJE_BIENVENIDA, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Registrarme", callback_data="registrarme")],
             [InlineKeyboardButton("💬 Ya tengo cuenta", callback_data="ya_tengo")]
