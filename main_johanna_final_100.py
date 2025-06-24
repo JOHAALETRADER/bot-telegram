@@ -168,3 +168,17 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))
     logging.info("Bot corriendo…")
     app.run_polling()
+from sqlalchemy import text
+
+def agregar_columna_fecha():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE usuarios ADD COLUMN fecha_registro TIMESTAMP;"))
+            print("✅ Columna 'fecha_registro' agregada correctamente.")
+    except Exception as e:
+        if "already exists" in str(e):
+            print("ℹ️ La columna 'fecha_registro' ya existe.")
+        else:
+            print(f"⚠️ Error al agregar la columna: {e}")
+
+agregar_columna_fecha()
