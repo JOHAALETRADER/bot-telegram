@@ -42,15 +42,6 @@ Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 from sqlalchemy import text
 
-def eliminar_tabla_usuarios():
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS usuarios;"))
-            print("✅ Tabla 'usuarios' eliminada correctamente.")
-    except Exception as e:
-        print(f"⚠️ Error al eliminar la tabla: {e}")
-
-eliminar_tabla_usuarios()
 # Intentar agregar columna (solo una vez)
 
 # === ENLACES ===
