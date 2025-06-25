@@ -1,1 +1,1 @@
-worker: python main_johanna_final_100.py
+worker: main_johanna_final_100_VIDEO_RENOMBRADO.py
