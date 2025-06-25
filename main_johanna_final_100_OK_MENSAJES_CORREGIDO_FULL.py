@@ -180,10 +180,3 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))
     logging.info("Bot corriendo…")
     app.run_polling()
-
-
-    if context.job_queue:
-        logging.info(f"✅ Programado mensaje 24h para chat_id {chat_id}")
-    else:
-        logging.warning("⚠️ Job queue no está disponible.")
-    logging.info(f"✅ Programado mensaje 24h para chat_id {chat_id}")
