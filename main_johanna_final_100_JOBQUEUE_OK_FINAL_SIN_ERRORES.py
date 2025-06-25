@@ -163,19 +163,18 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === EJECUCIÓN ===
 
-if __name__ == "__main__":
+if if __name__ == '__main__':
     import asyncio
 
     async def main():
-        app = ApplicationBuilder().token(TOKEN).build()
+        application = ApplicationBuilder().token(TOKEN).build()
 
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CallbackQueryHandler(botones))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(botones))
 
-        logging.info("Bot corriendo…")
-        await app.initialize()
-        await app.start()
-        await app.run_polling()
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        await application.updater.idle()
 
     asyncio.run(main())
