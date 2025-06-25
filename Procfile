@@ -1,1 +1,1 @@
-worked: main_johanna_final_100_RECREA_Y_ARRANCA_OK.py
+python main_johanna_final_100_RECREA_Y_ARRANCA_OK.py
