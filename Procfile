@@ -1,1 +1,1 @@
-worker: main_johanna_final_100_VIDEO_OK_FILEID_BLOQUE_CORRECTO.py
+worker: bot_prueba_video_fileid.py
