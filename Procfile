@@ -1,1 +1,1 @@
-worker: main_johanna_final_100_YA_TENGO_CUENTA_EDITADO.py
+worker: main_johanna_final_100_JOBQUEUE_OK.py
