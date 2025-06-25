@@ -1,1 +1,1 @@
-worker: bot_prueba_video_fileid.py
+worker: main_johanna_final_100_YA_TENGO_CUENTA_EDITADO.py
