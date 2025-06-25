@@ -83,11 +83,6 @@ MENSAJE_YA_TENGO_CUENTA = """Para tener acceso a mi comunidad VIP y todas las he
 2️⃣ Usa un correo que NO hayas usado en Binomo y realiza tu registro de manera manual.
 3️⃣ ❗ SUPER IMPORTANTE: envíame tu ID de Binomo para validar.
 
-Si tu cuenta actual tiene fondos y puedes retirar, realiza el retiro para depositarlo en tu nueva cuenta.
-Si no tiene fondos, puedes eliminarla ahora o después de retirar.
-
-📌 Elimínala desde tu perfil, al pie de la página, en la opción BLOQUEAR CUENTA.
-
 🔗 Enlace de registro: https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"""
 
 MENSAJE_1H = """📊 Recuerda que este camino no lo recorrerás sol@.
