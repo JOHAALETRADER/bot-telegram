@@ -163,7 +163,7 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === EJECUCIÓN ===
 
-if if __name__ == '__main__':
+if__name__ == '__main__':
     import asyncio
 
     async def main():
