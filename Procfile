@@ -1,1 +1,1 @@
-worker: main_johanna_final_100_JOBQUEUE_OK.py
+worker: main_johanna_final_100_JOBQUEUE_OK_LOGS.py
