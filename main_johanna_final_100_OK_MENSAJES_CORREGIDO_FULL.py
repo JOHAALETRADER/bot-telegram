@@ -101,13 +101,13 @@ Da tu primer paso y asegúrate de enviarme tu ID de Binomo para recibir todos lo
 
 # === FUNCIONES DE MENSAJES PROGRAMADOS ===
 def mensaje_1h(context: ContextTypes.DEFAULT_TYPE):
-    context.bot.send_message(chat_id=context.job.context, text=MENSAJE_1H)
+    context.bot.send_message(chat_id=context.job.data, text=MENSAJE_1H)
 
 def mensaje_3h(context: ContextTypes.DEFAULT_TYPE):
-    context.bot.send_message(chat_id=context.job.context, text=MENSAJE_3H)
+    context.bot.send_message(chat_id=context.job.data, text=MENSAJE_3H)
 
 def mensaje_24h(context: ContextTypes.DEFAULT_TYPE):
-    context.bot.send_message(chat_id=context.job.context, text=MENSAJE_24H)
+    context.bot.send_message(chat_id=context.job.data, text=MENSAJE_24H)
 
 # === FUNCIONES ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
