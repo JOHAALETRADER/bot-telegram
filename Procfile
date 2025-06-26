@@ -1,1 +1,1 @@
-worked: JOHAALETRADER.py
+worked: JOHAALETRADER_OK.py
