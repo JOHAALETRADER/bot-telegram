@@ -177,8 +177,8 @@ Recuerda que la cantidad de beneficios varía según tu inversión personal.""")
     elif q.data == "status_inversion":
         await q.message.reply_media_group(
             media=[
-                InputFile("status_niveles.jpg"),
-                InputFile("status_beneficios.jpg")
+                InputFile("IMG_20250626_172306_849.jpg"),
+                InputFile("IMG_20250626_172303_416.jpg")
             ]
         )
 
