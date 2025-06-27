@@ -154,7 +154,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "registrarme":
         await q.message.reply_text(MENSAJE_REGISTRARME)
         await q.message.reply_video(
-            video="BAACAgEAAxkBAAIBnWX2G6AkVDL1zJY7j_9ILxXw2HtHAAK5AgACwPXZRYXcn-Pa28sNNAQ",
+            video="BAACAgEAAxkBAAIXF2YzdpGnYd9j20HZYHMG_U4trQjTAAJpAwACVp29R9jv6n8uUde3NAQ",
             caption="📹 Paso a paso en el vídeo"
         )
 
