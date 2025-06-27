@@ -1,1 +1,1 @@
-worked: JOHAALETRADER_FINAL_OK.py
+worked: JOHAALE.py
