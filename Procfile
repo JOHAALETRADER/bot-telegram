@@ -1,1 +1,1 @@
-worked: luna_FINAL_CORREGIDO_OK.py
+worked: main_JOHAALETRADER_FINAL.py
