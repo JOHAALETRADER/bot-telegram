@@ -63,16 +63,6 @@ MENSAJE_REGISTRARME = f"""Es muy sencillo. Solo debes abrir tu cuenta de trading
 
 IMPORTANTE: LA CANTIDAD DE BENEFICIOS VARÍA SEGÚN TU DEPÓSITO.
 
-🎁 Beneficios que recibirás:
-- Acceso a 5 cursos (binarias, forex, índices sintéticos), uno con certificación.
-- Clases grabadas, clases privadas y acompañamiento en vivo.
-- Guías, PDF, audiolibros, tablas de plan de trading y gestión de riesgo.
-- Más de 200 señales diarias de lunes a sábado generadas con software propio.
-- Bot de señales automático en tiempo real 24/7.
-- Señales de CRYPTO IDX, pares de divisas, forex e índices sintéticos.
-- Bot y plantilla para MT4 (forex) y MT5 (CRASH y BOOM).
-
-Mi comunidad es gratuita. Al seguir los pasos antes mencionados tendrás derecho a todos los beneficios y también estarás participando en el nuevo sorteo.
 
 ¡Te espero!"""
 
