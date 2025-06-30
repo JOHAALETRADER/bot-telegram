@@ -142,10 +142,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🌐 Redes sociales", callback_data="redes_sociales")]
     ]
 
-        [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_tengo_cuenta")],
-        [InlineKeyboardButton("✅ Valida tu ID aquí", url="https://t.me/Johaaletradervalidacion")],
-        [InlineKeyboardButton("📊 Canal de resultados", url=CANAL_RESULTADOS)],
-    ]
+    
     await update.message.reply_text("👇 Elige una opción para continuar:", reply_markup=InlineKeyboardMarkup(kb))
 
 
