@@ -70,12 +70,18 @@ Mi comunidad VIP es gratuita.
 
 MENSAJE_YA_TENGO_CUENTA = """Para tener acceso a mi comunidad VIP y todas las herramientas debes realizar tu registro con mi enlace.
 
-¿Qué debes hacer?  👉 Si creaste tu cuenta con mi enlace envíame tu id de Binomo en el botón de arriba.  Si no lo hiciste con mi enlace haz lo que sigue 👇
-1️⃣ Copia y pega el enlace de registro en la barra de búsqueda de una ventana de incógnito de tu navegador o activa una VPN para cambiar tu dirección IP (esto es solo para el registro; luego inicias sesión normal).
-2️⃣ Usa un correo que NO hayas usado en Binomo y realiza tu registro de manera manual.
-3️⃣ ❗ SUPER IMPORTANTE: envíame tu ID de Binomo para validar.
+¿Qué debes hacer? 👉 Si creaste tu cuenta con mi enlace envíame tu ID de Binomo en el botón de arriba.
 
-🔗 Enlace de registro: https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"""
+🟡 Si no lo hiciste con mi enlace, haz lo siguiente:
+
+1️⃣ Copia y pega el enlace de registro en una ventana de incógnito o activa una VPN para cambiar tu IP. Luego inicia sesión normal.
+
+2️⃣ Usa un correo que NO hayas usado en Binomo y regístrate de forma manual.
+
+3️⃣ ❗️SUPER IMPORTANTE: Envíame tu ID de Binomo para validar.
+
+🔗 Enlace de registro: https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS
+"""
 
 MENSAJE_1H = """📊 Recuerda que este camino no lo recorrerás sol@.
 Tendrás acceso a cursos, señales y acompañamiento paso a paso.
