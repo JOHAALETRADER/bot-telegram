@@ -177,8 +177,8 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif q.data == "status_inversion":
-        await q.message.reply_photo(photo=open("status_niveles.jpg", "rb"))
-        await q.message.reply_photo(photo=open("status_beneficios.jpg", "rb"))
+        await q.message.reply_photo(photo=open("IMG_20250626_172306_849.jpg", "rb"))
+        await q.message.reply_photo(photo=open("IMG_20250626_172303_416.jpg", "rb"))
 
     elif q.data == "redes_sociales":
         await q.message.reply_text(
