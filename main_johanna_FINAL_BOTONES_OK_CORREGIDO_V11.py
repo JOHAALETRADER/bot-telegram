@@ -164,7 +164,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif q.data == "ya_tengo_cuenta":
     await q.message.reply_text(MENSAJE_YA_TENGO_CUENTA)
-    await q.message.reply_text(MENSAJE_YA_TENGO_CUENTA)
+
 elif q.data == "beneficios_vip":
     await q.message.reply_text(
         "🎁 Beneficios que recibirás:\n"
@@ -177,10 +177,10 @@ elif q.data == "beneficios_vip":
         "- Bot y plantilla para MT4 (Forex) y MT5 (CRASH y BOOM). Sorteos, premios, Bonos y mucho más.\n\n"
         "Recuerda que la cantidad de beneficios varía según tu inversión personal."
     )
-    elif q.data == "status_inversion":
-        await q.message.reply_photo(photo=open("IMG_20250626_172306_849.jpg", "rb"))
-        await q.message.reply_photo(photo=open("IMG_20250626_172303_416.jpg", "rb"))
 
+elif q.data == "status_inversion":
+    await q.message.reply_photo(photo=open("IMG_20250626_172306_849.jpg", "rb"))
+    await q.message.reply_photo(photo=open("IMG_20250626_172303_416.jpg", "rb"))
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     texto = update.message.text
