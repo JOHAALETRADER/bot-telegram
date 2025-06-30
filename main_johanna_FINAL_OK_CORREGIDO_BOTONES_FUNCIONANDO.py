@@ -63,22 +63,14 @@ MENSAJE_REGISTRARME = f"""Es muy sencillo. Solo debes abrir tu cuenta de trading
 
 IMPORTANTE: LA CANTIDAD DE BENEFICIOS VARÍA SEGÚN TU DEPÓSITO.
 
-🎁 Beneficios que recibirás:
-- Acceso a 5 cursos (binarias, forex, índices sintéticos), uno con certificación.
-- Clases grabadas, clases privadas y acompañamiento en vivo.
-- Guías, PDF, audiolibros, tablas de plan de trading y gestión de riesgo.
-- Más de 200 señales diarias de lunes a sábado generadas con software propio.
-- Bot de señales automático en tiempo real 24/7.
-- Señales de CRYPTO IDX, pares de divisas, forex e índices sintéticos.
-- Bot y plantilla para MT4 (forex) y MT5 (CRASH y BOOM).
 
-Mi comunidad es gratuita. Al seguir los pasos antes mencionados tendrás derecho a todos los beneficios y también estarás participando en el nuevo sorteo.
+Mi comunidad VIP es gratuita. 
 
 ¡Te espero!"""
 
 MENSAJE_YA_TENGO_CUENTA = """Para tener acceso a mi comunidad VIP y todas las herramientas debes realizar tu registro con mi enlace.
 
-¿Qué debes hacer?
+¿Qué debes hacer?  👉 Si creaste tu cuenta con mi enlace envíame tu id de Binomo en el botón de arriba.  Si no lo hiciste con mi enlace haz lo que sigue 👇
 1️⃣ Copia y pega el enlace de registro en la barra de búsqueda de una ventana de incógnito de tu navegador o activa una VPN para cambiar tu dirección IP (esto es solo para el registro; luego inicias sesión normal).
 2️⃣ Usa un correo que NO hayas usado en Binomo y realiza tu registro de manera manual.
 3️⃣ ❗ SUPER IMPORTANTE: envíame tu ID de Binomo para validar.
