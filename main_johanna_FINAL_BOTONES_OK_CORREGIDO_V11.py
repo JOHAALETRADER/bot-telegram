@@ -163,7 +163,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif q.data == "ya_tengo_cuenta":
-    await q.message.reply_text(MENSAJE_YA_TENGO_CUENTA)
+    await q.message.reply_text(MENSAJE_YA_TENGO_CUENTA
 
 elif q.data == "beneficios_vip":
     await q.message.reply_text(
