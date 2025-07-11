@@ -124,7 +124,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.commit()
 
     try:
-        with open("bienvenidanueva.jpg", "rb") as img:
+        with open("bienvenidanuevasi.jpg", "rb") as img:
             await update.message.reply_photo(photo=InputFile(img), caption=MENSAJE_BIENVENIDA)
     except FileNotFoundError:
         await update.message.reply_text(MENSAJE_BIENVENIDA)
