@@ -216,14 +216,12 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
 async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
     if update.message.reply_to_message:
         try:
-            original_text = update.message.reply_to_message.text
-            if "ID:" in original_text:
-                chat_id_str = original_text.split("ID:")[1].split(")")[0].strip()
-                chat_id = int(chat_id_str)
-
+            partes = update.message.reply_to_message.reply_markup.inline_keyboard[0][0].callback_data.split(":")
+            if len(partes) == 3:
+                chat_id = int(partes[1])
                 mensaje = update.message.text
-                await context.bot.send_message(chat_id=chat_id, text=mensaje)
 
+                await context.bot.send_message(chat_id=chat_id, text=mensaje)
                 await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
         except Exception as e:
             await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error al enviar mensaje: {e}")
