@@ -228,6 +228,21 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error al enviar mensaje: {e}")
 
+async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    texto = update.message.text
+    with Session() as session:
+        user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+        if user:
+            user.mensaje = texto
+        else:
+            session.add(Usuario(
+                telegram_id=str(chat_id),
+                nombre=update.effective_user.full_name,
+                mensaje=texto,
+                fecha_registro=datetime.utcnow()
+            ))
+        session.commit()
 
 # === FUNCIÓN PARA MANEJAR EL BOTÓN "RESPONDER" ===
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
