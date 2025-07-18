@@ -227,11 +227,24 @@ async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
             chat_id = int(data[1])
             mensaje_id = int(data[2])
 
-            # Usa el texto que el admin respondió en el mensaje original
-            mensaje = query.message.reply_to_message.text if query.message.reply_to_message else "❗ No se encontró el mensaje original."
+            # Pedir respuesta al admin
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text="✏️ Escribe tu respuesta para el usuario:"
+            )
 
-            await context.bot.send_message(chat_id=chat_id, text=mensaje)
-            await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
+            # Esperar el siguiente mensaje del admin
+            respuesta = await context.application.bot.wait_for_message(
+                chat_id=ADMIN_ID,
+                timeout=60
+            )
+
+            if respuesta and respuesta.text:
+                await context.bot.send_message(chat_id=chat_id, text=respuesta.text)
+                await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
+            else:
+                await context.bot.send_message(chat_id=ADMIN_ID, text="⏰ No se recibió respuesta a tiempo.")
+
         else:
             await context.bot.send_message(chat_id=ADMIN_ID, text="❌ Formato de datos incorrecto.")
     except Exception as e:
@@ -282,9 +295,9 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(botones))
-app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, responder_a_usuario))  # primero respuestas del admin
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY, notificar_admin))  # luego mensajes nuevos
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))  # por último guardar todo
+app.add_handler(MessageHandler(filters.ALL & filters.REPLY, responder_a_usuario))  # ahora captura todo tipo de respuesta del admin
+app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.REPLY, notificar_admin))  # notifica cualquier mensaje nuevo de usuarios
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))  # guarda solo los mensajes de texto normales
 
 
 logging.info("Bot corriendo…")
