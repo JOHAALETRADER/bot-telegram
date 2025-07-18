@@ -256,15 +256,15 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
                 data = query.data
-        if data.startswith("responder:"):
+                if data.startswith("responder:"):
             partes = data.split(":")
             if len(partes) == 3:
                 chat_id = int(partes[1])
-                responder_a[ADMIN_ID] = chat_id  # ✅ Guardamos temporalmente el destino
+                responder_a[ADMIN_ID] = chat_id
 
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
-                    text="✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...",
+                    text="✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
                 )
 
 
@@ -272,10 +272,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(botones))
-app.add_handler(MessageHandler(filters.ALL & filters.REPLY, responder_a_usuario))  # ahora captura todo tipo de respuesta del admin
-app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.REPLY, notificar_admin))  # notifica cualquier mensaje nuevo de usuarios
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))  # guarda solo los mensajes de texto normales
+app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, responder_a_usuario))  # Respuestas primero
+app.add_handler(CallbackQueryHandler(botones))  # Botón "Responder"
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY, notificar_admin))  # Nuevos mensajes
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))  # Guardado general
 
 
 logging.info("Bot corriendo…")
