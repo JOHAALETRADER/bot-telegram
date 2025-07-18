@@ -255,8 +255,8 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
 
     try:
-                data = query.data
-                if data.startswith("responder:"):
+        data = query.data
+        if data.startswith("responder:"):
             partes = data.split(":")
             if len(partes) == 3:
                 chat_id = int(partes[1])
@@ -266,6 +266,9 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     chat_id=ADMIN_ID,
                     text="✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
                 )
+    except Exception as e:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error en el botón: {e}")
+
 
 
 # === EJECUCIÓN ===
