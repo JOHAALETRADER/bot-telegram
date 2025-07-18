@@ -245,5 +245,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(botones))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))
+    app.add_handler(MessageHandler(filters.ALL, notificar_admin))
+    app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, responder_a_usuario))
+
     logging.info("Bot corriendo…")
     app.run_polling()
