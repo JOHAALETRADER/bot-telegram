@@ -221,7 +221,7 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ====== BLOQUE PARA NOTIFICACIÓN Y RESPUESTA AL ADMIN ======
 
-ADMIN_ID = 5924691120  # ID de Johanna
+ADMIN_ID = "5924691120"  # ID de Johanna
 
 # Notifica automáticamente cada mensaje nuevo al admin
 async def forward_message_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
