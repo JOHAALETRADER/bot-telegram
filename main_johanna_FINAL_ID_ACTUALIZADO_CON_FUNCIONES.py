@@ -200,8 +200,7 @@ https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 💬 Telegram:
 https://t.me/JohaaleTraderTeams""")
 
-async 
-def notificar_admin(update: Update, context: CallbackContext) -> None:
+async def notificar_admin(update: Update, context: CallbackContext) -> None:
     if update.message:
         user = update.message.from_user
         mensaje = update.message.text
