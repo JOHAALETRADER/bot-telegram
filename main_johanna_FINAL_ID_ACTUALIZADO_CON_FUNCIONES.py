@@ -244,10 +244,11 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(botones))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))
-    app.add_handler(MessageHandler(filters.ALL, notificar_admin))
-    app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, responder_a_usuario))
+app.add_handler(CallbackQueryHandler(botones))
+app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, responder_a_usuario))  # primero respuestas del admin
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY, notificar_admin))  # luego mensajes nuevos
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))  # por último guardar todo
+
 
     logging.info("Bot corriendo…")
     app.run_polling()
