@@ -250,5 +250,5 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY,
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))  # por último guardar todo
 
 
-    logging.info("Bot corriendo…")
-    app.run_polling()
+logging.info("Bot corriendo…")
+app.run_polling()
