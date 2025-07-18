@@ -230,6 +230,8 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, forward_message_
 
 from telegram.constants import ParseMode
 
+ADMIN_ID = 5924691120  # ID de Johanna
+
 # Función para reenviar mensajes al admin
 async def forward_message_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
@@ -240,4 +242,5 @@ async def forward_message_to_admin(update: Update, context: ContextTypes.DEFAULT
             text=f"📩 Nuevo mensaje de <b>{user.first_name}</b> (ID: <code>{user.id}</code>):\n\n<code>{text}</code>",
             parse_mode=ParseMode.HTML
         )
+
 
