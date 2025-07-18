@@ -217,38 +217,21 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
         await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
 
-async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
-    try:
-        query = update.callback_query
-        await query.answer()
+responder_a = {}
 
-        data = query.data.split(":")
-        if len(data) == 3 and data[0] == "responder":
-            chat_id = int(data[1])
-            mensaje_id = int(data[2])
-
-            # Pedir respuesta al admin
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text="✏️ Escribe tu respuesta para el usuario:"
-            )
-
-            # Esperar el siguiente mensaje del admin
-            respuesta = await context.application.bot.wait_for_message(
-                chat_id=ADMIN_ID,
-                timeout=60
-            )
-
-            if respuesta and respuesta.text:
-                await context.bot.send_message(chat_id=chat_id, text=respuesta.text)
-                await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
+async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.message.reply_to_message:
+        admin_id = update.effective_user.id
+        if admin_id == ADMIN_ID:
+            if admin_id in responder_a:
+                destinatario_id = responder_a[admin_id]
+                mensaje = update.message.text
+                await context.bot.send_message(chat_id=destinatario_id, text=mensaje)
+                await update.message.reply_text("✅ Mensaje enviado al usuario.")
+                del responder_a[admin_id]
             else:
-                await context.bot.send_message(chat_id=ADMIN_ID, text="⏰ No se recibió respuesta a tiempo.")
+                await update.message.reply_text("❗ No hay un usuario pendiente para responder.")
 
-        else:
-            await context.bot.send_message(chat_id=ADMIN_ID, text="❌ Formato de datos incorrecto.")
-    except Exception as e:
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error al enviar mensaje: {e}")
 
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -272,23 +255,18 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
 
     try:
-        data = query.data
+                data = query.data
         if data.startswith("responder:"):
             partes = data.split(":")
             if len(partes) == 3:
                 chat_id = int(partes[1])
-                mensaje_id = int(partes[2])
+                responder_a[ADMIN_ID] = chat_id  # ✅ Guardamos temporalmente el destino
 
                 await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="✏️ Escribe tu respuesta a este mensaje...",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("Cancelar", callback_data="cancelar")
-                    ]])
+                    chat_id=ADMIN_ID,
+                    text="✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...",
                 )
 
-    except Exception as e:
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error en el botón: {e}")
 
 # === EJECUCIÓN ===
 if __name__ == "__main__":
