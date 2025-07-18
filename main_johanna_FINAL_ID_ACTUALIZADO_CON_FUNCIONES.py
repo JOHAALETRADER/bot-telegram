@@ -213,32 +213,45 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
         ])
         await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
-async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
+async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.reply_to_message:
         try:
-            partes = update.message.reply_to_message.reply_markup.inline_keyboard[0][0].callback_data.split(":")
-            chat_id = int(partes[1])
-            mensaje = update.message.text
-            context.bot.send_message(chat_id=chat_id, text=mensaje)
-            context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
-        except Exception as e:
-            context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error al enviar mensaje: {e}")
+            original_text = update.message.reply_to_message.text
+            if "ID:" in original_text:
+                partes = original_text.split("ID:")[1].split(")")[0].strip()
+                chat_id = int(partes)
 
-async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    texto = update.message.text
-    with Session() as session:
-        user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-        if user:
-            user.mensaje = texto
-        else:
-            session.add(Usuario(
-                telegram_id=str(chat_id),
-                nombre=update.effective_user.full_name,
-                mensaje=texto,
-                fecha_registro=datetime.utcnow()
-            ))
-        session.commit()
+                mensaje = update.message.text
+                await context.bot.send_message(chat_id=chat_id, text=mensaje)
+
+                await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
+        except Exception as e:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error al enviar mensaje: {e}")
+
+
+# === FUNCIÓN PARA MANEJAR EL BOTÓN "RESPONDER" ===
+async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        data = query.data
+        if data.startswith("responder:"):
+            partes = data.split(":")
+            if len(partes) == 3:
+                chat_id = int(partes[1])
+                mensaje_id = int(partes[2])
+
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="✏️ Escribe tu respuesta a este mensaje...",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("Cancelar", callback_data="cancelar")
+                    ]])
+                )
+
+    except Exception as e:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error en el botón: {e}")
 
 # === EJECUCIÓN ===
 if __name__ == "__main__":
