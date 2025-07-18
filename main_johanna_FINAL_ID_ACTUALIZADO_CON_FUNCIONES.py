@@ -225,7 +225,10 @@ async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
         data = query.data.split(":")
         if len(data) == 3 and data[0] == "responder":
             chat_id = int(data[1])
-            mensaje = query.message.reply_to_message.text
+            mensaje_id = int(data[2])
+
+            # Usa el texto que el admin respondió en el mensaje original
+            mensaje = query.message.reply_to_message.text if query.message.reply_to_message else "❗ No se encontró el mensaje original."
 
             await context.bot.send_message(chat_id=chat_id, text=mensaje)
             await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
