@@ -213,13 +213,13 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
         ])
         await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
-async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
     if update.message.reply_to_message:
         try:
             original_text = update.message.reply_to_message.text
             if "ID:" in original_text:
-                partes = original_text.split("ID:")[1].split(")")[0].strip()
-                chat_id = int(partes)
+                chat_id_str = original_text.split("ID:")[1].split(")")[0].strip()
+                chat_id = int(chat_id_str)
 
                 mensaje = update.message.text
                 await context.bot.send_message(chat_id=chat_id, text=mensaje)
