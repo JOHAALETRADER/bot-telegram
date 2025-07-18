@@ -209,22 +209,26 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
         chat_id = update.message.chat_id
         texto = f"📩 Nuevo mensaje de @{user.username if user.username else user.first_name} (ID: {chat_id}):\n\n{mensaje}"
         botones = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]
+            [InlineKeyboardButton("Responder", callback_data=f"responder:{update.effective_chat.id}:{update.message.message_id}"
         ])
         await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
 async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
-    if update.message.reply_to_message:
-        try:
-            partes = update.message.reply_to_message.reply_markup.inline_keyboard[0][0].callback_data.split(":")
-            if len(partes) == 3:
-                chat_id = int(partes[1])
-                mensaje = update.message.text
+    try:
+        query = update.callback_query
+        await query.answer()
 
-                await context.bot.send_message(chat_id=chat_id, text=mensaje)
-                await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
-        except Exception as e:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error al enviar mensaje: {e}")
+        data = query.data.split(":")
+        if len(data) == 3 and data[0] == "responder":
+            chat_id = int(data[1])
+            mensaje = query.message.reply_to_message.text
+
+            await context.bot.send_message(chat_id=chat_id, text=mensaje)
+            await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Mensaje enviado correctamente.")
+        else:
+            await context.bot.send_message(chat_id=ADMIN_ID, text="❌ Formato de datos incorrecto.")
+    except Exception as e:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error al enviar mensaje: {e}")
 
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
