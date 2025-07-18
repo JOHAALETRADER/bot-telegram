@@ -224,7 +224,7 @@ async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
         except Exception as e:
             context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error al enviar mensaje: {e}")
 
-def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     texto = update.message.text
     with Session() as session:
