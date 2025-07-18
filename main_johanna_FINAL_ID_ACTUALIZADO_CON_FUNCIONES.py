@@ -213,7 +213,7 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
         ])
         context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
-def responder_a_usuario(update: Update, context: CallbackContext) -> None:
+async def responder_a_usuario(update: Update, context: CallbackContext) -> None:
     if update.message.reply_to_message:
         try:
             partes = update.message.reply_to_message.reply_markup.inline_keyboard[0][0].callback_data.split(":")
