@@ -44,6 +44,9 @@ from sqlalchemy import text
 
 # Intentar agregar columna (solo una vez)
 
+# Diccionario para rastrear a quién responder
+responder_a = {}
+
 # === ENLACES ===
 CANAL_RESULTADOS = "https://t.me/+wyjkDFenUMlmMTUx"
 ENLACE_REFERIDO  = "https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
@@ -215,11 +218,71 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ))
         session.commit()
 
+async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        mensaje = update.message.text
+        usuario = update.message.from_user
+        chat_id = usuario.id
+        nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
+
+        responder_a[update.effective_user.id] = chat_id
+
+        texto = (
+            "📩 Nuevo mensaje de {} (ID: {}):\n\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
+        ).format(nombre, chat_id)
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=texto,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Cancelar", callback_data="cancelar")]]
+            ),
+        )
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="⚠️ Error notificando al admin: {}".format(e),
+        )
+
+import re  # Asegúrate de tener este import al inicio de tu archivo
+
+async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.reply_to_message:
+        original_text = update.message.reply_to_message.text
+        chat_id_match = re.search(r'ID: (\d+)', original_text)
+        if chat_id_match:
+            destinatario_id = int(chat_id_match.group(1))
+            try:
+                await context.bot.send_message(
+                    chat_id=destinatario_id,
+                    text=update.message.text
+                )
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="✅ Mensaje enviado al usuario correctamente."
+                )
+            except Exception as e:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ Error al enviar mensaje al usuario: {}".format(e)
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ No se pudo encontrar el ID del usuario en el mensaje original."
+            )
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ Debes responder directamente al mensaje del usuario para que funcione."
+        )
+
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(botones))
+    app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_ID), responder_a_usuario))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))
     logging.info("Bot corriendo…")
     app.run_polling()
