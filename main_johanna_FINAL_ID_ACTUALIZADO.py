@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import re
 from datetime import datetime
 from telegram import (
     Update,
@@ -19,6 +20,11 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
+
+ADMIN_ID = 5924691120  # Tu ID personal de Telegram
+
+# Diccionario temporal para guardar el ID del usuario al que se va a responder
+usuarios_objetivo = {}
 
 # === CONFIGURACIÓN ===
 logging.basicConfig(level=logging.INFO)
@@ -43,9 +49,6 @@ Session = sessionmaker(bind=engine)
 from sqlalchemy import text
 
 # Intentar agregar columna (solo una vez)
-
-# Diccionario para rastrear a quién responder
-responder_a = {}
 
 # === ENLACES ===
 CANAL_RESULTADOS = "https://t.me/+wyjkDFenUMlmMTUx"
@@ -225,24 +228,27 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = usuario.id
         nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
 
-        responder_a[update.effective_user.id] = chat_id
-
         texto = (
-            "📩 Nuevo mensaje de {} (ID: {}):\n\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
-        ).format(nombre, chat_id)
-
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=texto,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Cancelar", callback_data="cancelar")]]
-            ),
+            f"📩 Nuevo mensaje de {nombre} (ID: {chat_id}):\n\n"
+            "✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
         )
+
+            botones = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Responder", callback_data=f"responder_{update.effective_chat.id}")]
+    ])
+
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=mensaje_admin,
+        reply_markup=botones
+    )
+
     except Exception as e:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text="⚠️ Error notificando al admin: {}".format(e),
+            text=f"⚠️ Error notificando al admin: {e}"
         )
+
 
 import re  # Asegúrate de tener este import al inicio de tu archivo
 
@@ -277,6 +283,55 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
             text="❌ Debes responder directamente al mensaje del usuario para que funcione."
         )
 
+async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = update.callback_query
+        await query.answer()
+
+        data = query.data
+        if data.startswith("responder:"):
+            partes = data.split(":")
+            if len(partes) != 3:
+                await query.edit_message_text("❌ Error: formato de callback inválido.")
+                return
+
+            chat_id_str, message_id_str = partes[1], partes[2]
+
+            try:
+                chat_id = int(chat_id_str)
+                message_id = int(message_id_str)
+            except ValueError:
+                await query.edit_message_text("❌ Error: ID inválido.")
+                return
+
+            usuarios_objetivo[query.from_user.id] = chat_id
+
+            await query.edit_message_text(
+                f"✏️ Ahora puedes responder al usuario.\n\n"
+                f"🧾 Responde a este mensaje con el texto que deseas enviar.\n"
+                f"🆔 ID del usuario: {chat_id}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancelar", callback_data="cancelar")]
+                ])
+            )
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"❌ Error en manejar_callback: {e}"
+        )
+
+# Maneja la cancelación del ID de respuesta
+async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        chat_id = query.message.chat.id
+
+        if chat_id in usuarios_objetivo:
+            del usuarios_objetivo[chat_id]
+            await query.edit_message_text("❌ Has cancelado la respuesta al usuario.")
+        else:
+            await query.edit_message_text("ℹ️ No había ninguna respuesta pendiente por cancelar.")
+
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
@@ -284,5 +339,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(botones))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_ID), responder_a_usuario))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))
+    app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
+    app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
     logging.info("Bot corriendo…")
     app.run_polling()
