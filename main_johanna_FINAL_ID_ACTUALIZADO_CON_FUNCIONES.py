@@ -284,8 +284,8 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 responder_a[update.effective_user.id] = user_id
 
                 await context.bot.send_message(
-                    chat_id=update.effective_user.id,
-                    text="✍️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...",
+                    chat_id=ADMIN_ID,
+                    text=f"📨 Nuevo mensaje de {update.effective_user.first_name} (ID: {chat_id}):\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
                     reply_to_message_id=query.message.message_id,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("Cancelar", callback_data="cancelar")]
