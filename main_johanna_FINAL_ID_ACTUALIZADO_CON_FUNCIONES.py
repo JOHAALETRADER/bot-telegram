@@ -284,7 +284,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & filters.USER(user_id=ADMIN_ID), responder_a_usuario))
+app.add_handler(MessageHandler(filters.TEXT & filters.USER(user_id=ADMIN_ID), responder_a_usuario))
 app.add_handler(CallbackQueryHandler(botones))  # Botón "Responder"
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY, notificar_admin))  # Nuevos mensajes
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))  # Guardado general
