@@ -213,7 +213,6 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
         botones = InlineKeyboardMarkup(
     [[InlineKeyboardButton("Responder", callback_data=f"responder:{update.message.chat_id}:{update.message.message_id}")]]
 )
-await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
 
 responder_a = {}
