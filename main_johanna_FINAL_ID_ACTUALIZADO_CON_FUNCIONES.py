@@ -217,16 +217,18 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"📨 Nuevo mensaje de {nombre} (ID: {chat_id}):\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...",
+            text="📩 Nuevo mensaje de {} (ID: {}):\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...".format(
+                nombre, chat_id
+            ),
             reply_to_message_id=update.message.message_id,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Cancelar", callback_data="cancelar")]
             ])
         )
 
-
     except Exception as e:
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error notificando al admin: {e}")
+
 
 responder_a = {}
 
