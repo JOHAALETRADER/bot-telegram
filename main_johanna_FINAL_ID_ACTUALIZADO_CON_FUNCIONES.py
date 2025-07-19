@@ -218,8 +218,6 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error notificando al admin: {e}")
 
-
-
 responder_a = {}
 
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
