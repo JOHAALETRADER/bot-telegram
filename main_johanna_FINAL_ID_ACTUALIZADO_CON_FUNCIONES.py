@@ -213,7 +213,17 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]
         ])
 
-        await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
+                responder_a[update.effective_user.id] = chat_id
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📨 Nuevo mensaje de {nombre} (ID: {chat_id}):\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...",
+            reply_to_message_id=update.message.message_id,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Cancelar", callback_data="cancelar")]
+            ])
+        )
+
 
     except Exception as e:
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error notificando al admin: {e}")
@@ -286,7 +296,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
                     text=f"📨 Nuevo mensaje de {update.effective_user.first_name} (ID: {chat_id}):\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
-                    reply_to_message_id=query.message.message_id,
+                    reply_to_message_id=message_id,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("Cancelar", callback_data="cancelar")]
                     ])
