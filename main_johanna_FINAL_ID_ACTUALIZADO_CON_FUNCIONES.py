@@ -221,17 +221,35 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 responder_a = {}
 
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message and update.message.reply_to_message:
-        admin_id = update.effective_user.id
-        if admin_id == ADMIN_ID:
-            if admin_id in responder_a:
-                destinatario_id = responder_a[admin_id]
-                mensaje = update.message.text
-                await context.bot.send_message(chat_id=destinatario_id, text=mensaje)
-                await update.message.reply_text("✅ Mensaje enviado al usuario.")
-                del responder_a[admin_id]
-            else:
-                await update.message.reply_text("❗ No hay un usuario pendiente para responder.")
+    if update.message.reply_to_message:
+        original_text = update.message.reply_to_message.text
+        chat_id_match = re.search(r'ID: (\d+)', original_text)
+        if chat_id_match:
+            destinatario_id = int(chat_id_match.group(1))
+            try:
+                await context.bot.send_message(
+                    chat_id=destinatario_id,
+                    text=update.message.text
+                )
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="✅ Mensaje enviado al usuario correctamente."
+                )
+            except Exception as e:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"❌ Error al enviar mensaje al usuario: {e}"
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ No se pudo encontrar el ID del usuario en el mensaje original."
+            )
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ Debes responder directamente al mensaje del usuario para que funcione."
+        )
 
 
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
