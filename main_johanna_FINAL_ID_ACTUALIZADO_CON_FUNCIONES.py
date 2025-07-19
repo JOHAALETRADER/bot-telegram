@@ -211,10 +211,10 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
         texto = f"📩 Nuevo mensaje de @{user.username if user.username else user.first_name} (ID: {chat_id}):\n\n{mensaje}"
 
         botones = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Responder", callback_data=f"responder:{chat_id}:{mensaje_id}")]]
-        )
+    [[InlineKeyboardButton("Responder", callback_data=f"responder:{update.message.chat_id}:{update.message.message_id}")]]
+)
+await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
-        await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
 responder_a = {}
 
@@ -258,17 +258,19 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if data.startswith("responder:"):
             partes = data.split(":")
             if len(partes) == 3:
-                chat_id = int(partes[1])
-                responder_a[ADMIN_ID] = chat_id
+                user_id = int(partes[1])
+                message_id = int(partes[2])
+
+                responder_a[update.effective_user.id] = user_id
 
                 await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text="✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...",
+                    chat_id=update.effective_user.id,
+                    text="✍️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...",
+                    reply_to_message_id=query.message.message_id,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("Cancelar", callback_data="cancelar")]
                     ])
                 )
-
     except Exception as e:
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error en el botón: {e}")
 
@@ -278,7 +280,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, responder_a_usuario))  # Respuestas primero
+application.add_handler(MessageHandler(filters.TEXT & filters.USER(user_id=ADMIN_ID), responder_a_usuario))
 app.add_handler(CallbackQueryHandler(botones))  # Botón "Responder"
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY, notificar_admin))  # Nuevos mensajes
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))  # Guardado general
