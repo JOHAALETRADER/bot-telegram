@@ -216,7 +216,6 @@ async def notificar_admin(update: Update, context: CallbackContext) -> None:
 
         await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
 
-
 responder_a = {}
 
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -264,8 +263,12 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
-                    text="✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
+                    text="✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Cancelar", callback_data="cancelar")]
+                    ])
                 )
+
     except Exception as e:
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error en el botón: {e}")
 
