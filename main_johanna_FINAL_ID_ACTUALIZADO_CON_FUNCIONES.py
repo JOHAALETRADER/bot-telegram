@@ -201,32 +201,27 @@ https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 💬 Telegram:
 https://t.me/JohaaleTraderTeams""")
 
-async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        mensaje = update.message.text
-        usuario = update.message.from_user
-        chat_id = usuario.id
-        nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
+        chat_id = update.effective_user.id
+        nombre = update.effective_user.first_name
+        texto = "📩 Nuevo mensaje de {} (ID: {}):\n\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...".format(nombre, chat_id)
 
-        responder_a[update.effective_user.id] = chat_id
+        botones = [
+            [InlineKeyboardButton("Cancelar", callback_data="cancelar_{}".format(chat_id))]
+        ]
+        reply_markup = InlineKeyboardMarkup(botones)
 
-        texto = (
-            "📩 Nuevo mensaje de {} (ID: {}):\n\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
-        ).format(nombre, chat_id)
-
-        await context.bot.send_message(
-    chat_id=ADMIN_ID,
-    text=texto,
-    reply_markup=InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Cancelar", callback_data="cancelar")]]
-    ),
-)
-    except Exception as e:
-        await context.bot.send_message(
+        mensaje_admin = await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text="⚠️ Error notificando al admin: {}".format(e),
+            text=texto,
+            reply_markup=reply_markup
         )
 
+        responder_a[mensaje_admin.message_id] = chat_id
+
+    except Exception as e:
+        await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ Error notificando al admin: {}".format(str(e)))
 
 
 responder_a = {}
