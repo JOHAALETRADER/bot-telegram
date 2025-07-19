@@ -201,18 +201,23 @@ https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 💬 Telegram:
 https://t.me/JohaaleTraderTeams""")
 
-async def notificar_admin(update: Update, context: CallbackContext) -> None:
-    if update.message:
-        user = update.message.from_user
+async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
         mensaje = update.message.text
-        mensaje_id = update.message.message_id
-        chat_id = update.message.chat_id
+        usuario = update.message.from_user
+        chat_id = usuario.id
+        nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
 
-        texto = f"📩 Nuevo mensaje de @{user.username if user.username else user.first_name} (ID: {chat_id}):\n\n{mensaje}"
+        texto = f"📩 Nuevo mensaje de {nombre} (ID: {chat_id}):\n\n{mensaje}"
+        botones = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]
+        ])
 
-        botones = InlineKeyboardMarkup(
-    [[InlineKeyboardButton("Responder", callback_data=f"responder:{update.message.chat_id}:{update.message.message_id}")]]
-)
+        await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=botones)
+
+    except Exception as e:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Error notificando al admin: {e}")
+
 
 
 responder_a = {}
