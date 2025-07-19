@@ -213,11 +213,11 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]
         ])
 
-        responder_a[update.effective_user.id] = chat_id
+                responder_a[update.effective_user.id] = chat_id
 
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text="📩 Nuevo mensaje de {} (ID: {}):\n✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje...".format(
+            text="Nuevo mensaje de {} (ID: {}):\nEscribe tu respuesta a este usuario directamente respondiendo a este mensaje...".format(
                 nombre, chat_id
             ),
             reply_to_message_id=update.message.message_id,
