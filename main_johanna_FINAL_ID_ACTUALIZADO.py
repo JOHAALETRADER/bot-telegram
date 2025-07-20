@@ -363,7 +363,7 @@ if __name__ == "__main__":
         filters.TEXT & ~filters.COMMAND & ~filters.User(ADMIN_ID),
         manejar_mensaje
     ))
-    app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
+    app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
     logging.info("Bot corriendo…")
     app.run_polling()
