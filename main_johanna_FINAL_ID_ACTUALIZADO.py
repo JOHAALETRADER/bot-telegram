@@ -338,7 +338,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(botones))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_ID), responder_a_usuario))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_mensaje))
+    app.add_handler(MessageHandler(
+    filters.TEXT & ~filters.COMMAND & ~filters.User(ADMIN_ID),
+    lambda update, context: guardar_mensaje(update, context) or notificar_admin(update, context)
+))
     app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
     logging.info("Bot corriendo…")
