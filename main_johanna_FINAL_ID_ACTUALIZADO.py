@@ -358,14 +358,24 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
+
+    # Comando /start
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(botones))
-    app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & filters.User(ADMIN_ID), responder_a_usuario))
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & ~filters.User(ADMIN_ID),
-        manejar_mensaje
-    ))
+
+    # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
+
+    # Callback del botón "❌ Cancelar"
     app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
+
+    # Botones generales (debe ir al final para no interceptar los anteriores)
+    app.add_handler(CallbackQueryHandler(botones))
+
+    # Mensajes del admin (responder a usuarios con texto o audio)
+    app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & filters.User(ADMIN_ID), responder_a_usuario))
+
+    # Mensajes normales de los usuarios
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.User(ADMIN_ID), manejar_mensaje))
+
     logging.info("Bot corriendo…")
     app.run_polling()
