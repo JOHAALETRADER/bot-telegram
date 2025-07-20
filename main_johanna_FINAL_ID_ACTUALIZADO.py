@@ -243,7 +243,6 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=botones
             )
 
-
          except Exception as e:
            await context.bot.send_message(
             chat_id=ADMIN_ID,
