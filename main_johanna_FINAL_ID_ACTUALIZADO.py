@@ -257,20 +257,19 @@ import re  # Asegúrate de tener este import al inicio de tu archivo
 
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
-        original_text = update.message.reply_to_message.text
-        chat_id_match = re.search(r'ID: (\d+)', original_text)
+        original_text = update.message.reply_to_message.text_html_urled or update.message.reply_to_message.text
+        chat_id_match = re.search(r'ID: (\d+)', original_text) or re.search(r'ID del usuario:.*?(\d+)', original_text)
+
         if chat_id_match:
             destinatario_id = int(chat_id_match.group(1))
             try:
                 if update.message.voice:
-                    # Reenviar el audio al destinatario
                     await context.bot.send_voice(
                         chat_id=destinatario_id,
                         voice=update.message.voice.file_id,
                         caption="🎤 Respuesta en audio"
                     )
                 else:
-                    # Reenviar texto
                     await context.bot.send_message(
                         chat_id=destinatario_id,
                         text=update.message.text
@@ -285,7 +284,6 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                     chat_id=update.effective_chat.id,
                     text="❌ Error al enviar mensaje al usuario: {}".format(e)
                 )
-
         else:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
