@@ -385,11 +385,17 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     try:
-        texto = update.message.caption or update.message.text
-        if not texto or not texto.startswith("/enviar "):
+        # Obtener texto desde caption o texto puro
+        raw_text = ""
+        if update.message.caption:
+            raw_text = update.message.caption
+        elif update.message.text:
+            raw_text = update.message.text
+
+        if not raw_text or not raw_text.startswith("/enviar "):
             return
 
-        partes = texto.split(maxsplit=2)
+        partes = raw_text.split(maxsplit=2)
         if len(partes) < 3:
             await update.message.reply_text("❗ Usa el formato:\n/enviar <chat_id> <mensaje>")
             return
@@ -397,10 +403,15 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         chat_id = int(partes[1])
         mensaje = partes[2]
 
+        # Si hay foto
         if update.message.photo:
             await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
+
+        # Si hay video
         elif update.message.video:
             await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
+
+        # Si es solo texto
         else:
             await context.bot.send_message(chat_id=chat_id, text=mensaje)
 
