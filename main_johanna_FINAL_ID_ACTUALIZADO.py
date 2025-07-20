@@ -379,13 +379,17 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await guardar_mensaje(update, context)
     await notificar_admin(update, context)
 
-# Función para que el admin envíe mensajes, imágenes o videos a un usuario
+# Función mejorada para enviar texto, imagen o video al usuario, incluso si viene en caption
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.id != ADMIN_ID:
-        return  # Solo tú puedes usar este comando
+        return
 
     try:
-        partes = update.message.caption.split(maxsplit=2) if update.message.caption else update.message.text.split(maxsplit=2)
+        texto = update.message.caption or update.message.text
+        if not texto or not texto.startswith("/enviar "):
+            return
+
+        partes = texto.split(maxsplit=2)
         if len(partes) < 3:
             await update.message.reply_text("❗ Usa el formato:\n/enviar <chat_id> <mensaje>")
             return
@@ -395,14 +399,12 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
 
         if update.message.photo:
             await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
-
         elif update.message.video:
             await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
-
         else:
             await context.bot.send_message(chat_id=chat_id, text=mensaje)
 
-        await update.message.reply_text("✅ Contenido enviado correctamente.")
+        await update.message.reply_text("✅ Enviado correctamente.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -416,7 +418,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
 
     # Comando /enviar (mensaje directo del admin a cualquier usuario)
-    app.add_handler(CommandHandler("enviar", enviar_mensaje_directo))
+    app.add_handler(MessageHandler(filters.User(ADMIN_ID) & filters.TEXT | filters.PHOTO | filters.VIDEO, enviar_mensaje_directo))
 
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
