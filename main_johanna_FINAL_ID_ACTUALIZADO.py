@@ -379,13 +379,13 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await guardar_mensaje(update, context)
     await notificar_admin(update, context)
 
-# Función para que el admin envíe un mensaje a cualquier usuario manualmente
+# Función para que el admin envíe mensajes, imágenes o videos a un usuario
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.id != ADMIN_ID:
         return  # Solo tú puedes usar este comando
 
     try:
-        partes = update.message.text.split(maxsplit=2)
+        partes = update.message.caption.split(maxsplit=2) if update.message.caption else update.message.text.split(maxsplit=2)
         if len(partes) < 3:
             await update.message.reply_text("❗ Usa el formato:\n/enviar <chat_id> <mensaje>")
             return
@@ -393,11 +393,20 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         chat_id = int(partes[1])
         mensaje = partes[2]
 
-        await context.bot.send_message(chat_id=chat_id, text=mensaje)
-        await update.message.reply_text("✅ Mensaje enviado correctamente.")
+        if update.message.photo:
+            await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
+
+        elif update.message.video:
+            await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
+
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=mensaje)
+
+        await update.message.reply_text("✅ Contenido enviado correctamente.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
+
 
 # === EJECUCIÓN ===
 if __name__ == "__main__":
