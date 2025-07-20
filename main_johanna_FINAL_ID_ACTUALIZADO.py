@@ -8,6 +8,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InputFile,
 )
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -320,13 +321,16 @@ async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             usuarios_objetivo[query.from_user.id] = chat_id
 
             await query.edit_message_text(
-                f"✏️ Ahora puedes responder al usuario.\n\n"
-                f"🧾 Responde a este mensaje con el texto que deseas enviar.\n"
-                f"🆔 ID del usuario: {chat_id}",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancelar", callback_data="cancelar")]
-                ])
-            )
+    text=(
+        "✉️ Ahora puedes responder al usuario.\n\n"
+        "📨 Responde a este mensaje con el texto o audio que deseas enviar.\n"
+        f"🆔 ID del usuario: `{chat_id}`"
+    ),
+    parse_mode=ParseMode.MARKDOWN,
+    reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancelar", callback_data="cancelar")]
+    ])
+)
     except Exception as e:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
