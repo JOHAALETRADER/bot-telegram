@@ -222,26 +222,26 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.commit()
 
 async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        mensaje = update.message.text
-        usuario = update.message.from_user
-        chat_id = usuario.id
-        nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
+        try:
+            mensaje = update.message.text
+            usuario = update.message.from_user
+            chat_id = usuario.id
+            nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
 
-                texto = (
-            f"📩 Nuevo mensaje de {nombre} (ID: {chat_id}):\n\n"
-            "🖊️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
-        )
+            texto = (
+                f"📩 Nuevo mensaje de {nombre} (ID: {chat_id}):\n\n"
+                "🖊️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
+            )
 
-        botones = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]
-        ])
+            botones = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]
+            ])
 
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=texto,
-            reply_markup=botones
-        )
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=texto,
+                reply_markup=botones
+            )
 
 
     except Exception as e:
