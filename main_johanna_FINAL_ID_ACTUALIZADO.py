@@ -162,6 +162,9 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     q = update.callback_query
     await q.answer()
+
+# Notificar al admin que un usuario tocó un botón general
+await notificar_interaccion(update, context)
     if q.data == "registrarme":
         await q.message.reply_text(MENSAJE_REGISTRARME)
         await q.message.reply_video(
@@ -251,7 +254,31 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=ADMIN_ID,
             text=f"⚠️ Error notificando al admin: {e}"
         )
+# Función para notificar al admin cuando el usuario interactúa con botones
+async def notificar_interaccion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = update.callback_query
+        usuario = query.from_user
+        chat_id = usuario.id
+        nombre = f"@{usuario.username}" if usuario.username else usuario.full_name
+        data = query.data
 
+        texto = (
+            f"⚡ El usuario {nombre} (ID: {chat_id}) tocó un botón:\n"
+            f"➡️ <code>{data}</code>"
+        )
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=texto,
+            parse_mode=ParseMode.HTML
+        )
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"⚠️ Error al notificar interacción: {e}"
+        )
 
 import re  # Asegúrate de tener este import al inicio de tu archivo
 
@@ -353,6 +380,26 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await guardar_mensaje(update, context)
     await notificar_admin(update, context)
 
+# Función para que el admin envíe un mensaje a cualquier usuario manualmente
+async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat.id != ADMIN_ID:
+        return  # Solo tú puedes usar este comando
+
+    try:
+        partes = update.message.text.split(maxsplit=2)
+        if len(partes) < 3:
+            await update.message.reply_text("❗ Usa el formato:\n/enviar <chat_id> <mensaje>")
+            return
+
+        chat_id = int(partes[1])
+        mensaje = partes[2]
+
+        await context.bot.send_message(chat_id=chat_id, text=mensaje)
+        await update.message.reply_text("✅ Mensaje enviado correctamente.")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
@@ -360,10 +407,13 @@ if __name__ == "__main__":
     # Comando /start
     app.add_handler(CommandHandler("start", start))
 
+    # Comando /enviar (mensaje directo del admin a cualquier usuario)
+    app.add_handler(CommandHandler("enviar", enviar_mensaje_directo))
+
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
 
-    # Callback del botón "❌ Cancelar"
+    # Callback del botón ❌ Cancelar
     app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
 
     # Botones generales (debe ir al final para no interceptar los anteriores)
@@ -377,3 +427,4 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling()
+
