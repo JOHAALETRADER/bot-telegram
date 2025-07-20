@@ -428,11 +428,13 @@ if __name__ == "__main__":
     # Comando /start
     app.add_handler(CommandHandler("start", start))
 
-    # Comando /enviar (mensaje directo del admin a cualquier usuario con texto, imagen o video)
+    # Enviar imagen, video, audio usando /enviar desde caption (solo multimedia)
     app.add_handler(MessageHandler(
-    filters.User(ADMIN_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO),
-    enviar_mensaje_directo
-))
+        filters.User(ADMIN_ID) &
+        (filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO) &
+        filters.CaptionRegex(r"^/enviar "),
+        enviar_mensaje_directo
+    ))
 
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
@@ -443,7 +445,7 @@ if __name__ == "__main__":
     # Botones generales (debe ir al final para no interceptar los anteriores)
     app.add_handler(CallbackQueryHandler(botones))
 
-    # Mensajes del admin (responder a usuarios con texto o audio)
+    # Mensajes del admin (responder a usuarios con texto o audio deslizando)
     app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & filters.User(ADMIN_ID), responder_a_usuario))
 
     # Mensajes normales de los usuarios
@@ -451,5 +453,6 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling()
+
 
 
