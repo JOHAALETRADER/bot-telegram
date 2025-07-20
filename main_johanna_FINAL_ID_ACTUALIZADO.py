@@ -228,14 +228,20 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id = usuario.id
             nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
 
-            texto = (
-                f"📩 Nuevo mensaje de {nombre} (ID: {chat_id}):\n\n"
-                "🖊️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
-            )
+            mensaje_usuario = update.message.text
 
-            botones = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✏️ Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]
-            ])
+texto = (
+    f"📩 Nuevo mensaje de {nombre} (ID: {chat_id}):\n\n"
+    f"💬 {mensaje_usuario}\n\n"
+    "✏️ Escribe tu respuesta a este usuario directamente respondiendo a este mensaje..."
+)
+
+botones = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("✏️ Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}"),
+        InlineKeyboardButton("❌ Cancelar", callback_data=f"cancelar:{chat_id}")
+    ]
+])
 
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
@@ -259,10 +265,20 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
         if chat_id_match:
             destinatario_id = int(chat_id_match.group(1))
             try:
-                await context.bot.send_message(
-                    chat_id=destinatario_id,
-                    text=update.message.text
-                )
+                if update.message.voice:
+                    # Reenviar el audio al destinatario
+                    await context.bot.send_voice(
+                        chat_id=destinatario_id,
+                        voice=update.message.voice.file_id,
+                        caption="🎤 Respuesta en audio"
+                    )
+                else:
+                    # Reenviar texto
+                    await context.bot.send_message(
+                        chat_id=destinatario_id,
+                        text=update.message.text
+                    )
+
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text="✅ Mensaje enviado al usuario correctamente."
@@ -272,6 +288,7 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                     chat_id=update.effective_chat.id,
                     text="❌ Error al enviar mensaje al usuario: {}".format(e)
                 )
+
         else:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
@@ -342,7 +359,7 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(botones))
-    app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_ID), responder_a_usuario))
+    app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & filters.User(ADMIN_ID), responder_a_usuario))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & ~filters.User(ADMIN_ID),
         manejar_mensaje
