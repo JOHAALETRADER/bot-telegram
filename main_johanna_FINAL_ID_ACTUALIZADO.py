@@ -162,8 +162,8 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     q = update.callback_query
     await q.answer()
-# Notificar al admin que un usuario tocó un botón general
-await notificar_interaccion(update, context)
+   # Notificar al admin que un usuario tocó un botón general
+    await notificar_interaccion(update, context)
     if q.data == "registrarme":
         await q.message.reply_text(MENSAJE_REGISTRARME)
         await q.message.reply_video(
