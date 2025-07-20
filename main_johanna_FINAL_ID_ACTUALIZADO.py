@@ -419,9 +419,9 @@ if __name__ == "__main__":
 
     # Comando /enviar (mensaje directo del admin a cualquier usuario con texto, imagen o video)
     app.add_handler(MessageHandler(
-        filters.User(ADMIN_ID) & filters.Regex(r"^/enviar "), 
-        enviar_mensaje_directo
-    ))
+    filters.User(ADMIN_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO),
+    enviar_mensaje_directo
+))
 
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
