@@ -331,6 +331,11 @@ async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.edit_message_text("❌ Has cancelado la respuesta al usuario.")
         else:
             await query.edit_message_text("ℹ️ No había ninguna respuesta pendiente por cancelar.")
+            
+# Nueva función para manejar mensajes de usuarios
+async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await guardar_mensaje(update, context)
+    await notificar_admin(update, context)
 
 # === EJECUCIÓN ===
 if __name__ == "__main__":
@@ -339,9 +344,9 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(botones))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_ID), responder_a_usuario))
     app.add_handler(MessageHandler(
-    filters.TEXT & ~filters.COMMAND & ~filters.User(ADMIN_ID),
-    lambda update, context: guardar_mensaje(update, context) or notificar_admin(update, context)
-))
+        filters.TEXT & ~filters.COMMAND & ~filters.User(ADMIN_ID),
+        manejar_mensaje
+    ))
     app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
     logging.info("Bot corriendo…")
