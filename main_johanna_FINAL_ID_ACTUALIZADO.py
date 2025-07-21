@@ -385,11 +385,11 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     try:
-        raw_text = update.message.caption if update.message.caption else update.message.text
-        if not raw_text or not raw_text.startswith("/enviar "):
+        texto_raw = update.message.caption or update.message.text
+        if not texto_raw or not texto_raw.startswith("/enviar "):
             return
 
-        partes = raw_text.split(maxsplit=2)
+        partes = texto_raw.split(maxsplit=2)
         if len(partes) < 3:
             await update.message.reply_text("❗ Usa el formato:\n/enviar <chat_id> <mensaje>")
             return
@@ -398,15 +398,34 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         mensaje = partes[2]
 
         if update.message.photo:
-            await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=update.message.photo[-1].file_id,
+                caption=mensaje
+            )
         elif update.message.video:
-            await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
+            await context.bot.send_video(
+                chat_id=chat_id,
+                video=update.message.video.file_id,
+                caption=mensaje
+            )
         elif update.message.voice:
-            await context.bot.send_voice(chat_id=chat_id, voice=update.message.voice.file_id, caption=mensaje)
+            await context.bot.send_voice(
+                chat_id=chat_id,
+                voice=update.message.voice.file_id,
+                caption=mensaje
+            )
         elif update.message.audio:
-            await context.bot.send_audio(chat_id=chat_id, audio=update.message.audio.file_id, caption=mensaje)
+            await context.bot.send_audio(
+                chat_id=chat_id,
+                audio=update.message.audio.file_id,
+                caption=mensaje
+            )
         elif update.message.text:
-            await context.bot.send_message(chat_id=chat_id, text=mensaje)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=mensaje
+            )
         else:
             await update.message.reply_text("❌ No se detectó contenido válido para enviar.")
 
