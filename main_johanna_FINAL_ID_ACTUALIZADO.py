@@ -147,13 +147,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🌐 Redes sociales", callback_data="redes_sociales")]
     ]
 
-    await update.message.reply_text("👇 Elige una opción para continuar:", reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text("👇 Elige una opción para continuar:", reply_markup=InlineKeyboardMarkup(kb))
 
-user = update.effective_user
-mensaje_admin = (
-    f"🚨 El usuario @{user.username or 'SinUsername'} (ID: {user.id}) ha tocado el botón Inicio."
-)
-await context.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
+    user = update.effective_user
+    mensaje_admin = (
+        f"🚨 El usuario @{user.username or 'SinUsername'} (ID: {user.id}) ha tocado el botón Inicio."
+    )
+    await context.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
 
     # Programar los mensajes diferidos
     if context.job_queue:
