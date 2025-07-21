@@ -148,6 +148,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text("👇 Elige una opción para continuar:", reply_markup=InlineKeyboardMarkup(kb))
+
 user = update.effective_user
 mensaje_admin = (
     f"🚨 El usuario @{user.username or 'SinUsername'} (ID: {user.id}) ha tocado el botón Inicio."
