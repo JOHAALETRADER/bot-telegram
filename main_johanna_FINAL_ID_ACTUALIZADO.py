@@ -148,7 +148,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text("👇 Elige una opción para continuar:", reply_markup=InlineKeyboardMarkup(kb))
-
+user = update.effective_user
+mensaje_admin = (
+    f"🚨 El usuario @{user.username or 'SinUsername'} (ID: {user.id}) ha tocado el botón Inicio."
+)
+await context.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
 
     # Programar los mensajes diferidos
     if context.job_queue:
@@ -439,14 +443,6 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         print(f"❌ Error al enviar mensaje directo: {e}")
         await update.message.reply_text("⚠️ Ocurrió un error al intentar enviar el mensaje.")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text("👋 ¡Bienvenido! Gracias por iniciar el bot.")
-
-    mensaje_admin = (
-        f"🚨 El usuario @{user.username or 'SinUsername'} (ID: {user.id}) ha iniciado el bot."
-    )
-    await context.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
 
 # === EJECUCIÓN ===
 if __name__ == "__main__":
