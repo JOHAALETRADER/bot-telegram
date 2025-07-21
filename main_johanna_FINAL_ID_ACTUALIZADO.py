@@ -385,13 +385,7 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     try:
-        # Obtener texto desde caption o texto puro
-        raw_text = ""
-        if update.message.caption:
-            raw_text = update.message.caption
-        elif update.message.text:
-            raw_text = update.message.text
-
+        raw_text = update.message.caption if update.message.caption else update.message.text
         if not raw_text or not raw_text.startswith("/enviar "):
             return
 
@@ -403,17 +397,18 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         chat_id = int(partes[1])
         mensaje = partes[2]
 
-        # Si hay foto
         if update.message.photo:
             await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
-
-        # Si hay video
         elif update.message.video:
             await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
-
-        # Si es solo texto
-        else:
+        elif update.message.voice:
+            await context.bot.send_voice(chat_id=chat_id, voice=update.message.voice.file_id, caption=mensaje)
+        elif update.message.audio:
+            await context.bot.send_audio(chat_id=chat_id, audio=update.message.audio.file_id, caption=mensaje)
+        elif update.message.text:
             await context.bot.send_message(chat_id=chat_id, text=mensaje)
+        else:
+            await update.message.reply_text("❌ No se detectó contenido válido para enviar.")
 
         await update.message.reply_text("✅ Enviado correctamente.")
 
