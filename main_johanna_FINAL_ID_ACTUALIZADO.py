@@ -393,7 +393,7 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
                 chat_id = int(partes[1])
                 mensaje = ""
             else:
-                await update.message.reply_text("❗ Usa el formato:\n/enviar <chat_id> <mensaje>")
+                await update.message.reply_text('❗ Usa el formato:\n/enviar <chat_id> <mensaje>')
                 return
         else:
             chat_id = int(partes[1])
@@ -425,7 +425,7 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
 
         # Enviar nota de voz
         if update.message.voice:
-            await context.bot.send_voice(chat_id=chat_id, voice=update.message.voice.file_id, caption=mensaje)
+            await context.bot.send_voice(chat_id=chat_id, voice=update.message.voice.file_id)
             await update.message.reply_text("✅ Nota de voz enviada con éxito.")
             return
 
