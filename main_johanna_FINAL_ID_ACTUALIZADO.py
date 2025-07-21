@@ -381,66 +381,63 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Función mejorada para enviar texto, imagen o video al usuario, incluso si viene en caption
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.id != ADMIN_ID:
-        return
-
     try:
-        texto_raw = update.message.caption or update.message.text
-        if not texto_raw or not texto_raw.startswith("/enviar "):
-            return
+        if not update.message.caption:
+            return  # Si no hay caption, no hace nada
 
-        partes = texto_raw.split(maxsplit=2)
+        partes = update.message.caption.split(" ", 2)
+
         if len(partes) < 3:
-            await update.message.reply_text("❗ Usa el formato:\n/enviar <chat_id> <mensaje>")
+            # Aceptar solo imagen/video sin caption (solo /enviar <id>)
+            if len(partes) == 2 and (update.message.photo or update.message.document or update.message.video):
+                chat_id = int(partes[1])
+                mensaje = ""
+            else:
+                await update.message.reply_text("❗ Usa el formato:\n/enviar <chat_id> <mensaje>")
+                return
+        else:
+            chat_id = int(partes[1])
+            mensaje = partes[2]
+
+        # Enviar imagen como PHOTO
+        if update.message.photo:
+            await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
+            await update.message.reply_text("✅ Imagen enviada con éxito.")
             return
 
-        chat_id = int(partes[1])
-        mensaje = partes[2]
+        # Enviar imagen como DOCUMENTO
+        if update.message.document and update.message.document.mime_type.startswith("image/"):
+            await context.bot.send_document(chat_id=chat_id, document=update.message.document.file_id, caption=mensaje)
+            await update.message.reply_text("✅ Imagen enviada como documento.")
+            return
 
-        # Soporta imagen como photo
-        if update.message.photo:
-            await context.bot.send_photo(
-                chat_id=chat_id,
-                photo=update.message.photo[-1].file_id,
-                caption=mensaje
-            )
-        # Soporta imagen como document
-        elif update.message.document and update.message.document.mime_type.startswith("image/"):
-            await context.bot.send_document(
-                chat_id=chat_id,
-                document=update.message.document.file_id,
-                caption=mensaje
-            )
-        elif update.message.video:
-            await context.bot.send_video(
-                chat_id=chat_id,
-                video=update.message.video.file_id,
-                caption=mensaje
-            )
-        elif update.message.voice:
-            await context.bot.send_voice(
-                chat_id=chat_id,
-                voice=update.message.voice.file_id,
-                caption=mensaje
-            )
-        elif update.message.audio:
-            await context.bot.send_audio(
-                chat_id=chat_id,
-                audio=update.message.audio.file_id,
-                caption=mensaje
-            )
-        elif update.message.text:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=mensaje
-            )
+        # Enviar video
+        if update.message.video:
+            await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
+            await update.message.reply_text("✅ Video enviado con éxito.")
+            return
+
+        # Enviar audio
+        if update.message.audio:
+            await context.bot.send_audio(chat_id=chat_id, audio=update.message.audio.file_id, caption=mensaje)
+            await update.message.reply_text("✅ Audio enviado con éxito.")
+            return
+
+        # Enviar nota de voz
+        if update.message.voice:
+            await context.bot.send_voice(chat_id=chat_id, voice=update.message.voice.file_id, caption=mensaje)
+            await update.message.reply_text("✅ Nota de voz enviada con éxito.")
+            return
+
+        # Si no es archivo multimedia, enviar como texto
+        if mensaje:
+            await context.bot.send_message(chat_id=chat_id, text=mensaje)
+            await update.message.reply_text("✅ Mensaje enviado con éxito.")
         else:
-            await update.message.reply_text("❌ No se detectó contenido válido para enviar.")
-
-        await update.message.reply_text("✅ Enviado correctamente.")
-
+            await update.message.reply_text("⚠️ No se pudo enviar nada. Revisa el contenido.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        print(f"❌ Error al enviar mensaje directo: {e}")
+        await update.message.reply_text("⚠️ Ocurrió un error al intentar enviar el mensaje.")
 
 
 # === EJECUCIÓN ===
