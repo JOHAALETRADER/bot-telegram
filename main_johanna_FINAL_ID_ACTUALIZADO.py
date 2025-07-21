@@ -130,12 +130,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.add(nuevo_usuario)
             session.commit()
 
-    try:
+        try:
         with open("bienvenidanuevasi.jpg", "rb") as img:
             await update.message.reply_photo(photo=InputFile(img), caption=MENSAJE_BIENVENIDA)
     except FileNotFoundError:
         await update.message.reply_text(MENSAJE_BIENVENIDA)
-
 
     kb = [
         [InlineKeyboardButton("🚀 Registrarme", callback_data="registrarme")],
@@ -147,7 +146,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🌐 Redes sociales", callback_data="redes_sociales")]
     ]
 
-        await update.message.reply_text("👇 Elige una opción para continuar:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("👇 Elige una opción para continuar:", reply_markup=InlineKeyboardMarkup(kb))
 
     user = update.effective_user
     mensaje_admin = (
