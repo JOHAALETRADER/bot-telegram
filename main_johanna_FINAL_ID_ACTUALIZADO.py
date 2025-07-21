@@ -397,10 +397,18 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         chat_id = int(partes[1])
         mensaje = partes[2]
 
+        # Soporta imagen como photo
         if update.message.photo:
             await context.bot.send_photo(
                 chat_id=chat_id,
                 photo=update.message.photo[-1].file_id,
+                caption=mensaje
+            )
+        # Soporta imagen como document
+        elif update.message.document and update.message.document.mime_type.startswith("image/"):
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=update.message.document.file_id,
                 caption=mensaje
             )
         elif update.message.video:
