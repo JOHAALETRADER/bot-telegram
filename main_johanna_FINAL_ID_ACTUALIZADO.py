@@ -43,19 +43,39 @@ class Usuario(Base):
     binomo_id      = Column(String)
     registrado     = Column(String)
     fecha_registro = Column(DateTime, default=datetime.utcnow)
-    # Nuevo: idioma preferido ("es" / "en")
+    # Idioma preferido ("es" / "en")
     lang           = Column(String, default="es")
 
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
-# Intentar agregar columna lang si no existe (idempotente)
+# --- Migración robusta de la columna lang (sin acceso manual a SQL) ---
 try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS lang VARCHAR"))
-except Exception as _e:
-    pass
+    backend = engine.url.get_backend_name()
+    if backend.startswith("postgres"):
+        # Postgres: crear columna si no existe usando bloque DO
+        with engine.begin() as conn:
+            conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='usuarios' AND column_name='lang'
+                ) THEN
+                    ALTER TABLE usuarios ADD COLUMN lang VARCHAR;
+                END IF;
+            END $$;
+            """))
+    elif backend == "sqlite":
+        # SQLite: comprobar PRAGMA y añadir si falta
+        with engine.begin() as conn:
+            cols = conn.execute(text("PRAGMA table_info(usuarios)")).fetchall()
+            if not any(c[1] == "lang" for c in cols):
+                conn.execute(text("ALTER TABLE usuarios ADD COLUMN lang TEXT"))
+except Exception as e:
+    logging.warning("No se pudo verificar/crear columna 'lang': %s", e)
+# --- fin migración ---
 
 # === ENLACES ===
 CANAL_RESULTADOS = "https://t.me/+wyjkDFenUMlmMTUx"
@@ -270,7 +290,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     nombre = update.effective_user.full_name
 
-    # Crear usuario si no existe (sin lang aún)
+    # Crear usuario si no existe (lang por defecto "es" hasta que elija)
     with Session() as session:
         user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
         if not user:
@@ -301,8 +321,11 @@ async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.D
         await context.bot.send_message(chat_id=chat_id, text=(MENSAJE_BIENVENIDA_ES if lang=="es" else MENSAJE_BIENVENIDA_EN))
 
     # Menú
-    await context.bot.send_message(chat_id=chat_id, text=("👇 Elige una opción para continuar:" if lang=="es" else "👇 Choose an option to continue:"),
-                                   reply_markup=build_main_menu(lang))
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=("👇 Elige una opción para continuar:" if lang=="es" else "👇 Choose an option to continue:"),
+        reply_markup=build_main_menu(lang)
+    )
 
     # Programar mensajes diferidos con lang
     if context.job_queue:
@@ -340,7 +363,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "registrarme":
         if lang == "es":
             await q.message.reply_text(MENSAJE_REGISTRARME_ES)
-            # Video SOLO en español (no se copia en flujo inglés)
+            # Video SOLO en español
             await q.message.reply_video(
                 video="BAACAgEAAxkBAAIBaGhdq0nQXi6B4N8uRwmaOHKkUarbAAIMBgACTgAB8UbIZIU9XTMCzjYE",
                 caption="📹 Paso a paso en el vídeo"
@@ -580,7 +603,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await guardar_mensaje(update, context)
     await notificar_admin(update, context)
 
-# Función mejorada para enviar texto, imagen o video al usuario, incluso si viene en caption
+# Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.message.caption:
