@@ -433,6 +433,53 @@ def _norm_text(s: str) -> str:
 def _detect_intent_es(texto: str) -> str:
     t = _norm_text(texto)
 
+    # 0) mensajes que parecen envío de ID (muchos dígitos)
+    # Ej: "este es mi id 12345678" o "ID: 12345678" o solo "12345678"
+    if re.search(r"\b\d{6,}\b", t):
+        if any(k in t for k in ["id", "mi id", "este es mi id", "es mi id", "miid", "id:"]):
+            return "ID_SUBMIT"
+        # si es solo número, lo tratamos como posible ID enviado
+        if re.fullmatch(r"\d{6,}", t.strip()):
+            return "ID_SUBMIT"
+
+    # prioridad: vpn / pais -> chat personal
+    if any(k in t for k in ["vpn", "proxy"]):
+        return "VPN"
+    if any(k in t for k in ["error de pais", "pais no", "no disponible en mi pais", "bloqueado por pais", "bloqueado en mi pais", "region", "country error"]):
+        return "PAIS"
+
+    # horarios live
+    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo", "transmision"]):
+        return "LIVE"
+
+    # bono
+    if any(k in t for k in ["bono", "bonus", "100%", "promocion", "promociones"]):
+        return "BONO"
+
+    # id (pregunta)
+    if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "ubicar", "aparece", "aparece mi"]):
+        return "ID"
+    if any(k in t for k in ["donde veo mi id", "como encuentro mi id", "como ver mi id"]):
+        return "ID"
+
+    # correo
+    if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "no llega email", "correo", "email", "mail"]):
+        return "EMAIL"
+
+    # retiro / withdraw
+    if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "fallo", "error al retirar", "no me deja retirar"]):
+        return "RETIRO"
+
+    # metodos / banco
+    if any(k in t for k in ["metodo", "metodos", "banco", "cuenta bancaria", "astropay", "nequi", "transfiya"]):
+        return "METODOS"
+
+    # ya deposité
+    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya recargue", "ya recargué", "ya active", "ya activé"]):
+        return "DEPOSITO"
+
+    return "OTRO"
+
     # prioridad: vpn / pais -> chat personal
     if any(k in t for k in ["vpn", "proxy"]):
         return "VPN"
@@ -1017,6 +1064,15 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = support_keyboard()
             reply_parse = ParseMode.MARKDOWN
 
+        elif intent == "ID_SUBMIT":
+            # El usuario está enviando su ID para validación (manual). No usamos IA.
+            reply_text = (
+                "✅ Recibido. Ya tengo tu ID.\n\n"
+                "Yo lo valido y te confirmo por aquí. Si necesitas ayuda rápida, toca el botón 👇"
+            )
+            reply_markup = support_keyboard()
+            reply_parse = ParseMode.MARKDOWN
+
         elif intent == "DEPOSITO":
             reply_text = (
                 "Perfecto ✅ Ya que depositaste/activaste, escríbeme al chat personal y te habilito el acceso.\n\n"
@@ -1043,21 +1099,38 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup = support_keyboard()
                 reply_parse = ParseMode.MARKDOWN
 
-        if reply_text:
-            try:
-                await update.message.reply_text(
-                    reply_text,
-                    reply_markup=reply_markup,
-                    parse_mode=reply_parse,
-                    disable_web_page_preview=True
-                )
-                await _notify_admin_auto_reply(context, update, intent, reply_text)
-            except Exception as e:
-                logging.info("Error enviando respuesta automática: %s", e)
+        
+    if reply_text:
+        try:
+            await update.message.reply_text(
+                reply_text,
+                reply_markup=reply_markup,
+                parse_mode=reply_parse,
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logging.info("Error enviando respuesta automática: %s", e)
 
-    # Mantener comportamiento actual (guardar + notificar admin)
-    await guardar_mensaje(update, context)
-    await notificar_admin(update, context)
+        # Primero guardamos/notificamos el mensaje del usuario (para que en tu chat llegue la pregunta antes)
+        await guardar_mensaje(update, context)
+        await notificar_admin(update, context)
+
+        # Luego enviamos confirmación con pregunta + respuesta
+        try:
+            pregunta = (update.message.text or "").strip()
+            if pregunta:
+                confirm = f"🗨️ **Pregunta:**\n{pregunta}\n\n📝 **Respuesta:**\n{reply_text}"
+            else:
+                confirm = reply_text
+            await _notify_admin_auto_reply(context, update, intent, confirm)
+        except Exception as e:
+            logging.info("No pude notificar admin auto-reply: %s", e)
+
+        return  # ya manejamos todo
+
+# Mantener comportamiento actual (guardar + notificar admin)
+await guardar_mensaje(update, context)
+await notificar_admin(update, context)
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
