@@ -41,7 +41,8 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
         chat_id = update.effective_chat.id
         u = update.effective_user
         username = u.username or u.full_name or "usuario"
-        pregunta = (update.message.text or update.message.caption or "").strip() or "(sin texto)"
+        msg = update.effective_message
+        pregunta = ((getattr(msg, "text", None) or getattr(msg, "caption", None) or "").strip() or "(sin texto)")
         text = (
             "🤖 RESPUESTA AUTOMÁTICA\n"
             f"Usuario: @{username} | ID: {chat_id}\n"
@@ -506,7 +507,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Si prefieres, también puedes escribirme al chat personal 👇"
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "IMG_IS_ID", "Se pidió que envíe el ID en texto.")
+        await send_admin_auto_log(context, update, "IMG_IS_ID", msg)
         return
 
     if q.data and q.data.startswith("IMG_IS_DEP|"):
@@ -516,7 +517,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"DEP_NO|{chat_id}"),
         ]])
         await q.message.reply_text(msg, reply_markup=kb)
-        await send_admin_auto_log(context, update, "IMG_IS_DEP", "Se activó confirmación de depósito desde imagen.")
+        await send_admin_auto_log(context, update, "IMG_IS_DEP", msg)
         return
 
     if q.data and q.data.startswith("IMG_IS_OTHER|"):
@@ -526,7 +527,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "O escríbeme al chat personal y lo revisamos en 1 minuto 👇"
         )
         await q.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "IMG_IS_OTHER", "La imagen no era ID ni depósito.")
+        await send_admin_auto_log(context, update, "IMG_IS_OTHER", msg)
         return
 
 
@@ -597,20 +598,6 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     stage = get_user_stage(chat_id)
     texto = update.message.text or update.message.caption or ""
-
-    # --- Mensajes con imagen (foto/captura) ---
-    # Si el usuario envía una imagen y NO está en flujo post-validación, evitamos IA genérica.
-    if update.message and update.message.photo:
-        if stage not in (STAGE_POST, STAGE_DEPOSITED):
-            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o un **comprobante de depósito/activación**?"
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
-                 InlineKeyboardButton("💳 Es depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
-                [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")]
-            ])
-            await update.message.reply_text(qtxt, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-            await send_admin_auto_log(context, update, "IMG_PRECHECK", "Se pidió confirmar si la imagen era ID o depósito.")
-            return
 
     with Session() as session:
         user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
