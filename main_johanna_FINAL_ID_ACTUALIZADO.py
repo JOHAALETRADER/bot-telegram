@@ -319,18 +319,6 @@ async def mensaje_48h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message(context, MENSAJE_48H_ES, MENSAJE_48H_EN)
 
 # === UTIL: obtener/guardar idioma ===
-
-def is_image_message(update: Update) -> bool:
-    msg = update.message
-    if not msg:
-        return False
-    if msg.photo:
-        return True
-    if msg.document and (msg.document.mime_type or "").startswith("image/"):
-        return True
-    return False
-
-
 def get_user_lang(chat_id: int) -> str:
     with Session() as session:
         u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
@@ -552,7 +540,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Perfecto ✅\n\n"
             "Escríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
         )
-        await q.message.reply_text(msg, reply_markup=support_keyboard())
+        await q.message.reply_text(msg, reply_markup=keyboard_support_es())
         await send_admin_auto_log(
             context,
             update,
@@ -567,7 +555,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Listo ✅\n\n"
             "Si necesitas ayuda, cuéntame tu duda en un mensaje y te respondo 👇"
         )
-        await q.message.reply_text(msg, reply_markup=support_keyboard())
+        await q.message.reply_text(msg, reply_markup=keyboard_support_es())
         await send_admin_auto_log(
             context,
             update,
@@ -665,7 +653,7 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_user_lang(chat_id)
 
         # Si es media, reenviamos media con caption incluyendo el ID para poder responder
-        if is_image_message(update):
+        if update.message.photo:
             cap = update.message.caption or ""
             cap_final = f"📩 Foto de {nombre} (ID: {chat_id}) [lang={lang}]\n\n{cap}"
             await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=cap_final)
@@ -867,77 +855,80 @@ def _norm(s: str) -> str:
     s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
     return s
 
-def detect_intent_es(texto: str) -> str:
-    t = _norm(texto)
+def detect_intent_es(texto: str) -> str | None:
+    """
+    Clasificador simple por reglas (sin IA) para cubrir los casos más comunes
+    y evitar respuestas genéricas cuando hay intención clara.
+    """
+    if not texto:
+        return None
 
-    # Siguiente paso / qué sigue
-    if any(k in t for k in [
-        "que sigue", "qué sigue", "que paso sigue", "qué paso sigue", "paso sigue",
-        "y ahora que", "y ahora qué", "entonces que sigue", "entonces qué sigue",
-        "ok gracias entonces", "ok gracias", "ya me registre que hago", "ya me registré que hago",
-        "que hago ahora", "qué hago ahora", "siguiente paso"
+    t = texto.strip().lower()
+
+    # Normalización simple
+    t = t.replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u").replace("ñ","n")
+
+    # --- Intents sensibles (redirigir) ---
+    if any(x in t for x in ["vpn", "pais no autorizado", "país no autorizado", "country not allowed", "restricted country"]):
+        return "VPN_RISK"
+
+    # --- Registro / pasos ---
+    if any(x in t for x in [
+        "ya me registre", "ya me registrei", "ya me registré", "ya me registre", "ya tengo cuenta",
+        "ya cree cuenta", "ya cree mi cuenta", "ya cree la cuenta", "ya me cree cuenta", "ya me registre en binomo",
+        "ya me registre en binomo", "ya me registre ya"
+    ]):
+        return "REGISTERED"
+
+    if any(x in t for x in [
+        "ahora que hago", "ahora que hago?", "que hago ahora", "que hago", "que sigue", "que paso sigue",
+        "siguiente paso", "y ahora", "entonces que hago", "ok gracias entonces que paso sigue"
     ]):
         return "NEXT_STEP"
 
-    # Dónde enviar el ID / te envío el ID
-    if ("id" in t) and any(k in t for k in [
-        "te envio", "te envío", "envio", "envío", "enviar", "mando", "te mando",
-        "por donde", "por dónde", "a donde", "a dónde", "donde te", "dónde te",
-        "por aca", "por acá", "por aqui", "por aquí"
+    # --- Depósito ---
+    if any(x in t for x in [
+        "ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "depositado", "ya pague", "ya pagué"
     ]):
-        return "WHERE_SEND_ID"
+        return "DEPOSIT_DONE"
 
-    if any(k in t for k in ["vpn", "proxy"]):
-        return "VPN"
-    if ("error" in t and ("pais" in t or "país" in t or "country" in t)) or ("me sale" in t and "pais" in t):
-        return "PAIS"
-
-    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo", "conecto", "conectas", "conecte", "conectarme", "conectarse", "conexion", "me conecto", "te conectas", "a que hora te conectas", "a qué hora te conectas", "a que hora te conecto", "a qué hora te conecto"]):
-        return "LIVE"
-
-    if any(k in t for k in ["bono", "bonus", "100%"]):
-        return "BONO"
-
-    if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
-        return "ID"
-
-    if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "no me deja retirar", "no me deja"]):
-        return "RETIRO"
-
-    if any(k in t for k in ["metodo", "metodos", "banco", "cuenta bancaria", "colombia", "astropay", "nequi", "transfiya"]):
-        return "METODOS"
-
-    if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "correo", "email"]):
-        return "EMAIL"
-
-    if any(k in t for k in [
-        "voy a depositar", "voy a hacer el deposito", "voy a hacer el depósito",
-        "depositare", "depositaré", "mañana deposito", "mañana voy a depositar",
-        "mas tarde deposito", "más tarde deposito", "despues deposito", "después deposito",
-        "deposito luego", "depósito luego", "deposito despues", "depósito después", "cuando me paguen", "cuando me pague", "estoy esperando un pago", "esperando un pago",
-        "aun no deposito", "aún no deposito", "todavia no deposito", "todavía no deposito",
-        "no he depositado", "no e depositado", "no he podido depositar"
+    if any(x in t for x in [
+        "deposito luego", "deposito despues", "deposito después", "deposito manana", "deposito mañana",
+        "deposita luego", "depositare luego", "depositare despues", "depositare mañana",
+        "esperando un pago", "cuando me paguen", "cuando tenga el pago", "mañana deposito", "deposita mañana"
     ]):
         return "DEPOSIT_LATER"
 
-    # Depósito mínimo / monto insuficiente
-    if any(k in t for k in [
-        "menos de 50", "menos de $50", "menos de usd 50", "depositar menos de 50", "depositar menos de $50",
-        "puedo depositar menos", "depositar menos", "deposito menos",
-        "solo tengo 10", "solo tengo 20", "solo tengo 30", "solo tengo 40",
-        "tengo 10", "tengo 20", "tengo 30", "tengo 40",
-        "puedo depositar 10", "puedo depositar 20", "puedo depositar 30", "puedo depositar 40",
-        "depositar 10", "depositar 20", "depositar 30", "depositar 40"
+    if any(x in t for x in [
+        "menos de 50", "menos de $50", "solo tengo 10", "solo tengo $10", "tengo 10", "tengo $10",
+        "puedo depositar 10", "puedo depositar 20", "puedo depositar menos", "deposito minimo", "deposito mínimo",
+        "minimo 50", "mínimo 50", "min 50", "50 usd"
     ]):
-        return "MIN_DEPOSIT"
+        return "MIN_50"
 
-    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya active", "ya activé"]):
-        return "DEPOSITO"
+    # --- Preguntas frecuentes ---
+    if any(x in t for x in ["bono", "bonus", "promo", "promocion", "promoción"]):
+        return "BONO"
 
-    if re.search(r"\b\d{6,}\b", t) and ("id" in t or t.strip().isdigit()):
-        return "ID_SUBMIT"
+    if any(x in t for x in ["id binomo", "mi id", "donde veo mi id", "donde puedo ver mi id", "donde encuentro mi id", "user id"]):
+        return "ID_FIND"
 
-    return "OTRO"
+    if any(x in t for x in ["te envio id", "te envio mi id", "te envio el id", "lo envio por aca", "lo envio por aqui", "por aca te lo envio"]):
+        return "SEND_ID"
+
+    # --- Horario live / conexión ---
+    if any(x in t for x in [
+        "live", "en vivo", "directo", "transmision", "transmisión", "conectar", "conexion", "conexión",
+        "a que hora", "a qué hora", "que hora", "qué hora", "cuando te conectas", "cuando te conecto",
+        "cuando es el live", "hora del live", "hora te conectas", "a que hora te conectas"
+    ]):
+        return "LIVE"
+
+    # Posible ID suelto (solo números)
+    if re.fullmatch(r"\d{6,12}", t):
+        return "ID_ONLY"
+
+    return None
 
 def respuesta_bono_es() -> str:
     return (
@@ -986,16 +977,6 @@ def respuesta_deposit_later_es(stage: str) -> str:
         "Perfecto ✅\n\n"
         "Antes de depositar necesito validar tu registro.\n\n"
         "Envíame tu **ID de Binomo** (solo el número) y te confirmo si está correcto 👇"
-    )
-
-
-def respuesta_min_deposit_es() -> str:
-    return (
-        "📌 Depósito mínimo para activar tu acceso\n\n"
-        "Para habilitar tu acceso a mi comunidad VIP gratuita y a las herramientas, "
-        "el depósito mínimo es **50 USD** en Binomo.\n\n"
-        "Si por ahora tienes menos de 50, no pasa nada: cuando ya puedas depositar 50+ "
-        "me escribes y lo revisamos. 👇"
     )
 
 def fallback_johabot_es() -> str:
@@ -1073,142 +1054,237 @@ async def openai_answer_es(question: str, context_text: str) -> str:
 
 # Nueva función para manejar mensajes de usuarios (texto o media)
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Guardar y notificar al admin primero (así ves la pregunta antes del auto-reply)
+    """
+    Handler principal:
+    - Mantiene los flujos existentes
+    - Evita respuestas genéricas cuando hay intención clara
+    - Loggea al admin TODA respuesta que el bot envía al usuario
+    """
+    if not update.message:
+        return
+
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    user_id = user.id
+    chat_id = chat.id
+
+    # No respondemos con IA en grupos
+    if chat.type != "private":
+        return
+
+    # Guardar/log del mensaje entrante
     await guardar_mensaje(update, context)
-    await notificar_admin(update, context)
 
-    chat_id = update.effective_chat.id
-    lang = get_user_lang(chat_id)
-    if lang != "es":
-        return  # IA solo español por ahora
-
-    stage = get_user_stage(chat_id)
-
-    # --- PRECHECK: si llega una imagen, NO llamamos IA. Primero preguntamos si es ID o depósito ---
-    if update.message and update.message.photo:
-        if stage not in (STAGE_POST, STAGE_DEPOSITED):
-            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o un **comprobante de depósito/activación**?"
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
-                 InlineKeyboardButton("💳 Es depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
-                [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")]
-            ])
-            await update.message.reply_text(qtxt, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-            await send_admin_auto_log(context, update, "IMG_PRECHECK", qtxt)
-            return
-
-    texto = update.message.text or update.message.caption or ""
-    intent = detect_intent_es(texto)
-
-        # Si el usuario solo está enviando su ID, confirmamos recibido (validación manual)
-    if intent == "ID_SUBMIT":
-        respuesta_id_submit = (
-            "✅ **Recibido.** Ya tengo tu ID.\n"
-            "Lo dejo en **validación** y en breve te confirmo si está correcto.\n"
-            "Mientras tanto, si quieres adelantar el proceso, escríbeme aquí 👇"
-        )
-        await update.message.reply_text(
-            respuesta_id_submit,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=support_keyboard()
-        )
-        await send_admin_auto_log(context, update, "ID_SUBMIT", respuesta_id_submit)
+    # Si es el admin escribiendo al bot, no hagas IA automática
+    if user_id == ADMIN_ID:
         return
 
-    in_validation_flow = stage in (STAGE_POST, STAGE_DEPOSITED)
+    async def reply_user(text: str, intent: str = "AUTO", reply_markup=None):
+        await update.message.reply_text(text, reply_markup=reply_markup)
+        try:
+            await send_admin_auto_log(context, update, intent, text)
+        except Exception as e:
+            logging.warning("No pude enviar log auto al admin: %s", e)
 
-    # VPN o error país -> directo a chat personal
-    if intent in ("VPN", "PAIS"):
-        msg = "Para temas de VPN / error de país prefiero revisarlo contigo directo 🤍\n\nToca el botón 👇"
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, intent, msg)
-        return
-
-
-    # Qué sigue / siguiente paso
-    if intent == "NEXT_STEP":
-        msg = respuesta_next_step_es()
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, intent, msg)
-        return
-
-    # Dónde enviar el ID
-    if intent == "WHERE_SEND_ID":
-        msg = respuesta_where_send_id_es()
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, intent, msg)
-        return
-
-    # Lives
-    if intent == "LIVE":
-        await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "LIVE", LIVE_HORARIOS_ES)
-        return
-
-    # Bono
-    if intent == "DEPOSIT_LATER":
-        msg = respuesta_deposit_later_es(stage)
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "DEPOSIT_LATER", msg)
-        return
-    if intent == "MIN_DEPOSIT":
-        await update.message.reply_text(respuesta_min_deposit_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "MIN_DEPOSIT", respuesta_min_deposit_es())
-        return
-
-    if intent == "BONO":
-        await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "BONO", respuesta_bono_es())
-        return
-
-    # Dónde ver ID
-    if intent == "ID":
-        await update.message.reply_text(respuesta_id_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "ID", respuesta_id_es())
-        return
-
-    # Ya depositó (solo si ya estaba validado)
-    if intent == "DEPOSITO" and stage == STAGE_POST:
-        set_user_stage(chat_id, STAGE_DEPOSITED)
-        _cancel_jobs_prefix(context, "B", chat_id)
-        await update.message.reply_text(
-            "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇",
-            reply_markup=support_keyboard()
-        )
-        return
-
-    # Captura sin texto durante POST: confirmación
-    if is_image_message(update):
-        # Si el usuario manda imagen (ID / depósito / otra cosa), preguntamos y NO usamos IA aquí.
+    # --- Foto / imagen: siempre preguntar qué es ---
+    if update.message.photo:
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}")],
-            [InlineKeyboardButton("💳 Es depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
-            [InlineKeyboardButton("❌ No tiene relación", callback_data=f"IMG_IS_OTHER|{chat_id}")],
+            [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{user_id}")],
+            [InlineKeyboardButton("💳 Es depósito", callback_data=f"IMG_IS_DEP|{user_id}")],
+            [InlineKeyboardButton("❌ No tiene relación", callback_data=f"IMG_OTHER|{user_id}")],
         ])
-        await update.message.reply_text(
-            "📩 Recibido. ¿Esta imagen es tu **ID de Binomo** o un **comprobante de depósito/activación**?\n\n"
-            "Si es tu **ID**, envíame también el número en texto (solo el número) 👇",
+        await reply_user(
+            "📩 Recibido. ¿Esta imagen es tu ID de Binomo o un comprobante de depósito/activación?",
+            intent="IMG_CHECK",
             reply_markup=kb,
         )
         return
 
-    # En validación: no IA externa
-    if in_validation_flow:
-        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+    texto = (update.message.text or "").strip()
+    if not texto:
         return
 
-    # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
-    q = (texto.strip()[:200] if texto else "Binomo ayuda")
-    snippets = await binomo_helpcenter_snippets(q)
-    ans = ""
-    if snippets:
-        ans = await openai_answer_es(texto or q, snippets)
-    if not ans:
-        ans = fallback_johabot_es()
+    stage = get_user_stage(user_id)
+    intent = detect_intent_es(texto)
 
-    await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+    # --- Bloqueo IA SOLO en validación ---
+    if stage == "VALIDATING":
+        await reply_user(
+            """✅ Recibido. Ya tengo tu ID.
+Lo dejo en validación y en breve te confirmo si está correcto.
+Mientras tanto, si quieres adelantar el proceso, escríbeme aquí 👇""",
+            intent="ID_VALIDATING",
+            reply_markup=support_keyboard(),
+        )
+        return
 
-# Función para enviar texto/imagen/video al usuario, desde caption con /enviar
+    # --- Respuestas por reglas ---
+    if intent == "VPN_RISK":
+        await reply_user(
+            """En ese tema prefiero revisarlo contigo directamente para evitar errores.
+
+Escríbeme aquí 👇""",
+            intent="VPN_RISK",
+            reply_markup=support_keyboard(),
+        )
+        return
+
+    if intent in ("ID_ONLY", "SEND_ID"):
+        set_user_stage(user_id, "VALIDATING")
+        await reply_user(
+            """✅ Recibido. Ya tengo tu ID.
+Lo dejo en validación y en breve te confirmo si está correcto.
+Mientras tanto, si quieres adelantar el proceso, escríbeme aquí 👇""",
+            intent="ID_SUBMIT",
+            reply_markup=support_keyboard(),
+        )
+        return
+
+    if intent == "REGISTERED":
+        if stage == STAGE_PRE:
+            await reply_user(
+                """Perfecto ✅
+Si ya hiciste tu registro, envíame tu ID por aquí (solo el número) para validarlo antes de que deposites.
+
+Si prefieres, también puedes escribirme al chat personal 👇""",
+                intent="REGISTERED",
+                reply_markup=support_keyboard(),
+            )
+        elif stage == STAGE_POST:
+            await reply_user(
+                """Perfecto ✅ Ya quedó validado.
+Cuando ya tengas tu depósito listo, escríbeme: “Ya deposité” y me envías el comprobante.
+
+Si quieres, también puedes escribirme al chat personal 👇""",
+                intent="REGISTERED_POST",
+                reply_markup=support_keyboard(),
+            )
+        else:
+            await reply_user(
+                "Perfecto ✅ Escríbeme al chat personal para terminar de habilitar tu acceso 👇",
+                intent="REGISTERED_DONE",
+                reply_markup=support_keyboard(),
+            )
+        return
+
+    if intent == "NEXT_STEP":
+        if stage == STAGE_PRE:
+            await reply_user(
+                """Vamos por pasos ✅
+1) Si ya te registraste, envíame tu ID (solo el número) para validarlo.
+2) Cuando yo te confirme que está correcto, ahí sí haces tu depósito.
+
+Si quieres hacerlo conmigo directo, escríbeme aquí 👇""",
+                intent="NEXT_STEP_PRE",
+                reply_markup=support_keyboard(),
+            )
+        elif stage == STAGE_POST:
+            await reply_user(
+                """El siguiente paso es el depósito ✅
+Cuando ya lo tengas, escríbeme: “Ya deposité” y me envías el comprobante.
+
+Si prefieres, escríbeme aquí 👇""",
+                intent="NEXT_STEP_POST",
+                reply_markup=support_keyboard(),
+            )
+        else:
+            await reply_user(
+                "Listo ✅ Para terminar el proceso y habilitar tu acceso, escríbeme aquí 👇",
+                intent="NEXT_STEP_DONE",
+                reply_markup=support_keyboard(),
+            )
+        return
+
+    if intent == "DEPOSIT_LATER":
+        await reply_user(
+            """Perfecto ✅ No hay problema.
+Cuando estés lista y ya tengas el depósito (mínimo 50 USD), me escribes: “Ya deposité” y me envías el comprobante.
+
+Si quieres, también puedes escribirme aquí 👇""",
+            intent="DEPOSIT_LATER",
+            reply_markup=support_keyboard(),
+        )
+        return
+
+    if intent == "MIN_50":
+        await reply_user(
+            """📌 Depósito mínimo para activar tu acceso
+
+Para habilitar tu acceso a mi comunidad VIP gratuita y a las herramientas, el depósito mínimo es 50 USD en Binomo.
+
+Si por ahora tienes menos de 50, no pasa nada: cuando estés lista/o para depositar 50+ me escribes y lo revisamos. 👇""",
+            intent="MIN_50",
+            reply_markup=support_keyboard(),
+        )
+        return
+
+    if intent == "DEPOSIT_DONE":
+        await reply_user(
+            """Perfecto ✅
+Envíame el comprobante de depósito (foto/captura) por aquí para confirmar y habilitar tu acceso.
+
+Si prefieres, también puedes escribirme aquí 👇""",
+            intent="DEPOSIT_DONE",
+            reply_markup=support_keyboard(),
+        )
+        return
+
+    if intent == "BONO":
+        await reply_user(
+            """💰 Bono en Binomo (resumen)
+El bono es opcional y puede aparecer al momento de depositar.
+Si lo activas, normalmente trae condiciones antes de poder retirar.
+
+Si quieres, escríbeme y lo revisamos según tu caso 👇""",
+            intent="BONO",
+            reply_markup=support_keyboard(),
+        )
+        return
+
+    if intent == "ID_FIND":
+        await reply_user(
+            """🆔 ¿Dónde encuentro mi ID de Binomo?
+1) Entra a tu cuenta (app o web).
+2) Ve a tu perfil / ajustes (icono de usuario).
+3) Busca el campo “ID” o “User ID” y cópialo.
+
+Si no lo ves, dime si estás en app o navegador y te guío 👇""",
+            intent="ID_FIND",
+            reply_markup=support_keyboard(),
+        )
+        return
+
+    if intent == "LIVE":
+        await reply_user(
+            """Para el horario de conexión y el próximo live, prefiero revisarlo contigo directamente.
+
+Escríbeme aquí 👇""",
+            intent="LIVE",
+            reply_markup=support_keyboard(),
+        )
+        return
+
+    # --- IA (solo si no hubo intención clara) ---
+    try:
+        ai_reply = await generar_respuesta_ia(texto, stage=stage, lang="es")
+    except Exception as e:
+        logging.warning("IA error: %s", e)
+        ai_reply = None
+
+    if ai_reply and isinstance(ai_reply, str) and ai_reply.strip():
+        await reply_user(ai_reply.strip(), intent="AI")
+    else:
+        await reply_user(
+            """Para este caso prefiero revisarlo contigo directamente 🤍
+
+Soy Johabot y para ayudarte correctamente escríbeme aquí 👇""",
+            intent="GENERIC",
+            reply_markup=support_keyboard(),
+        )
+
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.message.caption:
@@ -1229,7 +1305,7 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
             mensaje = partes[2]
 
         # Enviar imagen como PHOTO
-        if is_image_message(update):
+        if update.message.photo:
             await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
             await update.message.reply_text("✅ Imagen enviada con éxito.")
             return
