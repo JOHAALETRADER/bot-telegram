@@ -319,6 +319,18 @@ async def mensaje_48h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message(context, MENSAJE_48H_ES, MENSAJE_48H_EN)
 
 # === UTIL: obtener/guardar idioma ===
+
+def is_image_message(update: Update) -> bool:
+    msg = update.message
+    if not msg:
+        return False
+    if msg.photo:
+        return True
+    if msg.document and (msg.document.mime_type or "").startswith("image/"):
+        return True
+    return False
+
+
 def get_user_lang(chat_id: int) -> str:
     with Session() as session:
         u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
@@ -653,7 +665,7 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_user_lang(chat_id)
 
         # Si es media, reenviamos media con caption incluyendo el ID para poder responder
-        if update.message.photo:
+        if is_image_message(update):
             cap = update.message.caption or ""
             cap_final = f"📩 Foto de {nombre} (ID: {chat_id}) [lang={lang}]\n\n{cap}"
             await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=cap_final)
@@ -902,11 +914,22 @@ def detect_intent_es(texto: str) -> str:
         "voy a depositar", "voy a hacer el deposito", "voy a hacer el depósito",
         "depositare", "depositaré", "mañana deposito", "mañana voy a depositar",
         "mas tarde deposito", "más tarde deposito", "despues deposito", "después deposito",
-        "cuando me paguen", "cuando me pague", "estoy esperando un pago", "esperando un pago",
+        "deposito luego", "depósito luego", "deposito despues", "depósito después", "cuando me paguen", "cuando me pague", "estoy esperando un pago", "esperando un pago",
         "aun no deposito", "aún no deposito", "todavia no deposito", "todavía no deposito",
         "no he depositado", "no e depositado", "no he podido depositar"
     ]):
         return "DEPOSIT_LATER"
+
+    # Depósito mínimo / monto insuficiente
+    if any(k in t for k in [
+        "menos de 50", "menos de $50", "menos de usd 50", "depositar menos de 50", "depositar menos de $50",
+        "puedo depositar menos", "depositar menos", "deposito menos",
+        "solo tengo 10", "solo tengo 20", "solo tengo 30", "solo tengo 40",
+        "tengo 10", "tengo 20", "tengo 30", "tengo 40",
+        "puedo depositar 10", "puedo depositar 20", "puedo depositar 30", "puedo depositar 40",
+        "depositar 10", "depositar 20", "depositar 30", "depositar 40"
+    ]):
+        return "MIN_DEPOSIT"
 
     if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya active", "ya activé"]):
         return "DEPOSITO"
@@ -963,6 +986,16 @@ def respuesta_deposit_later_es(stage: str) -> str:
         "Perfecto ✅\n\n"
         "Antes de depositar necesito validar tu registro.\n\n"
         "Envíame tu **ID de Binomo** (solo el número) y te confirmo si está correcto 👇"
+    )
+
+
+def respuesta_min_deposit_es() -> str:
+    return (
+        "📌 Depósito mínimo para activar tu acceso\n\n"
+        "Para habilitar tu acceso a mi comunidad VIP gratuita y a las herramientas, "
+        "el depósito mínimo es **50 USD** en Binomo.\n\n"
+        "Si por ahora tienes menos de 50, no pasa nada: cuando estés lista para depositar 50+ "
+        "me escribes y lo revisamos. 👇"
     )
 
 def fallback_johabot_es() -> str:
@@ -1124,6 +1157,11 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+    if intent == "MIN_DEPOSIT":
+        await update.message.reply_text(respuesta_min_deposit_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "MIN_DEPOSIT", respuesta_min_deposit_es())
+        return
+
     if intent == "BONO":
         await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "BONO", respuesta_bono_es())
@@ -1146,7 +1184,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Captura sin texto durante POST: confirmación
-    if update.message.photo:
+    if is_image_message(update):
         # Si el usuario manda imagen (ID / depósito / otra cosa), preguntamos y NO usamos IA aquí.
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}")],
@@ -1197,7 +1235,7 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
             mensaje = partes[2]
 
         # Enviar imagen como PHOTO
-        if update.message.photo:
+        if is_image_message(update):
             await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
             await update.message.reply_text("✅ Imagen enviada con éxito.")
             return
