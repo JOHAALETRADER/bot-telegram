@@ -36,6 +36,29 @@ ADMIN_ID = 5924691120  # Tu ID personal de Telegram
 
 
 async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, respuesta: str):
+    """Envía al ADMIN la pregunta + la respuesta exacta (texto plano, sin Markdown)."""
+    try:
+        chat_id = update.effective_chat.id
+        u = update.effective_user
+        username = u.username or u.full_name or "usuario"
+        pregunta = (update.message.text or update.message.caption or "").strip() or "(sin texto)"
+        text = (
+            "🤖 RESPUESTA AUTOMÁTICA\n"
+            f"Usuario: @{username} | ID: {chat_id}\n"
+            f"Intento: {intent}\n\n"
+            "Pregunta:\n"
+            f"{pregunta}\n\n"
+            "Respuesta:\n"
+            f"{respuesta}"
+        )
+        if len(text) > 3900:
+            text = text[:3900] + "\n\n...(recortado)"
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text, disable_web_page_preview=True)
+    except Exception as e:
+        logging.info("No pude enviar log de auto-respuesta: %s", e)
+
+
+async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, respuesta: str):
     """Envía al ADMIN la pregunta y la respuesta exacta enviada automáticamente."""
     try:
         chat_id = update.effective_chat.id
