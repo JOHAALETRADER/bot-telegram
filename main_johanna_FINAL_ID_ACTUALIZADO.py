@@ -520,6 +520,27 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, "IMG_IS_DEP", msg)
         return
 
+
+    # --- Confirmación de depósito desde imagen ---
+    if q.data and q.data.startswith("DEP_YES|"):
+        # Solo tiene sentido si el usuario ya estaba con ID validado
+        set_user_stage(chat_id, STAGE_DEPOSITED)
+        _cancel_jobs_prefix(context, "B", chat_id)
+        msg = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
+        await q.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "DEP_YES", msg)
+        return
+
+    if q.data and q.data.startswith("DEP_NO|"):
+        msg = (
+            "Listo ✅\n"
+            "Entonces envíame lo que sí querías mostrarme (o dime tu duda con una frase).\n\n"
+            "Si prefieres, escríbeme al chat personal y lo revisamos rápido 👇"
+        )
+        await q.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "DEP_NO", msg)
+        return
+
     if q.data and q.data.startswith("IMG_IS_OTHER|"):
         msg = (
             "Listo ✅\n"
@@ -866,8 +887,19 @@ def detect_intent_es(texto: str) -> str:
     if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "correo", "email"]):
         return "EMAIL"
 
-    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya active", "ya activé"]):
-        return "DEPOSITO"
+    # Depósito / activación
+    if any(k in t for k in [
+        "ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito",
+        "ya active", "ya activé", "ya quedo activada", "ya quedó activada",
+        "ya me active", "ya me activé", "deposité", "deposite", "depositado", "depositada"
+    ]):
+        return "DEPOSITO_DONE"
+
+    # Menciona depósito pero aún no lo hizo (ej: "voy a depositar mañana")
+    if ("depos" in t or "deposit" in t) and not any(k in t for k in [
+        "ya deposite", "ya deposité", "deposité", "deposite", "depositado", "depositada"
+    ]):
+        return "DEPOSITO_LATER"
 
     if re.search(r"\b\d{6,}\b", t) and ("id" in t or t.strip().isdigit()):
         return "ID_SUBMIT"
@@ -1068,12 +1100,19 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Ya depositó (solo si ya estaba validado)
-    if intent == "DEPOSITO" and stage == STAGE_POST:
+    if intent == "DEPOSITO_DONE" and stage == STAGE_POST:
         set_user_stage(chat_id, STAGE_DEPOSITED)
         _cancel_jobs_prefix(context, "B", chat_id)
-        msg = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "DEPOSITO_OK", msg)
+        txt = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
+        await update.message.reply_text(txt, reply_markup=support_keyboard())
+        await enviar_log_auto_respuesta(update, context, "DEPOSITO_DONE", txt)
+        return
+
+    # Dice que va a depositar después (mantener etapa y responder algo útil)
+    if intent == "DEPOSITO_LATER" and stage == STAGE_POST:
+        txt = ("Listo ✅\n\nTu ID ya quedó validado.\n"               "Cuando estés lista para depositar/activar, vuelve y escríbeme: Ya deposité.\n\n"               "Si quieres, también puedo guiarte paso a paso según tu método de pago 👇")
+        await update.message.reply_text(txt, reply_markup=support_keyboard())
+        await enviar_log_auto_respuesta(update, context, "DEPOSITO_LATER", txt)
         return
 
     # Captura sin texto durante POST: confirmación
@@ -1082,29 +1121,12 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"dep_yes:{chat_id}")],
             [InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"dep_no:{chat_id}")]
         ])
-        qtxt = "📩 Recibido. ¿Esto es tu comprobante de depósito/activación?"
-        await update.message.reply_text(qtxt, reply_markup=kb)
-        await send_admin_auto_log(context, update, "IMG_DEP_PRECHECK", qtxt)
+        await update.message.reply_text("📩 Recibido. ¿Esto es tu comprobante de depósito/activación?", reply_markup=kb)
         return
-
-    # Si ya está validado pero aún NO ha depositado (ej: "deposito mañana")
-    if stage == STAGE_POST:
-        t_low = (texto or "").lower()
-        if any(p in t_low for p in ["mañana", "manana", "después", "despues", "luego", "voy a deposit", "voy a activar", "estoy esperando", "cuando me paguen", "en la tarde", "más tarde", "mas tarde"]):
-            msg = (
-                "Perfecto ✅\n\n"
-                "Cuando hagas tu depósito/activación, escríbeme aquí **Ya deposité** para continuar 👇\n\n"
-                "Si prefieres, también puedes escribirme al chat personal."
-            )
-            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-            await send_admin_auto_log(context, update, "DEPOSIT_LATER", msg)
-            return
 
     # En validación: no IA externa
     if in_validation_flow:
-        msg = fallback_johabot_es()
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "VALIDATION_FALLBACK", msg)
+        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         return
 
     # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
@@ -1117,7 +1139,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ans = fallback_johabot_es()
 
     await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-    await send_admin_auto_log(context, update, f"AI_{intent}", ans)
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
