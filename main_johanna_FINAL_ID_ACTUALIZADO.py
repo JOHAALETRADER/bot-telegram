@@ -506,6 +506,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Si prefieres, también puedes escribirme al chat personal 👇"
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "IMG_IS_ID", "Se pidió que envíe el ID en texto.")
         return
 
     if q.data and q.data.startswith("IMG_IS_DEP|"):
@@ -515,6 +516,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"DEP_NO|{chat_id}"),
         ]])
         await q.message.reply_text(msg, reply_markup=kb)
+        await send_admin_auto_log(context, update, "IMG_IS_DEP", "Se activó confirmación de depósito desde imagen.")
         return
 
     if q.data and q.data.startswith("IMG_IS_OTHER|"):
@@ -524,6 +526,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "O escríbeme al chat personal y lo revisamos en 1 minuto 👇"
         )
         await q.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "IMG_IS_OTHER", "La imagen no era ID ni depósito.")
         return
 
 
@@ -1003,6 +1006,20 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # IA solo español por ahora
 
     stage = get_user_stage(chat_id)
+
+    # --- PRECHECK: si llega una imagen, NO llamamos IA. Primero preguntamos si es ID o depósito ---
+    if update.message and update.message.photo:
+        if stage not in (STAGE_POST, STAGE_DEPOSITED):
+            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o un **comprobante de depósito/activación**?"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
+                 InlineKeyboardButton("💳 Es depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
+                [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")]
+            ])
+            await update.message.reply_text(qtxt, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            await send_admin_auto_log(context, update, "IMG_PRECHECK", qtxt)
+            return
+
     texto = update.message.text or update.message.caption or ""
     intent = detect_intent_es(texto)
 
