@@ -497,6 +497,36 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Notificar interacción
     await notificar_interaccion(update, context)
 
+    # --- Acciones para imagen (ID vs depósito) ---
+    if q.data and q.data.startswith("IMG_IS_ID|"):
+        msg = (
+            "Perfecto ✅\n"
+            "Para poder validarlo necesito que me envíes el **ID en texto** (solo el número).\n"
+            "📌 Ábrelo en Binomo, cópialo y pégalo aquí.\n\n"
+            "Si prefieres, también puedes escribirme al chat personal 👇"
+        )
+        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        return
+
+    if q.data and q.data.startswith("IMG_IS_DEP|"):
+        msg = "Recibido. ¿Esto es tu comprobante de depósito/activación?"
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"DEP_YES|{chat_id}"),
+            InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"DEP_NO|{chat_id}"),
+        ]])
+        await q.message.reply_text(msg, reply_markup=kb)
+        return
+
+    if q.data and q.data.startswith("IMG_IS_OTHER|"):
+        msg = (
+            "Listo ✅\n"
+            "Dime qué necesitas exactamente (bono, retiros, ID o horarios).\n"
+            "O escríbeme al chat personal y lo revisamos en 1 minuto 👇"
+        )
+        await q.message.reply_text(msg, reply_markup=support_keyboard())
+        return
+
+
     # Cambios de idioma
     if q.data == "set_lang_es":
         set_user_lang(chat_id, q.from_user.full_name, "es")
@@ -562,6 +592,21 @@ https://t.me/JohaaleTraderTeams""")
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     texto = update.message.text or update.message.caption or ""
+
+    # --- Mensajes con imagen (foto/captura) ---
+    # Si el usuario envía una imagen y NO está en flujo post-validación, evitamos IA genérica.
+    if update.message and update.message.photo:
+        if stage not in (STAGE_POST, STAGE_DEPOSITED):
+            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o un **comprobante de depósito/activación**?"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
+                 InlineKeyboardButton("💳 Es depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
+                [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")]
+            ])
+            await update.message.reply_text(qtxt, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            await send_admin_auto_log(context, update, "IMG_PRECHECK", "Se pidió confirmar si la imagen era ID o depósito.")
+            return
+
     with Session() as session:
         user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
         if user:
