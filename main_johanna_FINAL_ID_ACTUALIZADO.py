@@ -552,7 +552,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Perfecto ✅\n\n"
             "Escríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
         )
-        await q.message.reply_text(msg, reply_markup=keyboard_support_es())
+        await q.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(
             context,
             update,
@@ -567,7 +567,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Listo ✅\n\n"
             "Si necesitas ayuda, cuéntame tu duda en un mensaje y te respondo 👇"
         )
-        await q.message.reply_text(msg, reply_markup=keyboard_support_es())
+        await q.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(
             context,
             update,
@@ -994,7 +994,7 @@ def respuesta_min_deposit_es() -> str:
         "📌 Depósito mínimo para activar tu acceso\n\n"
         "Para habilitar tu acceso a mi comunidad VIP gratuita y a las herramientas, "
         "el depósito mínimo es **50 USD** en Binomo.\n\n"
-        "Si por ahora tienes menos de 50, no pasa nada: cuando estés lista para depositar 50+ "
+        "Si por ahora tienes menos de 50, no pasa nada: cuando ya puedas depositar 50+ "
         "me escribes y lo revisamos. 👇"
     )
 
@@ -1148,7 +1148,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Bono
     if intent == "DEPOSIT_LATER":
         msg = respuesta_deposit_later_es(stage)
-        await update.message.reply_text(msg, reply_markup=keyboard_support_es())
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(
             context,
             update,
