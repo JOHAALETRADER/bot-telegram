@@ -34,6 +34,31 @@ except Exception:
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
 
+
+async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, respuesta: str):
+    """Envía al ADMIN la pregunta y la respuesta exacta enviada automáticamente."""
+    try:
+        chat_id = update.effective_chat.id
+        u = update.effective_user
+        pregunta = (update.message.text or update.message.caption or "").strip() or "(sin texto)"
+        header = (
+            "🤖 **Respuesta automática enviada**\n"
+            f"👤 @{(u.username or u.full_name)} (ID: `{chat_id}`)\n"
+            f"🧩 Intento: **{intent}**\n\n"
+        )
+        body = f"🗨️ **Pregunta:**\n{pregunta}\n\n📝 **Respuesta:**\n{respuesta}"
+        text = header + body
+        if len(text) > 3900:
+            text = text[:3900] + "\n\n…(recortado)"
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=text,
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logging.info("No pude enviar log auto al admin: %s", e)
+
 # Diccionario temporal para guardar el ID del usuario al que se va a responder
 usuarios_objetivo = {}
 
@@ -900,8 +925,19 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text or update.message.caption or ""
     intent = detect_intent_es(texto)
 
-    # Si el usuario solo está enviando su ID, no respondemos con IA (dejas la validación manual)
+        # Si el usuario solo está enviando su ID, confirmamos recibido (validación manual)
     if intent == "ID_SUBMIT":
+        respuesta_id_submit = (
+            "✅ **Recibido.** Ya tengo tu ID.\n"
+            "Lo dejo en **validación** y en breve te confirmo si está correcto.\n"
+            "Mientras tanto, si quieres adelantar el proceso, escríbeme aquí 👇"
+        )
+        await update.message.reply_text(
+            respuesta_id_submit,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=support_keyboard()
+        )
+        await send_admin_auto_log(context, update, "ID_SUBMIT", respuesta_id_submit)
         return
 
     in_validation_flow = stage in (STAGE_POST, STAGE_DEPOSITED)
@@ -916,18 +952,21 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Lives
     if intent == "LIVE":
         await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "LIVE", LIVE_HORARIOS_ES)
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (LIVE) a {chat_id}")
         return
 
     # Bono
     if intent == "BONO":
         await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "BONO", respuesta_bono_es())
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (BONO) a {chat_id}")
         return
 
     # Dónde ver ID
     if intent == "ID":
         await update.message.reply_text(respuesta_id_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "ID", respuesta_id_es())
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (ID) a {chat_id}")
         return
 
