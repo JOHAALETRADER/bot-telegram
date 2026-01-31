@@ -892,7 +892,7 @@ def detect_intent_es(texto: str) -> str:
     if ("error" in t and ("pais" in t or "país" in t or "country" in t)) or ("me sale" in t and "pais" in t):
         return "PAIS"
 
-    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo"]):
+    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo", "conecto", "conectas", "conecte", "conectarme", "conectarse", "conexion", "me conecto", "te conectas", "a que hora te conectas", "a qué hora te conectas", "a que hora te conecto", "a qué hora te conecto"]):
         return "LIVE"
 
     if any(k in t for k in ["bono", "bonus", "100%"]):
@@ -1149,14 +1149,8 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "DEPOSIT_LATER":
         msg = respuesta_deposit_later_es(stage)
         await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(
-            context,
-            update,
-            f"Auto (DEPOSIT_LATER) a {chat_id} stage={stage}\n\nRESPUESTA_ENVIADA:\n{strip_md(msg)}",
-        )
+        await send_admin_auto_log(context, update, "DEPOSIT_LATER", msg)
         return
-
-
     if intent == "MIN_DEPOSIT":
         await update.message.reply_text(respuesta_min_deposit_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "MIN_DEPOSIT", respuesta_min_deposit_es())
