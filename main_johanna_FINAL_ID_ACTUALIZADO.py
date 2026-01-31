@@ -1071,10 +1071,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "DEPOSITO" and stage == STAGE_POST:
         set_user_stage(chat_id, STAGE_DEPOSITED)
         _cancel_jobs_prefix(context, "B", chat_id)
-        await update.message.reply_text(
-            "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇",
-            reply_markup=support_keyboard()
-        )
+        msg = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "DEPOSITO_OK", msg)
         return
 
     # Captura sin texto durante POST: confirmación
@@ -1083,12 +1082,29 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"dep_yes:{chat_id}")],
             [InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"dep_no:{chat_id}")]
         ])
-        await update.message.reply_text("📩 Recibido. ¿Esto es tu comprobante de depósito/activación?", reply_markup=kb)
+        qtxt = "📩 Recibido. ¿Esto es tu comprobante de depósito/activación?"
+        await update.message.reply_text(qtxt, reply_markup=kb)
+        await send_admin_auto_log(context, update, "IMG_DEP_PRECHECK", qtxt)
         return
+
+    # Si ya está validado pero aún NO ha depositado (ej: "deposito mañana")
+    if stage == STAGE_POST:
+        t_low = (texto or "").lower()
+        if any(p in t_low for p in ["mañana", "manana", "después", "despues", "luego", "voy a deposit", "voy a activar", "estoy esperando", "cuando me paguen", "en la tarde", "más tarde", "mas tarde"]):
+            msg = (
+                "Perfecto ✅\n\n"
+                "Cuando hagas tu depósito/activación, escríbeme aquí **"Ya deposité"** para continuar 👇\n\n"
+                "Si prefieres, también puedes escribirme al chat personal."
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+            await send_admin_auto_log(context, update, "DEPOSIT_LATER", msg)
+            return
 
     # En validación: no IA externa
     if in_validation_flow:
-        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        msg = fallback_johabot_es()
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "VALIDATION_FALLBACK", msg)
         return
 
     # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
@@ -1101,6 +1117,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ans = fallback_johabot_es()
 
     await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+    await send_admin_auto_log(context, update, f"AI_{intent}", ans)
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
