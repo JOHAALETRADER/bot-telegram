@@ -1093,7 +1093,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if any(p in t_low for p in ["mañana", "manana", "después", "despues", "luego", "voy a deposit", "voy a activar", "estoy esperando", "cuando me paguen", "en la tarde", "más tarde", "mas tarde"]):
             msg = (
                 "Perfecto ✅\n\n"
-                "Cuando hagas tu depósito/activación, escríbeme aquí **"Ya deposité"** para continuar 👇\n\n"
+                "Cuando hagas tu depósito/activación, escríbeme aquí **Ya deposité** para continuar 👇\n\n"
                 "Si prefieres, también puedes escribirme al chat personal."
             )
             await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
