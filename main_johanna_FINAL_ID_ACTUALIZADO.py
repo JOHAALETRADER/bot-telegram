@@ -22,30 +22,17 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
+import unicodedata
+import html
+import urllib.parse
+
+try:
+    import httpx
+    HAS_HTTPX = True
+except Exception:
+    HAS_HTTPX = False
+
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-
-# === FLUJO POST-VALIDACIÓN (ES) ===
-TRIGGER_ID_CORRECTO_ES = """Tu ID es correcto puedes depositar en tu cuenta de trading Binomo a partir de 50 USD.
-
-Cuando tú deposito este listo escríbeme para darte acceso"""
-
-TRIGGER_ID_ERRADO_ES = """Tu ID está errado.
-
-Para tener acceso a mi comunidad vip y todas las herramientas debes realizar tu registro con mi enlace..
-
-Copia y pega el enlace de registro en barra de búsqueda de una ventana de incógnito de tu navegador y usa otro correo.. luego me envías ID de binomo para validar.
-
-Enlace de registro:
-
-https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"""
-
-STAGE_PRE = "pre_verificacion"
-STAGE_POST = "post_verificacion"
-STAGE_DEP = "depositado"
-
-# URL de tu chat de validación/soporte (ya existe en tu menú)
-SOPORTE_URL = "https://t.me/Johaaletradervalidacion"
-
 
 # Diccionario temporal para guardar el ID del usuario al que se va a responder
 usuarios_objetivo = {}
@@ -68,6 +55,8 @@ class Usuario(Base):
     fecha_registro = Column(DateTime, default=datetime.utcnow)
     # Idioma preferido ("es" / "en")
     lang           = Column(String, default="es")
+    # Etapa del usuario: PRE (sin validar), POST (validado, esperando depósito), DEPOSITED
+    stage          = Column(String, default="PRE")
 
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
@@ -98,6 +87,33 @@ try:
                 conn.execute(text("ALTER TABLE usuarios ADD COLUMN lang TEXT"))
 except Exception as e:
     logging.warning("No se pudo verificar/crear columna 'lang': %s", e)
+
+
+# --- Migración robusta de la columna stage (sin acceso manual a SQL) ---
+try:
+    backend = engine.url.get_backend_name()
+    if backend.startswith("postgres"):
+        with engine.begin() as conn:
+            conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='usuarios' AND column_name='stage'
+                ) THEN
+                    ALTER TABLE usuarios ADD COLUMN stage VARCHAR;
+                END IF;
+            END $$;
+            """))
+    elif backend == "sqlite":
+        with engine.begin() as conn:
+            cols = conn.execute(text("PRAGMA table_info(usuarios)")).fetchall()
+            if not any(c[1] == "stage" for c in cols):
+                conn.execute(text("ALTER TABLE usuarios ADD COLUMN stage TEXT"))
+except Exception as e:
+    logging.warning("No se pudo verificar/crear columna 'stage': %s", e)
+# --- fin migración stage ---
+
 # --- fin migración ---
 
 # === ENLACES ===
@@ -105,6 +121,20 @@ CANAL_RESULTADOS = "https://t.me/+wyjkDFenUMlmMTUx"
 CANAL_ES = "https://t.me/JohaaleTrader_es"
 CANAL_EN = "https://t.me/JohaaleTrader_en"
 ENLACE_REFERIDO  = "https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
+
+
+# Chat personal / validación (URL del botón de soporte)
+SUPPORT_URL = "https://t.me/Johaaletradervalidacion"
+
+# Mensajes gatillo exactos (los que tú envías cuando validas manualmente)
+GATILLO_ID_OK = "Tu ID es correcto puedes depositar en tu cuenta de trading Binomo a partir de 50 USD.\n\nCuando tú deposito este listo escríbeme para darte acceso"
+GATILLO_ID_ERRADO = "Tu ID está errado.\n\nPara tener acceso a mi comunidad vip y todas las herramientas debes realizar tu registro con mi enlace..\n\nCopia y pega el enlace de registro en barra de búsqueda de una ventana de incógnito de tu navegador y usa otro correo.. luego me envías ID de binomo para validar.\n\nEnlace de registro:\n\nhttps://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
+
+# Mensajes Serie B (post-validación ES) — mismos tiempos (1h, 3h, 24h, 48h)
+MENSAJE_B_1H_ES = "✅ Tu ID ya quedó validado.\n\n¿Ya activaste o depositaste en tu cuenta de Binomo?\nResponde: **Ya deposité** cuando esté listo 👇"
+MENSAJE_B_3H_ES = "💰 Tip rápido: si tienes disponible el bono del **100%**, úsalo para potenciar tu primer depósito.\n\nCuando tu depósito esté listo, escríbeme **Ya deposité** y te habilito el acceso 👇"
+MENSAJE_B_24H_ES = "🚀 Recuerda: para habilitar tu acceso VIP necesito confirmar tu **depósito/activación**.\n\nCuando esté listo, dime **Ya deposité** y lo activamos. Quedan cupos limitados ✅"
+MENSAJE_B_48H_ES = "⏳ Último recordatorio: si ya activaste tu cuenta con depósito, escríbeme **Ya deposité** para habilitar tu acceso VIP gratuita.\n\nSi aún no, activa tu cuenta cuando puedas y me avisas ✅"
 
 # === MENSAJES (ES/EN) ===
 WELCOME_IMG = "bienvenidanuevasi.jpg"
@@ -192,25 +222,6 @@ Aún estás a tiempo de activar tu cuenta y recibir todos los beneficios VIP.
 Hazlo ahora con mi enlace y envíame tu ID de Binomo para validarlo ✅
 🔗 Registro: {ENLACE_REFERIDO}"""
 
-
-# === MENSAJES POST-VALIDACIÓN (solo ES) ===
-MENSAJE_POST_1H_ES = """✅ ID verificado.
-
-¿Ya activaste o depositaste en tu cuenta de Binomo?"""
-
-MENSAJE_POST_3H_ES = """🚀 Tip rápido: si hoy vas a depositar, aprovecha el bono del 100% (si te aparece disponible en tu cuenta).
-
-Si ya depositaste, toca ✅ Ya deposité y te habilito el acceso."""
-
-MENSAJE_POST_24H_ES = """⏳ Cuando completes tu depósito/activación, yo te habilito el acceso.
-
-¿Ya depositaste?"""
-
-MENSAJE_POST_48H_ES = """📌 Último recordatorio:
-Cuando ya tengas tu depósito/activación listo(a), te habilito el acceso a la comunidad VIP gratuita.
-
-¿Ya depositaste?"""
-
 # Recordatorios (EN)
 MENSAJE_1H_EN = """📊 Remember, you won’t walk this path alone.
 You’ll get access to courses, signals, and step-by-step support.
@@ -263,12 +274,9 @@ BENEFICIOS_EN = """✨ Exclusive Benefits You’ll Receive ✨
 async def _send_job_message(context: ContextTypes.DEFAULT_TYPE, text_es: str, text_en: str):
     chat_id, lang = context.job.data  # (chat_id, "es"/"en")
     try:
-        # Solo enviar si el usuario sigue en pre-verificación
-        if get_user_stage(chat_id) != STAGE_PRE:
-            return
         await context.bot.send_message(chat_id=chat_id, text=text_es if lang == "es" else text_en)
     except Exception as e:
-        logging.warning("Job send failed to %s: %s", chat_id, e)
+        logging.warning(f"Job send failed to {chat_id}: {e}")
 
 async def mensaje_1h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message(context, MENSAJE_1H_ES, MENSAJE_1H_EN)
@@ -281,99 +289,6 @@ async def mensaje_24h(context: ContextTypes.DEFAULT_TYPE):
 
 async def mensaje_48h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message(context, MENSAJE_48H_ES, MENSAJE_48H_EN)
-
-def _job_name(prefix: str, chat_id: int, tag: str) -> str:
-    return "{}_{}_{}".format(prefix, tag, chat_id)
-
-def cancel_jobs(context: ContextTypes.DEFAULT_TYPE, prefix: str, chat_id: int):
-    jq = context.job_queue
-    if not jq:
-        return
-    for tag in ("1h", "3h", "24h", "48h"):
-        name = _job_name(prefix, chat_id, tag)
-        for job in jq.get_jobs_by_name(name):
-            job.schedule_removal()
-
-async def schedule_pre_series(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE):
-    # Serie A (pre-verificación) - mantiene tus mensajes actuales
-    if not context.job_queue:
-        logging.warning("⚠️ Job queue no está disponible.")
-        return
-    context.job_queue.run_once(mensaje_1h,  when=3600,   data=(chat_id, lang), name=_job_name("A", chat_id, "1h"))
-    context.job_queue.run_once(mensaje_3h,  when=10800,  data=(chat_id, lang), name=_job_name("A", chat_id, "3h"))
-    context.job_queue.run_once(mensaje_24h, when=86400,  data=(chat_id, lang), name=_job_name("A", chat_id, "24h"))
-    context.job_queue.run_once(mensaje_48h, when=172800, data=(chat_id, lang), name=_job_name("A", chat_id, "48h"))
-    logging.info("✅ Serie A programada 1h, 3h, 24h, 48h para chat_id %s (lang=%s)", chat_id, lang)
-
-async def schedule_post_series_es(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    # Serie B (post-validación) - SOLO ES, como pediste
-    if not context.job_queue:
-        logging.warning("⚠️ Job queue no está disponible.")
-        return
-    context.job_queue.run_once(post_mensaje_1h_es,  when=3600,   data=chat_id, name=_job_name("B", chat_id, "1h"))
-    context.job_queue.run_once(post_mensaje_3h_es,  when=10800,  data=chat_id, name=_job_name("B", chat_id, "3h"))
-    context.job_queue.run_once(post_mensaje_24h_es, when=86400,  data=chat_id, name=_job_name("B", chat_id, "24h"))
-    context.job_queue.run_once(post_mensaje_48h_es, when=172800, data=chat_id, name=_job_name("B", chat_id, "48h"))
-    logging.info("✅ Serie B (post-validación ES) programada 1h, 3h, 24h, 48h para chat_id %s", chat_id)
-
-# === TECLADOS POST-VALIDACIÓN ===
-def deposit_keyboard_es() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Ya deposité", callback_data="DEP_YES")],
-        [InlineKeyboardButton("⏳ Aún no", callback_data="DEP_NO")],
-        [InlineKeyboardButton("❓ Tengo dudas", callback_data="DEP_HELP")],
-    ])
-
-def confirm_proof_keyboard_es() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Sí, ya deposité", callback_data="DEP_YES")],
-        [InlineKeyboardButton("❌ No, era otra cosa", callback_data="DEP_NOPROOF")],
-    ])
-
-async def post_mensaje_1h_es(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.data
-    if get_user_stage(chat_id) != STAGE_POST:
-        return
-    await context.bot.send_message(chat_id=chat_id, text=MENSAJE_POST_1H_ES, reply_markup=deposit_keyboard_es())
-
-async def post_mensaje_3h_es(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.data
-    if get_user_stage(chat_id) != STAGE_POST:
-        return
-    await context.bot.send_message(chat_id=chat_id, text=MENSAJE_POST_3H_ES, reply_markup=deposit_keyboard_es())
-
-async def post_mensaje_24h_es(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.data
-    if get_user_stage(chat_id) != STAGE_POST:
-        return
-    await context.bot.send_message(chat_id=chat_id, text=MENSAJE_POST_24H_ES, reply_markup=deposit_keyboard_es())
-
-async def post_mensaje_48h_es(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.data
-    if get_user_stage(chat_id) != STAGE_POST:
-        return
-    await context.bot.send_message(chat_id=chat_id, text=MENSAJE_POST_48H_ES, reply_markup=deposit_keyboard_es())
-
-def _text_is_deposit_confirm(text: str) -> bool:
-    if not text:
-        return False
-    t = text.lower().strip()
-    patrones = [
-        r"\bya\s+deposite\b",
-        r"\bya\s+deposit[eé]\b",
-        r"\bya\s+hice\s+el\s+dep[oó]sito\b",
-        r"\bhe\s+depositado\b",
-        r"\bdeposit[eé]\b",
-        r"\bya\s+active\b",
-        r"\bya\s+activ[eé]\b",
-        r"\bactiv[eé]\b",
-    ]
-    for p in patrones:
-        if re.search(p, t):
-            return True
-    return False
-
-
 
 # === UTIL: obtener/guardar idioma ===
 def get_user_lang(chat_id: int) -> str:
@@ -391,210 +306,81 @@ def set_user_lang(chat_id: int, name: str, lang: str):
             u.lang = lang
         session.commit()
 
-# === STAGE (persistencia del flujo por usuario) ===
+
+# === UTIL: obtener/guardar etapa (stage) ===
+STAGE_PRE = "PRE"
+STAGE_POST = "POST"
+STAGE_DEPOSITED = "DEPOSITED"
+
 def get_user_stage(chat_id: int) -> str:
     with Session() as session:
         u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-        # Usamos el campo 'registrado' como stage (no se usa en otra parte del script)
-        if u and u.registrado in (STAGE_PRE, STAGE_POST, STAGE_DEP):
-            return u.registrado
-        return STAGE_PRE
+        s = (u.stage if u and u.stage else STAGE_PRE)
+        return s if s in (STAGE_PRE, STAGE_POST, STAGE_DEPOSITED) else STAGE_PRE
 
 def set_user_stage(chat_id: int, stage: str):
-    if stage not in (STAGE_PRE, STAGE_POST, STAGE_DEP):
-        return
+    if stage not in (STAGE_PRE, STAGE_POST, STAGE_DEPOSITED):
+        stage = STAGE_PRE
     with Session() as session:
         u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-        if not u:
-            u = Usuario(telegram_id=str(chat_id), nombre="", lang="es", fecha_registro=datetime.utcnow())
-            session.add(u)
-        u.registrado = stage
-        session.commit()
+        if u:
+            u.stage = stage
+            session.commit()
 
-
-
-VALIDATION_STAGES = set([STAGE_PRE, STAGE_POST])
-
-# === IA (Soporte inteligente) ===
-import html
-import unicodedata
-import urllib.parse
-import httpx
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-def _norm_text(s: str) -> str:
-    s = (s or "").strip().lower()
-    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
-    return s
-
-def _detect_intent_es(texto: str) -> str:
-    t = _norm_text(texto)
-
-    # envío de ID (números) -> validación manual
-    if re.search(r"\b\d{6,}\b", t):
-        if any(k in t for k in ["id", "mi id", "este es mi id", "id:", "user id"]):
-            return "ID_SUBMIT"
-        if re.fullmatch(r"\d{6,}", t.strip()):
-            return "ID_SUBMIT"
-
-    if any(k in t for k in ["vpn", "proxy"]):
-        return "VPN"
-    if any(k in t for k in ["error de pais", "bloqueado por pais", "bloqueado en mi pais", "no disponible en mi pais", "region", "country error"]):
-        return "PAIS"
-
-    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo", "transmision"]):
-        return "LIVE"
-
-    if any(k in t for k in ["bono", "bonus", "100%", "promocion", "promociones"]):
-        return "BONO"
-
-    if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
-        return "ID"
-
-    if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "no llega email", "correo", "email"]):
-        return "EMAIL"
-
-    if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "fallo", "no me deja retirar"]):
-        return "RETIRO"
-
-    if any(k in t for k in ["metodo", "metodos", "banco", "cuenta bancaria", "astropay", "nequi", "transfiya"]):
-        return "METODOS"
-
-    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya recargue", "ya recargué", "ya active", "ya activé"]):
-        return "DEPOSITO"
-
-    return "OTRO"
-
-def _respuesta_horarios_live() -> str:
-    return (
-        "📊 **Horarios de mis lives (hora Colombia):\n\n"
-        "• **Martes:** 11:00 am y 8:00 pm\n"
-        "• **Miércoles:** 8:00 pm\n"
-        "• **Jueves:** 11:00 am y 8:00 pm\n"
-        "• **Viernes:** 8:00 pm\n"
-        "• **Sábados:** 11:00 am y 8:00 pm\n\n"
-        "Si hay cambios, los aviso por el canal antes del live 🚀"
-    )
-
-def _respuesta_bono_base() -> str:
-    return (
-        "💰 **¿Cómo funciona el bono en Binomo?**\n\n"
-        "El bono es un beneficio **opcional** que a veces aparece al momento de depositar. "
-        "Si lo activas, Binomo te añade un porcentaje extra sobre tu depósito para operar con más capital.\n\n"
-        "📌 Importante: los bonos suelen tener **condiciones**, por ejemplo un volumen mínimo de operaciones "
-        "antes de poder retirar lo relacionado con ese bono.\n"
-        "Las reglas exactas pueden variar según tu cuenta y la promoción activa.\n\n"
-        "Si quieres, escríbeme a mi chat personal y lo revisamos según tu caso 👇"
-    )
-
-def _respuesta_id_base() -> str:
-    return (
-        "🆔 **¿Dónde encuentro mi ID de Binomo?**\n\n"
-        "1) Entra a tu cuenta en Binomo (app o web).\n"
-        "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
-        "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
-        "Si no lo ves, dime si estás en app o en navegador y te guío 👇"
-    )
-
-def _fallback_johabot() -> str:
-    return (
-        "Para este caso prefiero revisarlo contigo directamente 🤍\n\n"
-        "Soy **Johabot** y para ayudarte correctamente escríbeme a mi chat personal 👇"
-    )
-
-async def _notify_admin_auto_reply(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, pregunta: str, respuesta: str):
-    try:
-        u = update.effective_user
-        cid = update.effective_chat.id
-        header = (
-            "🤖 **Respuesta automática enviada**\n"
-            f"👤 @{u.username or u.full_name} (ID: `{cid}`)\n"
-            f"🧩 Intento: **{intent}**\n\n"
-        )
-        body = f"🗨️ **Pregunta:**\n{pregunta}\n\n📝 **Respuesta:**\n{respuesta}"
-        if len(body) > 3500:
-            body = body[:3500] + "\n\n…(recortado)"
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=header + body,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logging.info("No pude notificar admin auto-reply: %s", e)
-
-async def _binomo_search_snippets(query: str, max_results: int = 3) -> str:
-    try:
-        q = urllib.parse.quote(query)
-        url = f"https://binomo2.zendesk.com/api/v2/help_center/articles/search.json?query={q}&locale=es-419"
-        async with httpx.AsyncClient(timeout=12) as client:
-            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code != 200:
-            return ""
-        data = r.json()
-        results = data.get("results") or []
-        if not results:
-            return ""
-        chunks = []
-        for item in results[:max_results]:
-            title = item.get("title") or ""
-            body = item.get("body") or ""
-            body = html.unescape(body)
-            body = re.sub(r"<[^>]+>", " ", body)
-            body = re.sub(r"\s+", " ", body).strip()
-            link = item.get("html_url") or ""
-            body = body[:900] if body else ""
-            chunks.append(f"TITULO: {title}\nCONTENIDO: {body}\nFUENTE: {link}".strip())
-        return "\n\n---\n\n".join(chunks)
-    except Exception:
-        return ""
-
-async def _openai_answer(question: str, context_text: str) -> str:
-    if not OPENAI_API_KEY:
-        return ""
-    try:
-        system = (
-            "Eres un asistente de soporte para usuarios de Binomo en español. "
-            "Responde en 6–10 líneas, claro y directo. "
-            "NO inventes información. Si algo depende del país, método de pago o datos de la cuenta, dilo. "
-            "NO des instrucciones para evadir restricciones (VPN/proxy). "
-            "Si el contexto no alcanza, responde con 'NO_DATA'."
-        )
-        payload = {
-            "model": OPENAI_MODEL,
-            "input": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"PREGUNTA: {question}\n\nCONTEXTO:\n{context_text}"}
-            ],
-            "temperature": 0.2,
-        }
-        async with httpx.AsyncClient(timeout=18) as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json=payload,
-            )
-        if resp.status_code != 200:
-            return ""
-        out = resp.json()
-        txt_parts = []
-        for item in out.get("output", []):
-            for c in item.get("content", []):
-                if c.get("type") == "output_text":
-                    txt_parts.append(c.get("text", ""))
-        txt = "\n".join([t for t in txt_parts if t]).strip()
-        if not txt or "NO_DATA" in txt:
-            return ""
-        return txt
-    except Exception:
-        return ""
-
+# === Teclado de soporte (solo para el flujo nuevo / redirecciones) ===
 def support_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Escríbeme aquí", url=SOPORTE_URL)]
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("💬 Escríbeme aquí", url=SUPPORT_URL)]])
+
+# === Jobs nombrados para poder cancelar (Serie A y Serie B) ===
+def _cancel_jobs_prefix(context: ContextTypes.DEFAULT_TYPE, prefix: str, chat_id: int):
+    if not context.job_queue:
+        return
+    for suf in ("1h","3h","24h","48h"):
+        name = f"{prefix}_{suf}_{chat_id}"
+        try:
+            for j in context.job_queue.get_jobs_by_name(name):
+                j.schedule_removal()
+        except Exception:
+            pass
+
+def schedule_series_a(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE):
+    if not context.job_queue:
+        return
+    _cancel_jobs_prefix(context, "A", chat_id)
+    context.job_queue.run_once(mensaje_1h, when=3600,  data=(chat_id, lang), name=f"A_1h_{chat_id}")
+    context.job_queue.run_once(mensaje_3h, when=10800, data=(chat_id, lang), name=f"A_3h_{chat_id}")
+    context.job_queue.run_once(mensaje_24h, when=86400, data=(chat_id, lang), name=f"A_24h_{chat_id}")
+    context.job_queue.run_once(mensaje_48h, when=172800, data=(chat_id, lang), name=f"A_48h_{chat_id}")
+    logging.info("✅ Serie A programada para chat_id %s (lang=%s)", chat_id, lang)
+
+async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str):
+    chat_id, _lang = context.job.data
+    try:
+        await context.bot.send_message(chat_id=chat_id, text=text_es, reply_markup=support_keyboard(), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logging.warning("Job B send failed to %s: %s", chat_id, e)
+
+async def mensaje_B_1h(context: ContextTypes.DEFAULT_TYPE):
+    await _send_job_message_B(context, MENSAJE_B_1H_ES)
+
+async def mensaje_B_3h(context: ContextTypes.DEFAULT_TYPE):
+    await _send_job_message_B(context, MENSAJE_B_3H_ES)
+
+async def mensaje_B_24h(context: ContextTypes.DEFAULT_TYPE):
+    await _send_job_message_B(context, MENSAJE_B_24H_ES)
+
+async def mensaje_B_48h(context: ContextTypes.DEFAULT_TYPE):
+    await _send_job_message_B(context, MENSAJE_B_48H_ES)
+
+def schedule_series_b(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    if not context.job_queue:
+        return
+    _cancel_jobs_prefix(context, "B", chat_id)
+    context.job_queue.run_once(mensaje_B_1h, when=3600,  data=(chat_id, "es"), name=f"B_1h_{chat_id}")
+    context.job_queue.run_once(mensaje_B_3h, when=10800, data=(chat_id, "es"), name=f"B_3h_{chat_id}")
+    context.job_queue.run_once(mensaje_B_24h, when=86400, data=(chat_id, "es"), name=f"B_24h_{chat_id}")
+    context.job_queue.run_once(mensaje_B_48h, when=172800, data=(chat_id, "es"), name=f"B_48h_{chat_id}")
+    logging.info("✅ Serie B (post-validación ES) programada para chat_id %s", chat_id)
 
 
 # === MENÚS POR IDIOMA ===
@@ -613,7 +399,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
     else:
         kb = [
             [InlineKeyboardButton("🚀 Completar registro", callback_data="registrarme")],
-            [InlineKeyboardButton("💬 Escríbeme aquí", url="https://t.me/Johaaletradervalidacion")],
+            [InlineKeyboardButton("✅ Valida tu ID | ¿Dudas? Escríbeme", url="https://t.me/Johaaletradervalidacion")],
             [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_tengo_cuenta")],
             [InlineKeyboardButton("🎁 Beneficios VIP", callback_data="beneficios_vip")],
             [InlineKeyboardButton("📲 Canal en Español", url=CANAL_ES)],
@@ -642,7 +428,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 telegram_id=str(chat_id),
                 nombre=nombre,
                 fecha_registro=datetime.utcnow(),
-                lang="es"
+                lang="es",
+                stage="PRE"
             )
             session.add(nuevo_usuario)
             session.commit()
@@ -671,9 +458,8 @@ async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.D
         reply_markup=build_main_menu(lang)
     )
 
-    # Programar mensajes diferidos con lang (Serie A)
-    set_user_stage(chat_id, STAGE_PRE)
-    await schedule_pre_series(chat_id, lang, context)
+    # Programar mensajes diferidos con lang (Serie A) — con nombres para evitar duplicados
+    schedule_series_a(chat_id, lang, context)
 
 # === BOTONES / CALLBACKS ===
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -864,19 +650,22 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         text=update.message.text
                     )
 
-                # === DETECCIÓN DE GATILLOS DE VALIDACIÓN (ADMIN -> USUARIO) ===
+                # --- NUEVO: detectar mensaje gatillo y cambiar flujo ---
                 try:
-                    admin_text = (update.message.text or "").strip()
-                    if admin_text == TRIGGER_ID_CORRECTO_ES.strip():
+                    txt = (update.message.text or "").strip()
+                    if txt == GATILLO_ID_OK:
                         set_user_stage(destinatario_id, STAGE_POST)
-                        cancel_jobs(context, "A", destinatario_id)
-                        if get_user_lang(destinatario_id) == "es":
-                            await schedule_post_series_es(destinatario_id, context)
-                    elif admin_text == TRIGGER_ID_ERRADO_ES.strip():
+                        # Cancelar Serie A y activar Serie B
+                        _cancel_jobs_prefix(context, "A", destinatario_id)
+                        schedule_series_b(destinatario_id, context)
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Gatillo OK detectado. Serie B activada para {destinatario_id}")
+                    elif txt == GATILLO_ID_ERRADO:
                         set_user_stage(destinatario_id, STAGE_PRE)
+                        # Mantener/renovar Serie A
+                        schedule_series_a(destinatario_id, get_user_lang(destinatario_id), context)
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"ℹ️ Gatillo ERRADO detectado. Serie A continua para {destinatario_id}")
                 except Exception as _e:
-                    logging.warning("Trigger detection warning: %s", _e)
-
+                    pass
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text="✅ Mensaje enviado al usuario correctamente."
@@ -950,31 +739,235 @@ async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await query.edit_message_text("ℹ️ No había ninguna respuesta pendiente por cancelar.")
 
+
+
+# === IA / FAQ (ES) ===
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+LIVE_HORARIOS_ES = (
+    "📅 **Horarios de mis lives (hora Colombia):**\n"
+    "• **Martes:** 11:00 am y 8:00 pm\n"
+    "• **Miércoles:** 8:00 pm\n"
+    "• **Jueves:** 11:00 am y 8:00 pm\n"
+    "• **Viernes:** 8:00 pm\n"
+    "• **Sábados:** 11:00 am y 8:00 pm\n"
+)
+
+def _norm(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+    return s
+
+def detect_intent_es(texto: str) -> str:
+    t = _norm(texto)
+
+    if any(k in t for k in ["vpn", "proxy"]):
+        return "VPN"
+    if ("error" in t and ("pais" in t or "país" in t or "country" in t)) or ("me sale" in t and "pais" in t):
+        return "PAIS"
+
+    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo"]):
+        return "LIVE"
+
+    if any(k in t for k in ["bono", "bonus", "100%"]):
+        return "BONO"
+
+    if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
+        return "ID"
+
+    if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "no me deja retirar", "no me deja"]):
+        return "RETIRO"
+
+    if any(k in t for k in ["metodo", "metodos", "banco", "cuenta bancaria", "colombia", "astropay", "nequi", "transfiya"]):
+        return "METODOS"
+
+    if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "correo", "email"]):
+        return "EMAIL"
+
+    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya active", "ya activé"]):
+        return "DEPOSITO"
+
+    if re.search(r"\b\d{6,}\b", t) and ("id" in t or t.strip().isdigit()):
+        return "ID_SUBMIT"
+
+    return "OTRO"
+
+def respuesta_bono_es() -> str:
+    return (
+        "💰 **¿Cómo funciona el bono en Binomo?**\n\n"
+        "El bono es **opcional** y puede aparecer al momento de depositar. "
+        "Si lo activas, Binomo te añade un porcentaje extra para operar con más capital.\n\n"
+        "📌 Ojo: los bonos suelen tener **condiciones** antes de poder retirar (por ejemplo, volumen mínimo). "
+        "Las reglas exactas varían según tu cuenta y promo activa.\n\n"
+        "Si quieres, escríbeme y lo revisamos según tu caso 👇"
+    )
+
+def respuesta_id_es() -> str:
+    return (
+        "🆔 **¿Dónde encuentro mi ID de Binomo?**\n\n"
+        "1) Entra a tu cuenta (app o web).\n"
+        "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
+        "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
+        "Si no lo ves, dime si estás en app o navegador y te guío 👇"
+    )
+
+def fallback_johabot_es() -> str:
+    return (
+        "Para este caso prefiero revisarlo contigo directamente 🤍\n\n"
+        "Soy **Johabot** y para ayudarte correctamente escríbeme aquí 👇"
+    )
+
+async def binomo_helpcenter_snippets(query: str, max_results: int = 3) -> str:
+    if not HAS_HTTPX:
+        return ""
+    try:
+        q = urllib.parse.quote(query)
+        url = f"https://binomo2.zendesk.com/api/v2/help_center/articles/search.json?query={q}&locale=es-419"
+        async with httpx.AsyncClient(timeout=12) as client:
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return ""
+        data = r.json()
+        results = data.get("results") or []
+        if not results:
+            return ""
+        chunks = []
+        for item in results[:max_results]:
+            title = item.get("title") or ""
+            body = item.get("body") or ""
+            body = html.unescape(body)
+            body = re.sub(r"<[^>]+>", " ", body)
+            body = re.sub(r"\s+", " ", body).strip()[:900]
+            link = item.get("html_url") or ""
+            chunks.append(f"TITULO: {title}\nCONTENIDO: {body}\nFUENTE: {link}".strip())
+        return "\n\n---\n\n".join(chunks)
+    except Exception:
+        return ""
+
+async def openai_answer_es(question: str, context_text: str) -> str:
+    if not (HAS_HTTPX and OPENAI_API_KEY):
+        return ""
+    try:
+        system = (
+            "Eres un asistente de soporte para usuarios de Binomo en español. "
+            "Responde en 6–10 líneas, claro y directo. "
+            "NO inventes información. Si algo depende del país, método de pago o datos de la cuenta, dilo. "
+            "NO des instrucciones para evadir restricciones (VPN/proxy). "
+            "Si el contexto no alcanza, responde exactamente con: NO_DATA"
+        )
+        payload = {
+            "model": OPENAI_MODEL,
+            "input": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"PREGUNTA: {question}\n\nCONTEXTO:\n{context_text}"}
+            ],
+            "temperature": 0.2,
+        }
+        async with httpx.AsyncClient(timeout=18) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": "Bearer " + OPENAI_API_KEY},
+                json=payload,
+            )
+        if resp.status_code != 200:
+            return ""
+        out = resp.json()
+        texts = []
+        for item in out.get("output", []):
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    texts.append(c.get("text", ""))
+        ans = "\n".join([t for t in texts if t]).strip()
+        if (not ans) or ("NO_DATA" in ans):
+            return ""
+        return ans
+    except Exception:
+        return ""
+
 # Nueva función para manejar mensajes de usuarios (texto o media)
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # --- Lógica post-validación (solo ES) ---
-    chat_id = update.effective_chat.id
-    stage = get_user_stage(chat_id)
-    in_validation = stage in VALIDATION_STAGES
-
-    if stage == STAGE_POST:
-        texto = (update.message.text or update.message.caption or "").strip()
-        if _text_is_deposit_confirm(texto):
-            set_user_stage(chat_id, STAGE_DEP)
-            cancel_jobs(context, "B", chat_id)
-            await update.message.reply_text(
-                "Perfecto ✅\nEscríbeme al chat personal para habilitar tu acceso a mi comunidad VIP gratuita.",
-                reply_markup=support_keyboard()
-            )
-        elif update.message.photo or update.message.video or (update.message.document and (update.message.document.mime_type or "").startswith("image/")):
-            await update.message.reply_text(
-                "📩 Recibido. ¿Esto es tu comprobante de depósito/activación?",
-                reply_markup=confirm_proof_keyboard_es()
-            )
-
-    # Mantener comportamiento actual (guardar + notificar admin)
+    # Guardar y notificar al admin primero (así ves la pregunta antes del auto-reply)
     await guardar_mensaje(update, context)
     await notificar_admin(update, context)
+
+    chat_id = update.effective_chat.id
+    lang = get_user_lang(chat_id)
+    if lang != "es":
+        return  # IA solo español por ahora
+
+    stage = get_user_stage(chat_id)
+    texto = update.message.text or update.message.caption or ""
+    intent = detect_intent_es(texto)
+
+    # Si el usuario solo está enviando su ID, no respondemos con IA (dejas la validación manual)
+    if intent == "ID_SUBMIT":
+        return
+
+    in_validation_flow = stage in (STAGE_POST, STAGE_DEPOSITED)
+
+    # VPN o error país -> directo a chat personal
+    if intent in ("VPN", "PAIS"):
+        msg = "Para temas de VPN / error de país prefiero revisarlo contigo directo 🤍\n\nToca el botón 👇"
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (redir) a {chat_id} intent={intent}")
+        return
+
+    # Lives
+    if intent == "LIVE":
+        await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (LIVE) a {chat_id}")
+        return
+
+    # Bono
+    if intent == "BONO":
+        await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (BONO) a {chat_id}")
+        return
+
+    # Dónde ver ID
+    if intent == "ID":
+        await update.message.reply_text(respuesta_id_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (ID) a {chat_id}")
+        return
+
+    # Ya depositó (solo si ya estaba validado)
+    if intent == "DEPOSITO" and stage == STAGE_POST:
+        set_user_stage(chat_id, STAGE_DEPOSITED)
+        _cancel_jobs_prefix(context, "B", chat_id)
+        await update.message.reply_text(
+            "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇",
+            reply_markup=support_keyboard()
+        )
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (DEPOSITO) -> VIP a {chat_id}")
+        return
+
+    # Captura sin texto durante POST: confirmación
+    if stage == STAGE_POST and update.message.photo and not (update.message.caption or "").strip():
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"dep_yes:{chat_id}")],
+            [InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"dep_no:{chat_id}")]
+        ])
+        await update.message.reply_text("📩 Recibido. ¿Esto es tu comprobante de depósito/activación?", reply_markup=kb)
+        return
+
+    # En validación: no IA externa
+    if in_validation_flow:
+        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (fallback VALID) a {chat_id} intent={intent}")
+        return
+
+    # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
+    q = (texto.strip()[:200] if texto else "Binomo ayuda")
+    snippets = await binomo_helpcenter_snippets(q)
+    ans = ""
+    if snippets:
+        ans = await openai_answer_es(texto or q, snippets)
+    if not ans:
+        ans = fallback_johabot_es()
+
+    await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+    await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (IA/FAQ) a {chat_id} intent={intent}")
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1036,38 +1029,6 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         print(f"❌ Error al enviar mensaje directo: {e}")
         await update.message.reply_text("⚠️ Ocurrió un error al intentar enviar el mensaje.")
 
-
-# === CALLBACKS POST-VALIDACIÓN ===
-async def dep_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.from_user.id
-
-    set_user_stage(chat_id, STAGE_DEP)
-    cancel_jobs(context, "B", chat_id)
-
-    await query.message.reply_text(
-        "Perfecto ✅\nEscríbeme al chat personal para habilitar tu acceso a mi comunidad VIP gratuita.",
-        reply_markup=support_keyboard()
-    )
-
-async def dep_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("Listo 👍 Cuando ya esté tu depósito/activación, toca ✅ Ya deposité.")
-
-async def dep_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text(
-        "Entiendo ✅ Para ayudarte más rápido, escríbeme por aquí:",
-        reply_markup=support_keyboard()
-    )
-
-async def dep_noproof(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("Perfecto 👍")
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
@@ -1083,18 +1044,14 @@ if __name__ == "__main__":
         enviar_mensaje_directo
     ))
 
+    # Callback de comprobante depósito (Serie B)
+    app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^dep_"))
+
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
 
     # Callback del botón ❌ Cancelar
     app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
-
-    # Callbacks post-validación (depósito)
-    app.add_handler(CallbackQueryHandler(dep_yes, pattern="^DEP_YES$"))
-    app.add_handler(CallbackQueryHandler(dep_no, pattern="^DEP_NO$"))
-    app.add_handler(CallbackQueryHandler(dep_help, pattern="^DEP_HELP$"))
-    app.add_handler(CallbackQueryHandler(dep_noproof, pattern="^DEP_NOPROOF$"))
-
 
     # Botones generales (incluye set_lang_es / set_lang_en / registrarme / etc.)
     app.add_handler(CallbackQueryHandler(botones))
@@ -1103,7 +1060,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & filters.User(ADMIN_ID), responder_a_usuario))
 
     # Mensajes normales de los usuarios (texto o media)
-    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL) & ~filters.COMMAND & ~filters.User(ADMIN_ID), manejar_mensaje))
+    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE) & ~filters.COMMAND & ~filters.User(ADMIN_ID), manejar_mensaje))
 
     logging.info("Bot corriendo…")
     app.run_polling()
