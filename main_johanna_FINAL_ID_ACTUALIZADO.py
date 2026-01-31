@@ -520,27 +520,6 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, "IMG_IS_DEP", msg)
         return
 
-
-    # --- Confirmación de depósito desde imagen ---
-    if q.data and q.data.startswith("DEP_YES|"):
-        # Solo tiene sentido si el usuario ya estaba con ID validado
-        set_user_stage(chat_id, STAGE_DEPOSITED)
-        _cancel_jobs_prefix(context, "B", chat_id)
-        msg = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
-        await q.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "DEP_YES", msg)
-        return
-
-    if q.data and q.data.startswith("DEP_NO|"):
-        msg = (
-            "Listo ✅\n"
-            "Entonces envíame lo que sí querías mostrarme (o dime tu duda con una frase).\n\n"
-            "Si prefieres, escríbeme al chat personal y lo revisamos rápido 👇"
-        )
-        await q.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "DEP_NO", msg)
-        return
-
     if q.data and q.data.startswith("IMG_IS_OTHER|"):
         msg = (
             "Listo ✅\n"
@@ -551,6 +530,38 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, "IMG_IS_OTHER", msg)
         return
 
+
+
+    if data.startswith("DEP_YES|"):
+        await q.answer()
+        # El usuario confirma que la imagen era comprobante de depósito/activación
+        new_stage(chat_id, context, STAGE_DEPOSITED)
+        msg = (
+            "Perfecto ✅\n\n"
+            "Escríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
+        )
+        await q.message.reply_text(msg, reply_markup=keyboard_support_es())
+        await send_admin_auto_log(
+            context,
+            update,
+            f"Auto (DEP_YES) a {chat_id} -> stage={STAGE_DEPOSITED}\n\nRESPUESTA_ENVIADA:\n{strip_md(msg)}",
+        )
+        return
+
+    if data.startswith("DEP_NO|"):
+        await q.answer()
+        # Era otra cosa: no hacemos nada con esa imagen
+        msg = (
+            "Listo ✅\n\n"
+            "Si necesitas ayuda, cuéntame tu duda en un mensaje y te respondo 👇"
+        )
+        await q.message.reply_text(msg, reply_markup=keyboard_support_es())
+        await send_admin_auto_log(
+            context,
+            update,
+            f"Auto (DEP_NO) a {chat_id}\n\nRESPUESTA_ENVIADA:\n{strip_md(msg)}",
+        )
+        return
 
     # Cambios de idioma
     if q.data == "set_lang_es":
@@ -887,19 +898,18 @@ def detect_intent_es(texto: str) -> str:
     if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "correo", "email"]):
         return "EMAIL"
 
-    # Depósito / activación
     if any(k in t for k in [
-        "ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito",
-        "ya active", "ya activé", "ya quedo activada", "ya quedó activada",
-        "ya me active", "ya me activé", "deposité", "deposite", "depositado", "depositada"
+        "voy a depositar", "voy a hacer el deposito", "voy a hacer el depósito",
+        "depositare", "depositaré", "mañana deposito", "mañana voy a depositar",
+        "mas tarde deposito", "más tarde deposito", "despues deposito", "después deposito",
+        "cuando me paguen", "cuando me pague", "estoy esperando un pago", "esperando un pago",
+        "aun no deposito", "aún no deposito", "todavia no deposito", "todavía no deposito",
+        "no he depositado", "no e depositado", "no he podido depositar"
     ]):
-        return "DEPOSITO_DONE"
+        return "DEPOSIT_LATER"
 
-    # Menciona depósito pero aún no lo hizo (ej: "voy a depositar mañana")
-    if ("depos" in t or "deposit" in t) and not any(k in t for k in [
-        "ya deposite", "ya deposité", "deposité", "deposite", "depositado", "depositada"
-    ]):
-        return "DEPOSITO_LATER"
+    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya active", "ya activé"]):
+        return "DEPOSITO"
 
     if re.search(r"\b\d{6,}\b", t) and ("id" in t or t.strip().isdigit()):
         return "ID_SUBMIT"
@@ -938,6 +948,21 @@ def respuesta_where_send_id_es() -> str:
     return (
         "Sí ✅ Puedes enviarme tu **ID por aquí mismo** (solo el número) y lo dejo en validación.\n\n"
         "Si prefieres hacerlo directo conmigo, también puedes escribirme al chat personal 👇"
+    )
+
+
+def respuesta_deposit_later_es(stage: str) -> str:
+    if stage in (STAGE_POST, STAGE_DEPOSITED):
+        return (
+            "Perfecto ✅ No hay problema.\n\n"
+            "Cuando hagas el depósito, vuelve y responde: **Ya deposité** (o envíame el comprobante).\n\n"
+            "Así te activo tu acceso sin enredos 👇"
+        )
+
+    return (
+        "Perfecto ✅\n\n"
+        "Antes de depositar necesito validar tu registro.\n\n"
+        "Envíame tu **ID de Binomo** (solo el número) y te confirmo si está correcto 👇"
     )
 
 def fallback_johabot_es() -> str:
@@ -1088,6 +1113,17 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Bono
+    if intent == "DEPOSIT_LATER":
+        msg = respuesta_deposit_later_es(stage)
+        await update.message.reply_text(msg, reply_markup=keyboard_support_es())
+        await send_admin_auto_log(
+            context,
+            update,
+            f"Auto (DEPOSIT_LATER) a {chat_id} stage={stage}\n\nRESPUESTA_ENVIADA:\n{strip_md(msg)}",
+        )
+        return
+
+
     if intent == "BONO":
         await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "BONO", respuesta_bono_es())
@@ -1100,28 +1136,28 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Ya depositó (solo si ya estaba validado)
-    if intent == "DEPOSITO_DONE" and stage == STAGE_POST:
+    if intent == "DEPOSITO" and stage == STAGE_POST:
         set_user_stage(chat_id, STAGE_DEPOSITED)
         _cancel_jobs_prefix(context, "B", chat_id)
-        txt = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
-        await update.message.reply_text(txt, reply_markup=support_keyboard())
-        await enviar_log_auto_respuesta(update, context, "DEPOSITO_DONE", txt)
-        return
-
-    # Dice que va a depositar después (mantener etapa y responder algo útil)
-    if intent == "DEPOSITO_LATER" and stage == STAGE_POST:
-        txt = ("Listo ✅\n\nTu ID ya quedó validado.\n"               "Cuando estés lista para depositar/activar, vuelve y escríbeme: Ya deposité.\n\n"               "Si quieres, también puedo guiarte paso a paso según tu método de pago 👇")
-        await update.message.reply_text(txt, reply_markup=support_keyboard())
-        await enviar_log_auto_respuesta(update, context, "DEPOSITO_LATER", txt)
+        await update.message.reply_text(
+            "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇",
+            reply_markup=support_keyboard()
+        )
         return
 
     # Captura sin texto durante POST: confirmación
-    if stage == STAGE_POST and update.message.photo and not (update.message.caption or "").strip():
+    if update.message.photo:
+        # Si el usuario manda imagen (ID / depósito / otra cosa), preguntamos y NO usamos IA aquí.
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"dep_yes:{chat_id}")],
-            [InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"dep_no:{chat_id}")]
+            [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}")],
+            [InlineKeyboardButton("💳 Es depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
+            [InlineKeyboardButton("❌ No tiene relación", callback_data=f"IMG_IS_OTHER|{chat_id}")],
         ])
-        await update.message.reply_text("📩 Recibido. ¿Esto es tu comprobante de depósito/activación?", reply_markup=kb)
+        await update.message.reply_text(
+            "📩 Recibido. ¿Esta imagen es tu **ID de Binomo** o un **comprobante de depósito/activación**?\n\n"
+            "Si es tu **ID**, envíame también el número en texto (solo el número) 👇",
+            reply_markup=kb,
+        )
         return
 
     # En validación: no IA externa
