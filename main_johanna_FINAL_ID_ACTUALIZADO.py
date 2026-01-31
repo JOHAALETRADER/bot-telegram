@@ -789,6 +789,23 @@ def _norm(s: str) -> str:
 def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
 
+    # Siguiente paso / qué sigue
+    if any(k in t for k in [
+        "que sigue", "qué sigue", "que paso sigue", "qué paso sigue", "paso sigue",
+        "y ahora que", "y ahora qué", "entonces que sigue", "entonces qué sigue",
+        "ok gracias entonces", "ok gracias", "ya me registre que hago", "ya me registré que hago",
+        "que hago ahora", "qué hago ahora", "siguiente paso"
+    ]):
+        return "NEXT_STEP"
+
+    # Dónde enviar el ID / te envío el ID
+    if ("id" in t) and any(k in t for k in [
+        "te envio", "te envío", "envio", "envío", "enviar", "mando", "te mando",
+        "por donde", "por dónde", "a donde", "a dónde", "donde te", "dónde te",
+        "por aca", "por acá", "por aqui", "por aquí"
+    ]):
+        return "WHERE_SEND_ID"
+
     if any(k in t for k in ["vpn", "proxy"]):
         return "VPN"
     if ("error" in t and ("pais" in t or "país" in t or "country" in t)) or ("me sale" in t and "pais" in t):
@@ -837,6 +854,21 @@ def respuesta_id_es() -> str:
         "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
         "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
         "Si no lo ves, dime si estás en app o navegador y te guío 👇"
+    )
+
+
+def respuesta_next_step_es() -> str:
+    return (
+        "✅ Perfecto. El **siguiente paso** es validar tu **ID** para confirmar que tu registro quedó bien "
+        "**antes de que deposites**.\n\n"
+        "📌 Envíame aquí tu **ID de Binomo** (solo el número) y lo dejo en validación.\n\n"
+        "Si prefieres, también puedes escribirme al chat personal 👇"
+    )
+
+def respuesta_where_send_id_es() -> str:
+    return (
+        "Sí ✅ Puedes enviarme tu **ID por aquí mismo** (solo el número) y lo dejo en validación.\n\n"
+        "Si prefieres hacerlo directo conmigo, también puedes escribirme al chat personal 👇"
     )
 
 def fallback_johabot_es() -> str:
@@ -936,7 +968,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(
             respuesta_id_submit,
-            
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=support_keyboard()
         )
         await send_admin_auto_log(context, update, "ID_SUBMIT", respuesta_id_submit)
@@ -951,21 +983,36 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, intent, msg)
         return
 
+
+    # Qué sigue / siguiente paso
+    if intent == "NEXT_STEP":
+        msg = respuesta_next_step_es()
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, intent, msg)
+        return
+
+    # Dónde enviar el ID
+    if intent == "WHERE_SEND_ID":
+        msg = respuesta_where_send_id_es()
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, intent, msg)
+        return
+
     # Lives
     if intent == "LIVE":
-        await update.message.reply_text(LIVE_HORARIOS_ES,  reply_markup=support_keyboard())
+        await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "LIVE", LIVE_HORARIOS_ES)
         return
 
     # Bono
     if intent == "BONO":
-        await update.message.reply_text(respuesta_bono_es(),  reply_markup=support_keyboard())
+        await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "BONO", respuesta_bono_es())
         return
 
     # Dónde ver ID
     if intent == "ID":
-        await update.message.reply_text(respuesta_id_es(),  reply_markup=support_keyboard())
+        await update.message.reply_text(respuesta_id_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "ID", respuesta_id_es())
         return
 
@@ -990,7 +1037,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # En validación: no IA externa
     if in_validation_flow:
-        await update.message.reply_text(fallback_johabot_es(),  reply_markup=support_keyboard())
+        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         return
 
     # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
@@ -1002,7 +1049,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ans:
         ans = fallback_johabot_es()
 
-    await update.message.reply_text(ans,  reply_markup=support_keyboard())
+    await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
