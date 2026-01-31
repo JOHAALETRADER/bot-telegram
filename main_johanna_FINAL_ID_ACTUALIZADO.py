@@ -591,6 +591,8 @@ https://t.me/JohaaleTraderTeams""")
 # === PERSISTENCIA MENSAJE DEL USUARIO ===
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
+    stage = get_user_stage(chat_id)
     texto = update.message.text or update.message.caption or ""
 
     # --- Mensajes con imagen (foto/captura) ---
