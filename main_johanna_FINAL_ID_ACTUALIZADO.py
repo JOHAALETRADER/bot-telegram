@@ -977,9 +977,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Si ya está marcado como depositado y vuelve a enviar capturas, respondemos sin re-activar flujos
             if update.message.photo or update.message.video or (update.message.document and (update.message.document.mime_type or "").startswith("image/")):
                 await update.message.reply_text(
-                    "✅ Recibido. Ya tengo tu estado como *depositado/activado*.
-
-"
+                    "✅ Recibido. Ya tengo tu estado como *depositado/activado*.\n\n"
                     "Escríbeme al chat personal para habilitar tu acceso 👇",
                     reply_markup=support_keyboard(),
                     parse_mode=ParseMode.MARKDOWN
@@ -987,7 +985,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 handled = True
 
 
-# === IA / Respuestas automáticas (solo texto) ===
+    # === IA / Respuestas automáticas (solo texto) ===
     if (not handled) and update.message and update.message.text:
         texto = (update.message.text or "").strip()
 
@@ -1062,7 +1060,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notificar_admin(update, context)
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
-, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.message.caption:
@@ -1163,10 +1160,8 @@ async def dep_noproof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await schedule_post_series_es(chat_id, context)
 
     await query.message.reply_text(
-        "Perfecto 👍
-Cuando tu depósito esté listo, escríbeme **"Ya deposité"** y te habilito el acceso.
-
-"
+        "Perfecto 👍\n"
+        "Cuando tu depósito esté listo, escríbeme **\"Ya deposité\"** y te habilito el acceso.\n\n"
         "Si necesitas ayuda rápida, toca el botón 👇",
         reply_markup=support_keyboard(),
         parse_mode=ParseMode.MARKDOWN
