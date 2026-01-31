@@ -58,29 +58,8 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
         logging.info("No pude enviar log de auto-respuesta: %s", e)
 
 
-async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, respuesta: str):
-    """Envía al ADMIN la pregunta y la respuesta exacta enviada automáticamente."""
-    try:
-        chat_id = update.effective_chat.id
-        u = update.effective_user
-        pregunta = (update.message.text or update.message.caption or "").strip() or "(sin texto)"
-        header = (
-            "🤖 **Respuesta automática enviada**\n"
-            f"👤 @{(u.username or u.full_name)} (ID: `{chat_id}`)\n"
-            f"🧩 Intento: **{intent}**\n\n"
-        )
-        body = f"🗨️ **Pregunta:**\n{pregunta}\n\n📝 **Respuesta:**\n{respuesta}"
-        text = header + body
-        if len(text) > 3900:
-            text = text[:3900] + "\n\n…(recortado)"
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=text,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logging.info("No pude enviar log auto al admin: %s", e)
+
+
 
 # Diccionario temporal para guardar el ID del usuario al que se va a responder
 usuarios_objetivo = {}
@@ -404,7 +383,7 @@ def schedule_series_a(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYP
 async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str):
     chat_id, _lang = context.job.data
     try:
-        await context.bot.send_message(chat_id=chat_id, text=text_es, reply_markup=support_keyboard(), parse_mode=ParseMode.MARKDOWN)
+        await context.bot.send_message(chat_id=chat_id, text=text_es, reply_markup=support_keyboard(), )
     except Exception as e:
         logging.warning("Job B send failed to %s: %s", chat_id, e)
 
@@ -957,7 +936,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(
             respuesta_id_submit,
-            parse_mode=ParseMode.MARKDOWN,
+            
             reply_markup=support_keyboard()
         )
         await send_admin_auto_log(context, update, "ID_SUBMIT", respuesta_id_submit)
@@ -974,19 +953,19 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Lives
     if intent == "LIVE":
-        await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await update.message.reply_text(LIVE_HORARIOS_ES,  reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "LIVE", LIVE_HORARIOS_ES)
         return
 
     # Bono
     if intent == "BONO":
-        await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await update.message.reply_text(respuesta_bono_es(),  reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "BONO", respuesta_bono_es())
         return
 
     # Dónde ver ID
     if intent == "ID":
-        await update.message.reply_text(respuesta_id_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await update.message.reply_text(respuesta_id_es(),  reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "ID", respuesta_id_es())
         return
 
@@ -1011,7 +990,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # En validación: no IA externa
     if in_validation_flow:
-        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await update.message.reply_text(fallback_johabot_es(),  reply_markup=support_keyboard())
         return
 
     # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
@@ -1023,7 +1002,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ans:
         ans = fallback_johabot_es()
 
-    await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+    await update.message.reply_text(ans,  reply_markup=support_keyboard())
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
