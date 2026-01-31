@@ -416,180 +416,180 @@ def set_user_stage(chat_id: int, stage: str):
 VALIDATION_STAGES = set([STAGE_PRE, STAGE_POST])
 
 # === IA (Soporte inteligente) ===
-    import html
-    import unicodedata
-    import urllib.parse
-    import httpx
+import html
+import unicodedata
+import urllib.parse
+import httpx
 
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-    def _norm_text(s: str) -> str:
-        s = (s or "").strip().lower()
-        s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
-        return s
+def _norm_text(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+    return s
 
-    def _detect_intent_es(texto: str) -> str:
-        t = _norm_text(texto)
+def _detect_intent_es(texto: str) -> str:
+    t = _norm_text(texto)
 
-        # envío de ID (números) -> validación manual
-        if re.search(r"\b\d{6,}\b", t):
-            if any(k in t for k in ["id", "mi id", "este es mi id", "id:", "user id"]):
-                return "ID_SUBMIT"
-            if re.fullmatch(r"\d{6,}", t.strip()):
-                return "ID_SUBMIT"
+    # envío de ID (números) -> validación manual
+    if re.search(r"\b\d{6,}\b", t):
+        if any(k in t for k in ["id", "mi id", "este es mi id", "id:", "user id"]):
+            return "ID_SUBMIT"
+        if re.fullmatch(r"\d{6,}", t.strip()):
+            return "ID_SUBMIT"
 
-        if any(k in t for k in ["vpn", "proxy"]):
-            return "VPN"
-        if any(k in t for k in ["error de pais", "bloqueado por pais", "bloqueado en mi pais", "no disponible en mi pais", "region", "country error"]):
-            return "PAIS"
+    if any(k in t for k in ["vpn", "proxy"]):
+        return "VPN"
+    if any(k in t for k in ["error de pais", "bloqueado por pais", "bloqueado en mi pais", "no disponible en mi pais", "region", "country error"]):
+        return "PAIS"
 
-        if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo", "transmision"]):
-            return "LIVE"
+    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo", "transmision"]):
+        return "LIVE"
 
-        if any(k in t for k in ["bono", "bonus", "100%", "promocion", "promociones"]):
-            return "BONO"
+    if any(k in t for k in ["bono", "bonus", "100%", "promocion", "promociones"]):
+        return "BONO"
 
-        if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
-            return "ID"
+    if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
+        return "ID"
 
-        if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "no llega email", "correo", "email"]):
-            return "EMAIL"
+    if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "no llega email", "correo", "email"]):
+        return "EMAIL"
 
-        if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "fallo", "no me deja retirar"]):
-            return "RETIRO"
+    if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "fallo", "no me deja retirar"]):
+        return "RETIRO"
 
-        if any(k in t for k in ["metodo", "metodos", "banco", "cuenta bancaria", "astropay", "nequi", "transfiya"]):
-            return "METODOS"
+    if any(k in t for k in ["metodo", "metodos", "banco", "cuenta bancaria", "astropay", "nequi", "transfiya"]):
+        return "METODOS"
 
-        if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya recargue", "ya recargué", "ya active", "ya activé"]):
-            return "DEPOSITO"
+    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya recargue", "ya recargué", "ya active", "ya activé"]):
+        return "DEPOSITO"
 
-        return "OTRO"
+    return "OTRO"
 
-    def _respuesta_horarios_live() -> str:
-        return (
-            "📊 **Horarios de mis lives (hora Colombia):\n\n"
-            "• **Martes:** 11:00 am y 8:00 pm\n"
-            "• **Miércoles:** 8:00 pm\n"
-            "• **Jueves:** 11:00 am y 8:00 pm\n"
-            "• **Viernes:** 8:00 pm\n"
-            "• **Sábados:** 11:00 am y 8:00 pm\n\n"
-            "Si hay cambios, los aviso por el canal antes del live 🚀"
+def _respuesta_horarios_live() -> str:
+    return (
+        "📊 **Horarios de mis lives (hora Colombia):\n\n"
+        "• **Martes:** 11:00 am y 8:00 pm\n"
+        "• **Miércoles:** 8:00 pm\n"
+        "• **Jueves:** 11:00 am y 8:00 pm\n"
+        "• **Viernes:** 8:00 pm\n"
+        "• **Sábados:** 11:00 am y 8:00 pm\n\n"
+        "Si hay cambios, los aviso por el canal antes del live 🚀"
+    )
+
+def _respuesta_bono_base() -> str:
+    return (
+        "💰 **¿Cómo funciona el bono en Binomo?**\n\n"
+        "El bono es un beneficio **opcional** que a veces aparece al momento de depositar. "
+        "Si lo activas, Binomo te añade un porcentaje extra sobre tu depósito para operar con más capital.\n\n"
+        "📌 Importante: los bonos suelen tener **condiciones**, por ejemplo un volumen mínimo de operaciones "
+        "antes de poder retirar lo relacionado con ese bono.\n"
+        "Las reglas exactas pueden variar según tu cuenta y la promoción activa.\n\n"
+        "Si quieres, escríbeme a mi chat personal y lo revisamos según tu caso 👇"
+    )
+
+def _respuesta_id_base() -> str:
+    return (
+        "🆔 **¿Dónde encuentro mi ID de Binomo?**\n\n"
+        "1) Entra a tu cuenta en Binomo (app o web).\n"
+        "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
+        "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
+        "Si no lo ves, dime si estás en app o en navegador y te guío 👇"
+    )
+
+def _fallback_johabot() -> str:
+    return (
+        "Para este caso prefiero revisarlo contigo directamente 🤍\n\n"
+        "Soy **Johabot** y para ayudarte correctamente escríbeme a mi chat personal 👇"
+    )
+
+async def _notify_admin_auto_reply(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, pregunta: str, respuesta: str):
+    try:
+        u = update.effective_user
+        cid = update.effective_chat.id
+        header = (
+            "🤖 **Respuesta automática enviada**\n"
+            f"👤 @{u.username or u.full_name} (ID: `{cid}`)\n"
+            f"🧩 Intento: **{intent}**\n\n"
         )
-
-    def _respuesta_bono_base() -> str:
-        return (
-            "💰 **¿Cómo funciona el bono en Binomo?**\n\n"
-            "El bono es un beneficio **opcional** que a veces aparece al momento de depositar. "
-            "Si lo activas, Binomo te añade un porcentaje extra sobre tu depósito para operar con más capital.\n\n"
-            "📌 Importante: los bonos suelen tener **condiciones**, por ejemplo un volumen mínimo de operaciones "
-            "antes de poder retirar lo relacionado con ese bono.\n"
-            "Las reglas exactas pueden variar según tu cuenta y la promoción activa.\n\n"
-            "Si quieres, escríbeme a mi chat personal y lo revisamos según tu caso 👇"
+        body = f"🗨️ **Pregunta:**\n{pregunta}\n\n📝 **Respuesta:**\n{respuesta}"
+        if len(body) > 3500:
+            body = body[:3500] + "\n\n…(recortado)"
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=header + body,
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True
         )
+    except Exception as e:
+        logging.info("No pude notificar admin auto-reply: %s", e)
 
-    def _respuesta_id_base() -> str:
-        return (
-            "🆔 **¿Dónde encuentro mi ID de Binomo?**\n\n"
-            "1) Entra a tu cuenta en Binomo (app o web).\n"
-            "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
-            "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
-            "Si no lo ves, dime si estás en app o en navegador y te guío 👇"
-        )
-
-    def _fallback_johabot() -> str:
-        return (
-            "Para este caso prefiero revisarlo contigo directamente 🤍\n\n"
-            "Soy **Johabot** y para ayudarte correctamente escríbeme a mi chat personal 👇"
-        )
-
-    async def _notify_admin_auto_reply(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, pregunta: str, respuesta: str):
-        try:
-            u = update.effective_user
-            cid = update.effective_chat.id
-            header = (
-                "🤖 **Respuesta automática enviada**\n"
-                f"👤 @{u.username or u.full_name} (ID: `{cid}`)\n"
-                f"🧩 Intento: **{intent}**\n\n"
-            )
-            body = f"🗨️ **Pregunta:**\n{pregunta}\n\n📝 **Respuesta:**\n{respuesta}"
-            if len(body) > 3500:
-                body = body[:3500] + "\n\n…(recortado)"
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=header + body,
-                parse_mode=ParseMode.MARKDOWN,
-                disable_web_page_preview=True
-            )
-        except Exception as e:
-            logging.info("No pude notificar admin auto-reply: %s", e)
-
-    async def _binomo_search_snippets(query: str, max_results: int = 3) -> str:
-        try:
-            q = urllib.parse.quote(query)
-            url = f"https://binomo2.zendesk.com/api/v2/help_center/articles/search.json?query={q}&locale=es-419"
-            async with httpx.AsyncClient(timeout=12) as client:
-                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            if r.status_code != 200:
-                return ""
-            data = r.json()
-            results = data.get("results") or []
-            if not results:
-                return ""
-            chunks = []
-            for item in results[:max_results]:
-                title = item.get("title") or ""
-                body = item.get("body") or ""
-                body = html.unescape(body)
-                body = re.sub(r"<[^>]+>", " ", body)
-                body = re.sub(r"\s+", " ", body).strip()
-                link = item.get("html_url") or ""
-                body = body[:900] if body else ""
-                chunks.append(f"TITULO: {title}\nCONTENIDO: {body}\nFUENTE: {link}".strip())
-            return "\n\n---\n\n".join(chunks)
-        except Exception:
+async def _binomo_search_snippets(query: str, max_results: int = 3) -> str:
+    try:
+        q = urllib.parse.quote(query)
+        url = f"https://binomo2.zendesk.com/api/v2/help_center/articles/search.json?query={q}&locale=es-419"
+        async with httpx.AsyncClient(timeout=12) as client:
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
             return ""
+        data = r.json()
+        results = data.get("results") or []
+        if not results:
+            return ""
+        chunks = []
+        for item in results[:max_results]:
+            title = item.get("title") or ""
+            body = item.get("body") or ""
+            body = html.unescape(body)
+            body = re.sub(r"<[^>]+>", " ", body)
+            body = re.sub(r"\s+", " ", body).strip()
+            link = item.get("html_url") or ""
+            body = body[:900] if body else ""
+            chunks.append(f"TITULO: {title}\nCONTENIDO: {body}\nFUENTE: {link}".strip())
+        return "\n\n---\n\n".join(chunks)
+    except Exception:
+        return ""
 
-    async def _openai_answer(question: str, context_text: str) -> str:
-        if not OPENAI_API_KEY:
-            return ""
-        try:
-            system = (
-                "Eres un asistente de soporte para usuarios de Binomo en español. "
-                "Responde en 6–10 líneas, claro y directo. "
-                "NO inventes información. Si algo depende del país, método de pago o datos de la cuenta, dilo. "
-                "NO des instrucciones para evadir restricciones (VPN/proxy). "
-                "Si el contexto no alcanza, responde con 'NO_DATA'."
+async def _openai_answer(question: str, context_text: str) -> str:
+    if not OPENAI_API_KEY:
+        return ""
+    try:
+        system = (
+            "Eres un asistente de soporte para usuarios de Binomo en español. "
+            "Responde en 6–10 líneas, claro y directo. "
+            "NO inventes información. Si algo depende del país, método de pago o datos de la cuenta, dilo. "
+            "NO des instrucciones para evadir restricciones (VPN/proxy). "
+            "Si el contexto no alcanza, responde con 'NO_DATA'."
+        )
+        payload = {
+            "model": OPENAI_MODEL,
+            "input": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"PREGUNTA: {question}\n\nCONTEXTO:\n{context_text}"}
+            ],
+            "temperature": 0.2,
+        }
+        async with httpx.AsyncClient(timeout=18) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json=payload,
             )
-            payload = {
-                "model": OPENAI_MODEL,
-                "input": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"PREGUNTA: {question}\n\nCONTEXTO:\n{context_text}"}
-                ],
-                "temperature": 0.2,
-            }
-            async with httpx.AsyncClient(timeout=18) as client:
-                resp = await client.post(
-                    "https://api.openai.com/v1/responses",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                    json=payload,
-                )
-            if resp.status_code != 200:
-                return ""
-            out = resp.json()
-            txt_parts = []
-            for item in out.get("output", []):
-                for c in item.get("content", []):
-                    if c.get("type") == "output_text":
-                        txt_parts.append(c.get("text", ""))
-            txt = "\n".join([t for t in txt_parts if t]).strip()
-            if not txt or "NO_DATA" in txt:
-                return ""
-            return txt
-        except Exception:
+        if resp.status_code != 200:
             return ""
+        out = resp.json()
+        txt_parts = []
+        for item in out.get("output", []):
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    txt_parts.append(c.get("text", ""))
+        txt = "\n".join([t for t in txt_parts if t]).strip()
+        if not txt or "NO_DATA" in txt:
+            return ""
+        return txt
+    except Exception:
+        return ""
 
 def support_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
