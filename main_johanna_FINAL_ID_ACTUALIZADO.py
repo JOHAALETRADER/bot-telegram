@@ -946,28 +946,25 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent in ("VPN", "PAIS"):
         msg = "Para temas de VPN / error de país prefiero revisarlo contigo directo 🤍\n\nToca el botón 👇"
         await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (redir) a {chat_id} intent={intent}")
+        await send_admin_auto_log(context, update, intent, msg)
         return
 
     # Lives
     if intent == "LIVE":
         await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "LIVE", LIVE_HORARIOS_ES)
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (LIVE) a {chat_id}")
         return
 
     # Bono
     if intent == "BONO":
         await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "BONO", respuesta_bono_es())
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (BONO) a {chat_id}")
         return
 
     # Dónde ver ID
     if intent == "ID":
         await update.message.reply_text(respuesta_id_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "ID", respuesta_id_es())
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (ID) a {chat_id}")
         return
 
     # Ya depositó (solo si ya estaba validado)
@@ -978,7 +975,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇",
             reply_markup=support_keyboard()
         )
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (DEPOSITO) -> VIP a {chat_id}")
         return
 
     # Captura sin texto durante POST: confirmación
@@ -993,7 +989,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # En validación: no IA externa
     if in_validation_flow:
         await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (fallback VALID) a {chat_id} intent={intent}")
         return
 
     # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
@@ -1006,7 +1001,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ans = fallback_johabot_es()
 
     await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-    await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Auto (IA/FAQ) a {chat_id} intent={intent}")
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
