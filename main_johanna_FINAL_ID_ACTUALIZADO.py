@@ -863,11 +863,11 @@ def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
 
     # Saludo simple (para responder corto). Si viene con pregunta, no entra aquí.
-    if re.fullmatch(r"(hola|buenas|buenos dias|buenas tardes|buenas noches|hey|holi|hello|hi)\W*", t):
+    if ("?" not in t) and re.fullmatch(r"(?:(hola|buenas|buenos dias|buenas tardes|buenas noches|hey|holi|hello|hi)\s*)+(?:joha|johabot|johanna)?\W*", t):
         return "GREETING"
 
     # Conversación humana (no responder automáticamente)
-    if any(k in t for k in [
+        if any(k in t for k in [
         "queria consultar", "quería consultar", "tengo una duda", "tengo dudas", "no entiendo",
         "quiero consultar", "consulta", "necesito ayuda", "puedo preguntar",
         "señales que no entiendo", "las señales", "sobre las señales"
@@ -880,7 +880,22 @@ def detect_intent_es(texto: str) -> str:
         "no puedo depositar", "no puedo ahora", "ahora no", "no tengo dinero ahora",
         "cuando me paguen", "mas adelante", "más adelante", "luego deposito",
         "despues deposito", "después deposito", "otro dia deposito", "otro día deposito",
-        "mas tarde", "más tarde", "todavia no puedo", "todavía no puedo"
+        "mas tarde", "más tarde", "todavia no puedo", "todavía no puedo",
+        "puedo depositar despues",
+        "puedo depositar después",
+        "puedo depositar mas tarde",
+        "puedo depositar más tarde",
+        "estoy esperando un pago",
+        "esperando un pago",
+        "espero un pago",
+        "cuando cobre",
+        "cuando reciba",
+        "cuando me llegue el pago",
+        "cuando me llegue dinero",
+        "no tengo dinero",
+        "ahorita no puedo",
+        "por ahora no puedo",
+        "en este momento no puedo"
     ]):
         return "DEP_LATER"
 
@@ -942,8 +957,9 @@ def detect_intent_es(texto: str) -> str:
     if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "correo", "email"]):
         return "EMAIL"
 
-    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya active", "ya activé"]):
+    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya active", "ya activé", "ya depositado", "ya quedo el deposito", "ya quedó el depósito", "ya me llego el deposito", "ya me llegó el depósito", "ya te llego el deposito", "te llego el deposito", "te llegó el depósito", "deposito listo", "depósito listo", "deposito realizado", "depósito realizado", "comprobante de deposito", "comprobante de depósito", "prueba de deposito", "prueba de depósito", "deposito para acceso", "depósito para acceso", "habilitar acceso", "acceso al vip", "acceso vip"]):
         return "DEPOSITO"
+
 
     if re.search(r"\b\d{6,}\b", t) and ("id" in t or t.strip().isdigit()):
         return "ID_SUBMIT"
@@ -986,10 +1002,10 @@ def respuesta_where_send_id_es() -> str:
 
 def fallback_johabot_es() -> str:
     return (
-        "Para este caso prefiero revisarlo contigo directamente 🤍\n\n"
-        "Soy **Johabot** y para ayudarte correctamente escríbeme aquí 👇"
+        "Gracias por escribir 🙌\n\n"
+        "Para ayudarte bien, prefiero revisarlo contigo directamente.\n"
+        "Escríbeme aquí 👇"
     )
-
 async def binomo_helpcenter_snippets(query: str, max_results: int = 3) -> str:
     if not HAS_HTTPX:
         return ""
@@ -1169,17 +1185,25 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, "ID", respuesta_id_es())
         return
 
-    # Ya depositó (solo si ya estaba validado)
-    if intent == "DEPOSITO" and stage == STAGE_POST:
-        set_user_stage(chat_id, STAGE_DEPOSITED)
-        _cancel_jobs_prefix(context, "B", chat_id)
-        await update.message.reply_text(
-            "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇",
-            reply_markup=support_keyboard()
-        )
-        return
+    # Ya depositó / depósito listo (respuesta pro + CTA, sin IA)
+if intent == "DEPOSITO":
+    if stage != STAGE_DEPOSITED:
+        # si ya estaba en POST, marcamos depositado y cancelamos campañas
+        if stage == STAGE_POST:
+            set_user_stage(chat_id, STAGE_DEPOSITED)
+            _cancel_jobs_prefix(context, "B", chat_id)
+            _cancel_jobs_prefix(context, "A", chat_id)
 
-    # Captura sin texto durante POST: confirmación
+        msg = (
+            "Perfecto ✅\n\n"
+            "Para habilitar tu acceso, envíame aquí el comprobante del depósito/activación "
+            "o escríbeme al chat personal 👇"
+        )
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM", msg)
+    return
+
+# Captura sin texto durante POST: confirmación
     if stage == STAGE_POST and update.message.photo and not (update.message.caption or "").strip():
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"dep_yes:{chat_id}")],
