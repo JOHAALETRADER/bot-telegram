@@ -65,6 +65,27 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
 # Diccionario temporal para guardar el ID del usuario al que se va a responder
 usuarios_objetivo = {}
 
+
+
+
+async def send_admin_auto_log_simple(context: ContextTypes.DEFAULT_TYPE, user_chat_id: int, intent: str, respuesta: str, pregunta: str = "(job/callback)"):
+    """Auditoría para mensajes automáticos cuando no hay Update (jobs/callbacks internos)."""
+    try:
+        text = (
+            "🤖 RESPUESTA AUTOMÁTICA\n"
+            f"Usuario ID: {user_chat_id}\n"
+            f"Intento: {intent}\n\n"
+            "Pregunta:\n"
+            f"{pregunta}\n\n"
+            "Respuesta:\n"
+            f"{respuesta}"
+        )
+        if len(text) > 3900:
+            text = text[:3900] + "…"
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text)
+    except Exception:
+        pass
+
 # === CONFIGURACIÓN ===
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("BOT_TOKEN")
@@ -155,6 +176,22 @@ ENLACE_REFERIDO  = "https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
 SUPPORT_URL = "https://t.me/Johaaletradervalidacion"
 
 # Mensajes gatillo exactos (los que tú envías cuando validas manualmente)
+
+def _norm_ws(s: str) -> str:
+    s = (s or "").strip()
+    s = s.replace("\r", "")
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s
+
+def _is_gatillo_ok(s: str) -> bool:
+    s2 = _norm_ws(s).lower()
+    return ("tu id es correcto" in s2 and "a partir de 50 usd" in s2)
+
+def _is_gatillo_err(s: str) -> bool:
+    s2 = _norm_ws(s).lower()
+    return ("tu id esta errado" in s2 or "tu id está errado" in s2)
+
 GATILLO_ID_OK = "Tu ID es correcto puedes depositar en tu cuenta de trading Binomo a partir de 50 USD.\n\nCuando tú deposito este listo escríbeme para darte acceso"
 GATILLO_ID_ERRADO = "Tu ID está errado.\n\nPara tener acceso a mi comunidad vip y todas las herramientas debes realizar tu registro con mi enlace..\n\nCopia y pega el enlace de registro en barra de búsqueda de una ventana de incógnito de tu navegador y usa otro correo.. luego me envías ID de binomo para validar.\n\nEnlace de registro:\n\nhttps://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
 
@@ -299,12 +336,18 @@ BENEFICIOS_EN = """✨ Exclusive Benefits You’ll Receive ✨
 """
 
 # === FUNCIONES DE MENSAJES PROGRAMADOS (usa lang por usuario) ===
+
 async def _send_job_message(context: ContextTypes.DEFAULT_TYPE, text_es: str, text_en: str):
     chat_id, lang = context.job.data  # (chat_id, "es"/"en")
+    msg = text_es if lang == "es" else text_en
     try:
-        await context.bot.send_message(chat_id=chat_id, text=text_es if lang == "es" else text_en)
+        await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=(support_keyboard() if lang=="es" else None))
     except Exception as e:
         logging.warning(f"Job send failed to {chat_id}: {e}")
+    try:
+        await send_admin_auto_log_simple(context, chat_id, f"CAMPAIGN_A_{context.job.name}", msg, pregunta="(mensaje programado)")
+    except Exception:
+        pass
 
 async def mensaje_1h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message(context, MENSAJE_1H_ES, MENSAJE_1H_EN)
@@ -381,12 +424,18 @@ def schedule_series_a(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYP
     context.job_queue.run_once(mensaje_48h, when=172800, data=(chat_id, lang), name=f"A_48h_{chat_id}")
     logging.info("✅ Serie A programada para chat_id %s (lang=%s)", chat_id, lang)
 
+
 async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str):
     chat_id, _lang = context.job.data
+    msg = text_es
     try:
-        await context.bot.send_message(chat_id=chat_id, text=text_es, reply_markup=support_keyboard(), )
+        await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=support_keyboard(), )
     except Exception as e:
         logging.warning("Job B send failed to %s: %s", chat_id, e)
+    try:
+        await send_admin_auto_log_simple(context, chat_id, f"CAMPAIGN_B_{context.job.name}", msg, pregunta="(mensaje programado)")
+    except Exception:
+        pass
 
 async def mensaje_B_1h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message_B(context, MENSAJE_B_1H_ES)
@@ -480,11 +529,9 @@ async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.D
         await context.bot.send_message(chat_id=chat_id, text=(MENSAJE_BIENVENIDA_ES if lang=="es" else MENSAJE_BIENVENIDA_EN))
 
     # Menú
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=("👇 Elige una opción para continuar:" if lang=="es" else "👇 Choose an option to continue:"),
-        reply_markup=build_main_menu(lang)
-    )
+    menu_text = ("👇 Elige una opción para continuar:" if lang=="es" else "👇 Choose an option to continue:")
+    await context.bot.send_message(chat_id=chat_id, text=menu_text, reply_markup=build_main_menu(lang))
+    await send_admin_auto_log_simple(context, chat_id, "AUTO_WELCOME_MENU", menu_text, pregunta="(/start bienvenida)")
 
     # Programar mensajes diferidos con lang (Serie A) — con nombres para evitar duplicados
     schedule_series_a(chat_id, lang, context)
@@ -529,6 +576,23 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "IMG_IS_OTHER", msg)
         return
+
+
+# --- Confirmación de comprobante de depósito ---
+if q.data and (q.data.startswith("DEP_YES|") or q.data.startswith("dep_yes:")):
+    set_user_stage(chat_id, STAGE_DEPOSITED)
+    _cancel_jobs_prefix(context, "A", chat_id)
+    _cancel_jobs_prefix(context, "B", chat_id)
+    msg = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
+    await q.message.reply_text(msg, reply_markup=support_keyboard())
+    await send_admin_auto_log_simple(context, chat_id, "AUTO_DEPOSIT_CONFIRMED", msg, pregunta="(botón depósito: sí)")
+    return
+
+if q.data and (q.data.startswith("DEP_NO|") or q.data.startswith("dep_no:")):
+    msg = "Perfecto, cuéntame en texto qué necesitas revisar 👇"
+    await q.message.reply_text(msg, reply_markup=support_keyboard())
+    await send_admin_auto_log_simple(context, chat_id, "AUTO_DEPOSIT_NOT_RELATED", msg, pregunta="(botón depósito: no)")
+    return
 
 
     # Cambios de idioma
@@ -717,17 +781,16 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # --- NUEVO: detectar mensaje gatillo y cambiar flujo ---
                 try:
                     txt = (update.message.text or "").strip()
-                    if txt == GATILLO_ID_OK:
-                        set_user_stage(destinatario_id, STAGE_POST)
-                        # Cancelar Serie A y activar Serie B
-                        _cancel_jobs_prefix(context, "A", destinatario_id)
-                        schedule_series_b(destinatario_id, context)
-                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Gatillo OK detectado. Serie B activada para {destinatario_id}")
-                    elif txt == GATILLO_ID_ERRADO:
-                        set_user_stage(destinatario_id, STAGE_PRE)
-                        # Mantener/renovar Serie A
-                        schedule_series_a(destinatario_id, get_user_lang(destinatario_id), context)
-                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"ℹ️ Gatillo ERRADO detectado. Serie A continua para {destinatario_id}")
+                    
+if _is_gatillo_ok(txt):
+    set_user_stage(destinatario_id, STAGE_POST)
+    _cancel_jobs_prefix(context, "A", destinatario_id)
+    schedule_series_b(destinatario_id, context)
+    await context.bot.send_message(chat_id=ADMIN_ID, text=f"🅱️ Campaña B ACTIVADA (gatillo OK) para {destinatario_id}")
+elif _is_gatillo_err(txt):
+    set_user_stage(destinatario_id, STAGE_PRE)
+    schedule_series_a(destinatario_id, get_user_lang(destinatario_id), context)
+    await context.bot.send_message(chat_id=ADMIN_ID, text=f"ℹ️ Gatillo ERRADO detectado. Campaña A continúa para {destinatario_id}")
                 except Exception as _e:
                     pass
                 await context.bot.send_message(
@@ -825,6 +888,48 @@ def _norm(s: str) -> str:
 
 def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
+# Saludos simples (solo saludo, sin preguntas)
+if re.fullmatch(r"(hola|hello|buenas|buen dia|buenos dias|buenas tardes|buenas noches|hey|holi)", t.strip()):
+    return "GREETING"
+
+# Conversación humana / dudas generales (NO responder automáticamente)
+if any(k in t for k in [
+    "queria consultar", "quería consultar", "tengo una duda", "tengo dudas",
+    "no entiendo", "no entendi", "no entendí", "necesito hablar",
+    "puedo hablar", "quiero hablar", "quiero consultarte", "quiero consultarle",
+    "consultar algo", "consultar", "explicame", "explícame", "señales que no entiendo", "senales que no entiendo"
+]):
+    return "HUMAN_CHAT"
+
+# Depósito después / más tarde / ahora no
+if any(k in t for k in [
+    "depositar despues", "depositar después", "deposito despues", "deposito después",
+    "lo hare despues", "lo haré después", "mas tarde", "más tarde",
+    "ahora no tengo", "no tengo dinero ahora", "no puedo depositar todavia", "no puedo depositar todavía",
+    "luego deposito", "depositare luego", "depositaré luego", "cuando pueda deposito", "cuando pueda",
+    "lo hago despues", "lo hago después", "no puedo depositar ahora", "no puedo ahora"
+]):
+    return "DEPOSIT_LATER"
+
+# Mínimo 50 / no tengo 50 / con menos / 10 dólares
+if ("50" in t and any(k in t for k in ["no tengo", "con menos", "puedo con menos", "menos de", "no llego", "no llego a"])) or any(k in t for k in [
+    "no tengo 50", "no tengo cincuenta", "con menos de 50", "puedo iniciar con menos",
+    "puedo empezar con 10", "puedo empezar con diez", "tengo 10", "solo tengo 10",
+    "puedo con 10", "con 10 dolares", "con 10 dólares", "con 20", "con 30", "con 40",
+    "puedo empezar con menos", "puedo iniciar con menos", "no tengo suficiente"
+]):
+    return "MIN50"
+
+# Números explícitos menores a 50 en contexto de iniciar/depósito
+nums = re.findall(r"\b(\d{1,3})\b", t)
+if nums:
+    try:
+        n = int(nums[0])
+        if 0 < n < 50 and any(k in t for k in ["deposit", "iniciar", "empez", "arranc", "tengo", "solo tengo", "puedo"]):
+            return "MIN50"
+    except Exception:
+        pass
+
 
     # Siguiente paso / qué sigue
     if any(k in t for k in [
@@ -848,7 +953,7 @@ def detect_intent_es(texto: str) -> str:
     if ("error" in t and ("pais" in t or "país" in t or "country" in t)) or ("me sale" in t and "pais" in t):
         return "PAIS"
 
-    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo"]):
+    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo", "transmision", "transmisión", "stream", "streaming", "conexion", "conexión", "conectas", "te conectas", "te conectas?", "a que hora te conectas", "a qué hora te conectas", "cuando te conectas", "cuando haces live", "cuando estas en vivo", "cuando estás en vivo", "directo hoy", "live hoy", "live mañana", "en vivo hoy", "en vivo mañana", "transmision hoy", "transmisión hoy"]):
         return "LIVE"
 
     if any(k in t for k in ["bono", "bonus", "100%"]):
@@ -1010,7 +1115,32 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text or update.message.caption or ""
     intent = detect_intent_es(texto)
 
-        # Si el usuario solo está enviando su ID, confirmamos recibido (validación manual)
+    # Conversación humana: NO responder automáticamente
+    if intent == "HUMAN_CHAT":
+        return
+
+    # Saludo simple
+    if intent == "GREETING":
+        msg = "Hola 👋 ¿En qué puedo ayudarte?"
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "AUTO_GREETING", msg)
+        return
+
+    # Depósito después / más tarde
+    if intent == "DEPOSIT_LATER":
+        msg = "Está perfecto 😊\nCuando realices tu depósito de 50 USD o más, escríbeme y lo revisamos para darte acceso 👇"
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "AUTO_DEPOSIT_LATER", msg)
+        return
+
+    # Regla mínima de 50 USD
+    if intent == "MIN50":
+        msg = "Para ingresar a mi comunidad VIP gratuita y acceder a todas las herramientas, el depósito mínimo es de **50 USD**.\n\nCuando estés lista/o para depositar 50 USD o más, escríbeme y lo revisamos 👇"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "AUTO_MIN50", msg)
+        return
+
+    # Si el usuario solo está enviando su ID, confirmamos recibido (validación manual)
     if intent == "ID_SUBMIT":
         respuesta_id_submit = (
             "✅ **Recibido.** Ya tengo tu ID.\n"
@@ -1071,10 +1201,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "DEPOSITO" and stage == STAGE_POST:
         set_user_stage(chat_id, STAGE_DEPOSITED)
         _cancel_jobs_prefix(context, "B", chat_id)
-        await update.message.reply_text(
-            "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇",
-            reply_markup=support_keyboard()
-        )
+        msg = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRMED", msg)
         return
 
     # Captura sin texto durante POST: confirmación
@@ -1083,12 +1212,16 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"dep_yes:{chat_id}")],
             [InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"dep_no:{chat_id}")]
         ])
-        await update.message.reply_text("📩 Recibido. ¿Esto es tu comprobante de depósito/activación?", reply_markup=kb)
+        qtxt2 = "📩 Recibido. ¿Esto es tu comprobante de depósito/activación?"
+        await update.message.reply_text(qtxt2, reply_markup=kb)
+        await send_admin_auto_log(context, update, "AUTO_IMAGE", qtxt2)
         return
 
     # En validación: no IA externa
     if in_validation_flow:
-        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        msg = fallback_johabot_es()
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "AUTO_RULE", msg)
         return
 
     # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
@@ -1101,6 +1234,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ans = fallback_johabot_es()
 
     await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+    await send_admin_auto_log(context, update, "AI_HELP" if snippets else "AI_FALLBACK", ans)
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
