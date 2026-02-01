@@ -360,6 +360,13 @@ def set_user_stage(chat_id: int, stage: str):
 def support_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("💬 Escríbeme aquí", url=SUPPORT_URL)]])
 
+def live_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📲 Instagram (Lives)", url="https://www.instagram.com/johaale_trader/")],
+        [InlineKeyboardButton("▶️ YouTube", url="https://www.youtube.com/@johaalegria.trader")],
+        [InlineKeyboardButton("💬 Escríbeme aquí", url=SUPPORT_URL)],
+    ])
+
 # === Jobs nombrados para poder cancelar (Serie A y Serie B) ===
 def _cancel_jobs_prefix(context: ContextTypes.DEFAULT_TYPE, prefix: str, chat_id: int):
     if not context.job_queue:
@@ -857,7 +864,7 @@ def detect_intent_es(texto: str) -> str:
     # ---- SALUDOS (intuitivo) ----
     # Detecta saludos aunque vengan con "cómo estás", "qué tal", etc.
     # Si el texto también contiene una intención fuerte (depósito, 50, live, etc.), dejamos que gane esa intención.
-    if re.match(r"^(hola|holi|hey|hello|buenas|buenos dias|buenas noches|buen dia|buen día)", t):
+    if re.match(r"^(hola|holi|hey|hello|buenas|buenos dias|buenas noches|buen dia)", t):
         # saludos + frases cortas típicas
         if any(k in t for k in ["como estas", "cómo estás", "que tal", "qué tal", "todo bien", "todo bn", "como vas", "cómo vas"]) or len(t) <= 22:
             return "GREETING"
@@ -889,6 +896,14 @@ def detect_intent_es(texto: str) -> str:
         "puedo empezar con 10", "puedo iniciar con 10", "puedo con 10", "10 dolares", "10 dólares",
         "tengo 20", "tengo 30", "tengo 40", "puedo con 20", "puedo con 30", "puedo con 40",
         "con 20", "con 30", "con 40", "menos de 50", "menos de cincuenta",
+        "puedo depositar 10", "puedo depositar 20", "puedo depositar 30", "puedo depositar 40",
+        "puedo depositar menos", "puedo depositar con menos", "puedo depositar menos de 50",
+        "depositar 10", "depositar 20", "depositar 30", "depositar 40",
+        "deposito 10", "deposito 20", "deposito 30", "deposito 40",
+        "puedo hacer un deposito de 10", "puedo hacer un deposito de 20", "puedo hacer un deposito de 30", "puedo hacer un deposito de 40",
+        "puedo hacer deposito de 10", "puedo hacer deposito de 20", "puedo hacer deposito de 30", "puedo hacer deposito de 40",
+        "deposito minimo", "depósito mínimo", "monto minimo", "monto mínimo", "minimo de deposito", "mínimo de depósito",
+        "con 10 dolares", "con 20 dolares", "con 30 dolares", "con 40 dolares",
     ]):
         return "MIN_50"
 
@@ -903,7 +918,17 @@ def detect_intent_es(texto: str) -> str:
     ]):
         return "DEPOSITO"
 
-    # ---- Siguiente paso / qué sigue ----
+    
+    # ---- Ya me registré (pedir ID) ----
+    if any(k in t for k in [
+        "ya me registre", "ya me registré", "ya me registre ahora", "ya me registré ahora",
+        "ya me registre y ahora", "ya me registré y ahora", "ya me registre que hago", "ya me registré que hago",
+        "me registre", "me registré", "ya estoy registrado", "ya estoy registrada", "ya estoy registrad@",
+        "ya tengo cuenta", "ya cree cuenta", "ya creé cuenta", "ya hice el registro", "ya realice el registro", "ya realicé el registro",
+    ]):
+        return "YA_REGISTRE"
+
+# ---- Siguiente paso / qué sigue ----
     if any(k in t for k in [
         "que sigue", "qué sigue", "que paso sigue", "qué paso sigue", "paso sigue",
         "y ahora que", "y ahora qué", "entonces que sigue", "entonces qué sigue",
@@ -939,6 +964,11 @@ def detect_intent_es(texto: str) -> str:
         "horarios de live",
         "a que hora te conectas hoy",
         "a qué hora te conectas hoy",
+        "a que hora te conectas", "a qué hora te conectas", "a que hora te conectas?", "a qué hora te conectas?",
+        "a que hora haces live", "a qué hora haces live", "a que hora sales en vivo", "a qué hora sales en vivo",
+        "cuando te conectas", "cuándo te conectas", "cuando hay live", "cuándo hay live",
+        "cuando haces directo", "cuándo haces directo", "cuando estas en vivo", "cuándo estás en vivo",
+        "transmision", "transmisión", "stream", "directo", "en vivo", "conexion", "conexión",
 ]):
         return "LIVE"
 
@@ -1109,10 +1139,20 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "GREETING":
-        msg = "Hola 👋 ¿Qué necesitas revisar hoy?"
+        msg = "Hola 👋 ¿Cómo estás? Cuéntame en qué te ayudo 😊"
         await update.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "GREETING", msg)
         return
+
+    if intent == "YA_REGISTRE":
+        msg = (
+            "Sí ✅ Puedes enviarme tu ID por aquí mismo (solo el número) y lo dejo en validación.\n\n"
+            "Si prefieres hacerlo directo conmigo, también puedes escribirme al chat personal 👇"
+        )
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "AUTO_YA_REGISTRE", msg)
+        return
+
 
     if intent == "DEP_LATER":
         msg = (
@@ -1186,7 +1226,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Lives
     if intent == "LIVE":
-        await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=live_keyboard())
         await send_admin_auto_log(context, update, "LIVE", LIVE_HORARIOS_ES)
         return
 
