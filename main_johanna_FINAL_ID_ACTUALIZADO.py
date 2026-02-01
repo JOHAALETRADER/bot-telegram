@@ -22,6 +22,43 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
+async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Maneja callbacks del botón '✏️ Responder' sin romper el flujo actual.
+    El envío real al usuario lo hace responder_a_usuario cuando el ADMIN responde
+    a un mensaje que contiene 'ID: <chat_id>'.
+    """
+    q = update.callback_query
+    await q.answer()
+
+    data = q.data or ""
+    if data.startswith("responder:"):
+        parts = data.split(":")
+        # formato esperado: responder:<chat_id>:<message_id>
+        chat_id = parts[1] if len(parts) > 1 else None
+        if not chat_id or not chat_id.isdigit():
+            await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ No pude identificar el chat_id del usuario.")
+            return
+
+        prompt = (
+            "✏️ Responder al usuario\n"
+            "ID: {0}\n\n"
+            "Responde a ESTE mensaje (reply) con tu texto o audio para enviarlo al usuario.\n"
+            "Si quieres cancelar, usa el botón ❌ Cancelar."
+        ).format(chat_id)
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=prompt,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="cancelar")]])
+        )
+        return
+
+    # Si llega otro callback aquí, no hacemos nada (lo manejará 'botones')
+    return
+
+
+
 import unicodedata
 import html
 import urllib.parse
@@ -1006,11 +1043,8 @@ if __name__ == "__main__":
     ))
 
     # Callback de comprobante depósito (Serie B)
-    app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^dep_"))
-
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
-
     # Callback del botón ❌ Cancelar
     app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
 
