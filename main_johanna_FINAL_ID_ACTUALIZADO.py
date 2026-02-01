@@ -519,14 +519,25 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if q.data and q.data.startswith("IMG_IS_DEP|"):
-        msg = "Recibido. ¿Esto es tu comprobante de depósito/activación?"
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"DEP_YES|{chat_id}"),
-            InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"DEP_NO|{chat_id}"),
-        ]])
-        context.user_data["awaiting_deposit_proof"] = False
-        await q.message.reply_text(msg, reply_markup=kb)
-        await send_admin_auto_log(context, update, "IMG_IS_DEP", msg)
+        saved_id = context.user_data.get("binomo_id")
+        if saved_id:
+            msg = (
+                "Perfecto ✅\n\n"
+                "Recibido. Estoy validando tu depósito ahora mismo.\n"
+                "Te escribiré de nuevo para confirmar y habilitar tu acceso 🎉\n\n"
+                "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
+            )
+            await q.message.reply_text(msg, reply_markup=support_keyboard())
+            await send_admin_auto_log(context, update, "AUTO_IMG_DEPOSIT_VALIDATING", msg)
+            return
+
+        msg = (
+            "Perfecto ✅\n\n"
+            "Recibido. Para continuar, envíame tu **ID de Binomo en texto** (solo el número) y lo dejo en validación 👇\n\n"
+            "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
+        )
+        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "AUTO_IMG_DEPOSIT_NEED_ID", msg)
         return
 
     if q.data and q.data.startswith("IMG_IS_OTHER|"):
@@ -1039,9 +1050,10 @@ def respuesta_where_send_id_es() -> str:
 def fallback_johabot_es() -> str:
     return (
         "Entiendo 🤍\n\n"
-        "Para ayudarte bien, prefiero revisarlo contigo directamente.\n\n"
-        "Soy **Johabot** y puedes escribirme aquí 👇"
+        "Soy Johabot y para ayudarte mejor, prefiero revisarlo contigo directamente.\n\n"
+        "Escríbeme a mi chat personal aquí 👇"
     )
+
 
 
 async def binomo_helpcenter_snippets(query: str, max_results: int = 3) -> str:
