@@ -156,6 +156,7 @@ SUPPORT_URL = "https://t.me/Johaaletradervalidacion"
 
 # Mensajes gatillo exactos (los que tú envías cuando validas manualmente)
 GATILLO_ID_OK = "Tu ID es correcto puedes depositar en tu cuenta de trading Binomo a partir de 50 USD.\n\nCuando tú deposito este listo escríbeme para darte acceso"
+GATILLO_ACCESO_OK = "confirmado tu cuenta esta activa"
 GATILLO_ID_ERRADO = "Tu ID está errado.\n\nPara tener acceso a mi comunidad vip y todas las herramientas debes realizar tu registro con mi enlace..\n\nCopia y pega el enlace de registro en barra de búsqueda de una ventana de incógnito de tu navegador y usa otro correo.. luego me envías ID de binomo para validar.\n\nEnlace de registro:\n\nhttps://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
 
 # Mensajes Serie B (post-validación ES) — mismos tiempos (1h, 3h, 24h, 48h)
@@ -742,6 +743,13 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         _cancel_jobs_prefix(context, "A", destinatario_id)
                         schedule_series_b(destinatario_id, context)
                         await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Gatillo OK detectado. Serie B activada para {destinatario_id}")
+
+                    elif (_norm(GATILLO_ACCESO_OK) in txtn) or ("cuenta esta activa" in txtn) or ("cuenta está activa" in txtn) or ("acceso confirmado" in txtn) or ("acceso activado" in txtn):
+                        # Acceso final confirmado por admin: detener campañas A y B
+                        set_user_stage(destinatario_id, STAGE_DEPOSITED)
+                        _cancel_jobs_prefix(context, "A", destinatario_id)
+                        _cancel_jobs_prefix(context, "B", destinatario_id)
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Acceso confirmado. Campañas detenidas para {destinatario_id}")
                     elif (_norm(GATILLO_ID_ERRADO) in txtn) or ("tu id esta errado" in txtn) or ("tu id está errado" in txtn):
                         set_user_stage(destinatario_id, STAGE_PRE)
                         # Mantener/renovar Serie A
@@ -846,13 +854,17 @@ def _norm(s: str) -> str:
 def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
 
-    # ---- SALUDOS (solo saludo) ----
-    if re.fullmatch(r"(hola|holi|hey|hello|buenas|buenos dias|buenas noches|buen dia|buen día)\s*!*\s*", t):
-        return "GREETING"
+    # ---- SALUDOS (intuitivo) ----
+    # Detecta saludos aunque vengan con "cómo estás", "qué tal", etc.
+    # Si el texto también contiene una intención fuerte (depósito, 50, live, etc.), dejamos que gane esa intención.
+    if re.match(r"^(hola|holi|hey|hello|buenas|buenos dias|buenas noches|buen dia|buen día)", t):
+        # saludos + frases cortas típicas
+        if any(k in t for k in ["como estas", "cómo estás", "que tal", "qué tal", "todo bien", "todo bn", "como vas", "cómo vas"]) or len(t) <= 22:
+            return "GREETING"
 
     # ---- CONSULTA HUMANA (NO responder) ----
     if any(k in t for k in [
-        "quiero consultar", "queria consultar", "quería consultar",
+        "quiero consultar", "queria consultar", "quería consultar", "quiero hacerte una consulta", "quiero hacer una consulta", "quiero una consulta", "consulta",
         "tengo una duda", "tengo dudas", "no entiendo", "no entendi", "no entendí",
         "señales que no entiendo", "algo de las señales", "no entiendo las señales",
         "me explicas", "me explica", "necesito que me expliques", "necesito ayuda con las señales",
@@ -919,7 +931,15 @@ def detect_intent_es(texto: str) -> str:
         "stream", "streaming", "conectas", "conectas hoy", "a que hora te conectas", "a qué hora te conectas",
         "a que hora haces live", "a qué hora haces live", "a que hora es el live", "a qué hora es el live",
         "a que hora estas en vivo", "a qué hora estás en vivo", "a que hora haces directo", "a qué hora haces directo",
-    ]):
+            "te conectas",
+        "conexion",
+        "conexión",
+        "transmitir",
+        "horario de live",
+        "horarios de live",
+        "a que hora te conectas hoy",
+        "a qué hora te conectas hoy",
+]):
         return "LIVE"
 
     if any(k in t for k in ["bono", "bonus", "100%"]):
@@ -1064,18 +1084,21 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     stage = get_user_stage(chat_id)
 
-    # --- PRECHECK: si llega una imagen, NO llamamos IA. Primero preguntamos si es ID o depósito ---
+    # --- PRECHECK: si llega una imagen SIN TEXTO, NO llamamos IA. Preguntamos siempre qué es ---
     if update.message and update.message.photo:
-        if stage not in (STAGE_POST, STAGE_DEPOSITED):
-            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o un **comprobante de depósito/activación**?"
+        caption = (update.message.caption or "").strip()
+        # Solo si viene SIN texto/caption mostramos los 3 botones, sin depender del stage
+        if not caption:
+            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo, tu **comprobante de depósito/activación** o **era otra cosa**?"
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
-                 InlineKeyboardButton("💳 Es depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
+                 InlineKeyboardButton("💳 Es mi depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
                 [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")]
             ])
             await update.message.reply_text(qtxt, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-            await send_admin_auto_log(context, update, "IMG_PRECHECK", qtxt)
+            await send_admin_auto_log(context, update, "AUTO_IMAGE", qtxt)
             return
+        # Si trae caption, lo tratamos como texto normal (se sigue abajo)
 
     texto = update.message.text or update.message.caption or ""
     intent = detect_intent_es(texto)
@@ -1094,7 +1117,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "DEP_LATER":
         msg = (
             "Perfecto ✅\n\n"
-            "Cuando estés list@ para depositar **50 USD o más**, escríbeme y lo revisamos para darte acceso 👇"
+            "Cuando tengas listo tu depósito de **50 USD o más**, escríbeme y lo revisamos para darte acceso 👇"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_LATER", msg)
@@ -1116,11 +1139,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) "
             "y también tu **ID de Binomo en texto** (solo el número) para validarlo y habilitar tu acceso 👇"
         )
-        # Si ya estaba en POST, marcamos como deposited y cancelamos campañas
-        if stage == STAGE_POST:
-            set_user_stage(chat_id, STAGE_DEPOSITED)
-            _cancel_jobs_prefix(context, "A", chat_id)
-            _cancel_jobs_prefix(context, "B", chat_id)
+        # Nota: NO detenemos Campaña B aquí. Solo pedimos comprobante/ID.
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM", msg)
         return
