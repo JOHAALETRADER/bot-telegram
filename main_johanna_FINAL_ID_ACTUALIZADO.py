@@ -1,3 +1,8 @@
+async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("❌ Respuesta cancelada.")
+
 import logging
 import asyncio
 import re
