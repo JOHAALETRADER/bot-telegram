@@ -1,8 +1,3 @@
-async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("❌ Respuesta cancelada.")
-
 import logging
 import asyncio
 import re
@@ -26,43 +21,6 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
-
-async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Maneja callbacks del botón '✏️ Responder' sin romper el flujo actual.
-    El envío real al usuario lo hace responder_a_usuario cuando el ADMIN responde
-    a un mensaje que contiene 'ID: <chat_id>'.
-    """
-    q = update.callback_query
-    await q.answer()
-
-    data = q.data or ""
-    if data.startswith("responder:"):
-        parts = data.split(":")
-        # formato esperado: responder:<chat_id>:<message_id>
-        chat_id = parts[1] if len(parts) > 1 else None
-        if not chat_id or not chat_id.isdigit():
-            await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ No pude identificar el chat_id del usuario.")
-            return
-
-        prompt = (
-            "✏️ Responder al usuario\n"
-            "ID: {0}\n\n"
-            "Responde a ESTE mensaje (reply) con tu texto o audio para enviarlo al usuario.\n"
-            "Si quieres cancelar, usa el botón ❌ Cancelar."
-        ).format(chat_id)
-
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=prompt,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="cancelar")]])
-        )
-        return
-
-    # Si llega otro callback aquí, no hacemos nada (lo manejará 'botones')
-    return
-
-
 
 import unicodedata
 import html
@@ -205,16 +163,6 @@ MENSAJE_B_1H_ES = "✅ Tu ID ya quedó validado.\n\n¿Ya activaste o depositaste
 MENSAJE_B_3H_ES = "💰 Tip rápido: si tienes disponible el bono del **100%**, úsalo para potenciar tu primer depósito.\n\nCuando tu depósito esté listo, escríbeme **Ya deposité** y te habilito el acceso 👇"
 MENSAJE_B_24H_ES = "🚀 Recuerda: para habilitar tu acceso VIP necesito confirmar tu **depósito/activación**.\n\nCuando esté listo, dime **Ya deposité** y lo activamos. Quedan cupos limitados ✅"
 MENSAJE_B_48H_ES = "⏳ Último recordatorio: si ya activaste tu cuenta con depósito, escríbeme **Ya deposité** para habilitar tu acceso VIP gratuita.\n\nSi aún no, activa tu cuenta cuando puedas y me avisas ✅"
-
-def _norm_trigger(s: str) -> str:
-    """Normaliza texto para comparar gatillos sin fallar por espacios/puntuación."""
-    s = (s or "").strip().lower()
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-
 
 # === MENSAJES (ES/EN) ===
 WELCOME_IMG = "bienvenidanuevasi.jpg"
@@ -572,22 +520,6 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, "IMG_IS_DEP", msg)
         return
 
-    # Confirmación de depósito (botones)
-    if q.data and q.data.startswith("DEP_YES|"):
-        set_user_stage(chat_id, STAGE_DEPOSITED)
-        _cancel_jobs_prefix(context, "A", chat_id)
-        _cancel_jobs_prefix(context, "B", chat_id)
-        msg = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
-        await q.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "DEP_YES", msg)
-        return
-
-    if q.data and q.data.startswith("DEP_NO|"):
-        msg = "Listo ✅\n\nDime qué necesitas exactamente y lo revisamos 👇"
-        await q.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "DEP_NO", msg)
-        return
-
     if q.data and q.data.startswith("IMG_IS_OTHER|"):
         msg = (
             "Listo ✅\n"
@@ -757,7 +689,6 @@ async def notificar_interaccion(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
 # === RESPUESTA DEL ADMIN (texto/audio) ===
-# === RESPUESTA DEL ADMIN (texto/audio) ===
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Puede ser respuesta a un mensaje del admin que contenía texto o media con caption
     if update.message.reply_to_message:
@@ -771,7 +702,6 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
         if chat_id_match:
             destinatario_id = int(chat_id_match.group(1))
             try:
-                # Enviar al usuario
                 if update.message.voice:
                     await context.bot.send_voice(
                         chat_id=destinatario_id,
@@ -784,31 +714,22 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         text=update.message.text
                     )
 
-                # Detectar mensaje gatillo y cambiar flujo (Serie A/B)
+                # --- NUEVO: detectar mensaje gatillo y cambiar flujo ---
                 try:
                     txt = (update.message.text or "").strip()
-                    n_txt = _norm_trigger(txt)
-                    n_ok = _norm_trigger(GATILLO_ID_OK)
-                    n_err = _norm_trigger(GATILLO_ID_ERRADO)
-
-                    if (n_txt == n_ok) or ("tu id es correcto" in n_txt) or ("id validado" in n_txt):
+                    if txt == GATILLO_ID_OK:
                         set_user_stage(destinatario_id, STAGE_POST)
+                        # Cancelar Serie A y activar Serie B
                         _cancel_jobs_prefix(context, "A", destinatario_id)
                         schedule_series_b(destinatario_id, context)
-                        await context.bot.send_message(
-                            chat_id=ADMIN_ID,
-                            text=f"✅ Gatillo OK detectado. Serie B activada para {destinatario_id}"
-                        )
-                    elif (n_txt == n_err) or ("tu id esta errado" in n_txt) or ("tu id está errado" in n_txt) or ("id errado" in n_txt):
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Gatillo OK detectado. Serie B activada para {destinatario_id}")
+                    elif txt == GATILLO_ID_ERRADO:
                         set_user_stage(destinatario_id, STAGE_PRE)
+                        # Mantener/renovar Serie A
                         schedule_series_a(destinatario_id, get_user_lang(destinatario_id), context)
-                        await context.bot.send_message(
-                            chat_id=ADMIN_ID,
-                            text=f"ℹ️ Gatillo ERRADO detectado. Serie A continua para {destinatario_id}"
-                        )
-                except Exception:
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"ℹ️ Gatillo ERRADO detectado. Serie A continua para {destinatario_id}")
+                except Exception as _e:
                     pass
-
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text="✅ Mensaje enviado al usuario correctamente."
@@ -829,6 +750,238 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
             text="❌ Debes responder directamente al mensaje del usuario para que funcione."
         )
 
+async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = update.callback_query
+        await query.answer()
+
+        data = query.data
+        if data.startswith("responder:"):
+            partes = data.split(":")
+            if len(partes) != 3:
+                await query.edit_message_text("❌ Error: formato de callback inválido.")
+                return
+
+            chat_id_str, message_id_str = partes[1], partes[2]
+
+            try:
+                chat_id = int(chat_id_str)
+                message_id = int(message_id_str)
+            except ValueError:
+                await query.edit_message_text("❌ Error: ID inválido.")
+                return
+
+            usuarios_objetivo[query.from_user.id] = chat_id
+
+            await query.edit_message_text(
+                text=(
+                    f"✏️ <b>Ahora puedes responder al usuario.</b>\n\n"
+                    f"📨 Responde a este mensaje con el texto o audio que deseas enviar.\n"
+                    f"🆔 ID del usuario: <code>{chat_id}</code>"
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancelar", callback_data="cancelar")]
+                ])
+            )
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"❌ Error en manejar_callback: {e}"
+        )
+
+# Maneja la cancelación del ID de respuesta
+async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        chat_id = query.message.chat.id
+
+        if chat_id in usuarios_objetivo:
+            del usuarios_objetivo[chat_id]
+            await query.edit_message_text("❌ Has cancelado la respuesta al usuario.")
+        else:
+            await query.edit_message_text("ℹ️ No había ninguna respuesta pendiente por cancelar.")
+
+
+
+# === IA / FAQ (ES) ===
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+LIVE_HORARIOS_ES = (
+    "📅 **Horarios de mis lives (hora Colombia):**\n"
+    "• **Martes:** 11:00 am y 8:00 pm\n"
+    "• **Miércoles:** 8:00 pm\n"
+    "• **Jueves:** 11:00 am y 8:00 pm\n"
+    "• **Viernes:** 8:00 pm\n"
+    "• **Sábados:** 11:00 am y 8:00 pm\n"
+)
+
+def _norm(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+    return s
+
+def detect_intent_es(texto: str) -> str:
+    t = _norm(texto)
+
+    # Siguiente paso / qué sigue
+    if any(k in t for k in [
+        "que sigue", "qué sigue", "que paso sigue", "qué paso sigue", "paso sigue",
+        "y ahora que", "y ahora qué", "entonces que sigue", "entonces qué sigue",
+        "ok gracias entonces", "ok gracias", "ya me registre que hago", "ya me registré que hago",
+        "que hago ahora", "qué hago ahora", "siguiente paso"
+    ]):
+        return "NEXT_STEP"
+
+    # Dónde enviar el ID / te envío el ID
+    if ("id" in t) and any(k in t for k in [
+        "te envio", "te envío", "envio", "envío", "enviar", "mando", "te mando",
+        "por donde", "por dónde", "a donde", "a dónde", "donde te", "dónde te",
+        "por aca", "por acá", "por aqui", "por aquí"
+    ]):
+        return "WHERE_SEND_ID"
+
+    if any(k in t for k in ["vpn", "proxy"]):
+        return "VPN"
+    if ("error" in t and ("pais" in t or "país" in t or "country" in t)) or ("me sale" in t and "pais" in t):
+        return "PAIS"
+
+    if any(k in t for k in ["horario", "horarios", "live", "en vivo", "directo"]):
+        return "LIVE"
+
+    if any(k in t for k in ["bono", "bonus", "100%"]):
+        return "BONO"
+
+    if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
+        return "ID"
+
+    if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "no me deja retirar", "no me deja"]):
+        return "RETIRO"
+
+    if any(k in t for k in ["metodo", "metodos", "banco", "cuenta bancaria", "colombia", "astropay", "nequi", "transfiya"]):
+        return "METODOS"
+
+    if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "correo", "email"]):
+        return "EMAIL"
+
+    if any(k in t for k in ["ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "ya active", "ya activé"]):
+        return "DEPOSITO"
+
+    if re.search(r"\b\d{6,}\b", t) and ("id" in t or t.strip().isdigit()):
+        return "ID_SUBMIT"
+
+    return "OTRO"
+
+def respuesta_bono_es() -> str:
+    return (
+        "💰 **¿Cómo funciona el bono en Binomo?**\n\n"
+        "El bono es **opcional** y puede aparecer al momento de depositar. "
+        "Si lo activas, Binomo te añade un porcentaje extra para operar con más capital.\n\n"
+        "📌 Ojo: los bonos suelen tener **condiciones** antes de poder retirar (por ejemplo, volumen mínimo). "
+        "Las reglas exactas varían según tu cuenta y promo activa.\n\n"
+        "Si quieres, escríbeme y lo revisamos según tu caso 👇"
+    )
+
+def respuesta_id_es() -> str:
+    return (
+        "🆔 **¿Dónde encuentro mi ID de Binomo?**\n\n"
+        "1) Entra a tu cuenta (app o web).\n"
+        "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
+        "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
+        "Si no lo ves, dime si estás en app o navegador y te guío 👇"
+    )
+
+
+def respuesta_next_step_es() -> str:
+    return (
+        "✅ Perfecto. El **siguiente paso** es validar tu **ID** para confirmar que tu registro quedó bien "
+        "**antes de que deposites**.\n\n"
+        "📌 Envíame aquí tu **ID de Binomo** (solo el número) y lo dejo en validación.\n\n"
+        "Si prefieres, también puedes escribirme al chat personal 👇"
+    )
+
+def respuesta_where_send_id_es() -> str:
+    return (
+        "Sí ✅ Puedes enviarme tu **ID por aquí mismo** (solo el número) y lo dejo en validación.\n\n"
+        "Si prefieres hacerlo directo conmigo, también puedes escribirme al chat personal 👇"
+    )
+
+def fallback_johabot_es() -> str:
+    return (
+        "Para este caso prefiero revisarlo contigo directamente 🤍\n\n"
+        "Soy **Johabot** y para ayudarte correctamente escríbeme aquí 👇"
+    )
+
+async def binomo_helpcenter_snippets(query: str, max_results: int = 3) -> str:
+    if not HAS_HTTPX:
+        return ""
+    try:
+        q = urllib.parse.quote(query)
+        url = f"https://binomo2.zendesk.com/api/v2/help_center/articles/search.json?query={q}&locale=es-419"
+        async with httpx.AsyncClient(timeout=12) as client:
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return ""
+        data = r.json()
+        results = data.get("results") or []
+        if not results:
+            return ""
+        chunks = []
+        for item in results[:max_results]:
+            title = item.get("title") or ""
+            body = item.get("body") or ""
+            body = html.unescape(body)
+            body = re.sub(r"<[^>]+>", " ", body)
+            body = re.sub(r"\s+", " ", body).strip()[:900]
+            link = item.get("html_url") or ""
+            chunks.append(f"TITULO: {title}\nCONTENIDO: {body}\nFUENTE: {link}".strip())
+        return "\n\n---\n\n".join(chunks)
+    except Exception:
+        return ""
+
+async def openai_answer_es(question: str, context_text: str) -> str:
+    if not (HAS_HTTPX and OPENAI_API_KEY):
+        return ""
+    try:
+        system = (
+            "Eres un asistente de soporte para usuarios de Binomo en español. "
+            "Responde en 6–10 líneas, claro y directo. "
+            "NO inventes información. Si algo depende del país, método de pago o datos de la cuenta, dilo. "
+            "NO des instrucciones para evadir restricciones (VPN/proxy). "
+            "Si el contexto no alcanza, responde exactamente con: NO_DATA"
+        )
+        payload = {
+            "model": OPENAI_MODEL,
+            "input": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"PREGUNTA: {question}\n\nCONTEXTO:\n{context_text}"}
+            ],
+            "temperature": 0.2,
+        }
+        async with httpx.AsyncClient(timeout=18) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": "Bearer " + OPENAI_API_KEY},
+                json=payload,
+            )
+        if resp.status_code != 200:
+            return ""
+        out = resp.json()
+        texts = []
+        for item in out.get("output", []):
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    texts.append(c.get("text", ""))
+        ans = "\n".join([t for t in texts if t]).strip()
+        if (not ans) or ("NO_DATA" in ans):
+            return ""
+        return ans
+    except Exception:
+        return ""
+
+# Nueva función para manejar mensajes de usuarios (texto o media)
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Guardar y notificar al admin primero (así ves la pregunta antes del auto-reply)
     await guardar_mensaje(update, context)
@@ -856,24 +1009,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     texto = update.message.text or update.message.caption or ""
     intent = detect_intent_es(texto)
-
-    # SMALLTALK o charla general: no auto-responder (solo auditoría del mensaje entrante ya se envió al admin)
-    if intent == "SMALLTALK":
-        return
-
-    # Regla dura: Depósito luego / esperar dinero
-    if intent == "DEP_LATER":
-        msg = "Cuando estés lista/o para depositar 50+ USD, escríbeme y lo revisamos."
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "DEP_LATER", msg)
-        return
-
-    # Regla dura: mínimo 50 USD
-    if intent == "MIN50":
-        msg = "El depósito mínimo para activar beneficios y acceso VIP es de 50 USD. Cuando completes 50+ USD, escríbeme y lo revisamos."
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "MIN50", msg)
-        return
 
         # Si el usuario solo está enviando su ID, confirmamos recibido (validación manual)
     if intent == "ID_SUBMIT":
@@ -935,30 +1070,25 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ya depositó (solo si ya estaba validado)
     if intent == "DEPOSITO" and stage == STAGE_POST:
         set_user_stage(chat_id, STAGE_DEPOSITED)
-        # Cancelar campañas A y B (fin de campañas)
-        _cancel_jobs_prefix(context, "A", chat_id)
         _cancel_jobs_prefix(context, "B", chat_id)
-        msg = "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇"
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "DEPOSITO_CONFIRM", msg)
+        await update.message.reply_text(
+            "Perfecto ✅\n\nEscríbeme aquí para habilitar tu acceso a mi comunidad VIP gratuita 👇",
+            reply_markup=support_keyboard()
+        )
         return
 
     # Captura sin texto durante POST: confirmación
     if stage == STAGE_POST and update.message.photo and not (update.message.caption or "").strip():
-        msg = "📩 Recibido. ¿Esto es tu comprobante de depósito/activación?"
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"DEP_YES|{chat_id}"),
-            InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"DEP_NO|{chat_id}"),
-        ]])
-        await update.message.reply_text(msg, reply_markup=kb)
-        await send_admin_auto_log(context, update, "IMG_POST_CONFIRM", msg)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"dep_yes:{chat_id}")],
+            [InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"dep_no:{chat_id}")]
+        ])
+        await update.message.reply_text("📩 Recibido. ¿Esto es tu comprobante de depósito/activación?", reply_markup=kb)
         return
 
     # En validación: no IA externa
     if in_validation_flow:
-        msg = fallback_johabot_es()
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "VALIDATION_FLOW", msg)
+        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         return
 
     # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
@@ -1050,6 +1180,7 @@ if __name__ == "__main__":
     # Callback de comprobante depósito (Serie B)
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
+
     # Callback del botón ❌ Cancelar
     app.add_handler(CallbackQueryHandler(cancelar_respuesta, pattern="^cancelar$"))
 
