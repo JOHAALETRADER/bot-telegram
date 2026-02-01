@@ -156,7 +156,7 @@ SUPPORT_URL = "https://t.me/Johaaletradervalidacion"
 
 # Mensajes gatillo exactos (los que tú envías cuando validas manualmente)
 GATILLO_ID_OK = "Tu ID es correcto puedes depositar en tu cuenta de trading Binomo a partir de 50 USD.\n\nCuando tú deposito este listo escríbeme para darte acceso"
-GATILLO_ACCESO_OK = "confirmado tu cuenta esta activa"
+GATILLO_ACCESO_OK = "confirmo cuenta activa"
 GATILLO_ID_ERRADO = "Tu ID está errado.\n\nPara tener acceso a mi comunidad vip y todas las herramientas debes realizar tu registro con mi enlace..\n\nCopia y pega el enlace de registro en barra de búsqueda de una ventana de incógnito de tu navegador y usa otro correo.. luego me envías ID de binomo para validar.\n\nEnlace de registro:\n\nhttps://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
 
 # Mensajes Serie B (post-validación ES) — mismos tiempos (1h, 3h, 24h, 48h)
@@ -362,12 +362,12 @@ def support_keyboard() -> InlineKeyboardMarkup:
 
 def live_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎵 TikTok (Lives)", url="https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1")],
         [InlineKeyboardButton("📲 Instagram (Lives)", url="https://www.instagram.com/johaale_trader/")],
         [InlineKeyboardButton("▶️ YouTube", url="https://www.youtube.com/@johaalegria.trader")],
         [InlineKeyboardButton("💬 Escríbeme aquí", url=SUPPORT_URL)],
     ])
 
-# === Jobs nombrados para poder cancelar (Serie A y Serie B) ===
 def _cancel_jobs_prefix(context: ContextTypes.DEFAULT_TYPE, prefix: str, chat_id: int):
     if not context.job_queue:
         return
@@ -524,6 +524,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"DEP_YES|{chat_id}"),
             InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"DEP_NO|{chat_id}"),
         ]])
+        context.user_data["awaiting_deposit_proof"] = False
         await q.message.reply_text(msg, reply_markup=kb)
         await send_admin_auto_log(context, update, "IMG_IS_DEP", msg)
         return
@@ -545,12 +546,14 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) y tu **ID de Binomo en texto** "
             "(solo el número) para validarlo y habilitar tu acceso 👇"
         )
+        context.user_data["awaiting_deposit_proof"] = True
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM_BTN", msg)
         return
 
     if q.data and (q.data.startswith("DEP_NO|") or q.data.startswith("dep_no:")):
         msg = "Perfecto ✅\n\nCuéntame en texto qué necesitas revisar 👇"
+        context.user_data.pop("awaiting_deposit_proof", None)
         await q.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_DEP_NOT_RELATED_BTN", msg)
         return
@@ -751,7 +754,7 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         schedule_series_b(destinatario_id, context)
                         await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Gatillo OK detectado. Serie B activada para {destinatario_id}")
 
-                    elif (_norm(GATILLO_ACCESO_OK) in txtn) or ("cuenta esta activa" in txtn) or ("cuenta está activa" in txtn) or ("acceso confirmado" in txtn) or ("acceso activado" in txtn):
+                    elif ("confirmo cuenta activa" in txtn) or ("cuenta esta activa" in txtn) or ("cuenta está activa" in txtn) or ("acceso confirmado" in txtn) or ("acceso activado" in txtn):
                         # Acceso final confirmado por admin: detener campañas A y B
                         set_user_stage(destinatario_id, STAGE_DEPOSITED)
                         _cancel_jobs_prefix(context, "A", destinatario_id)
@@ -864,7 +867,7 @@ def detect_intent_es(texto: str) -> str:
     # ---- SALUDOS (intuitivo) ----
     # Detecta saludos aunque vengan con "cómo estás", "qué tal", etc.
     # Si el texto también contiene una intención fuerte (depósito, 50, live, etc.), dejamos que gane esa intención.
-    if re.match(r"^(hola|holi|hey|hello|buenas|buenos dias|buenas noches|buen dia)", t):
+    if re.search(r"^(hola|holi|hello|hey|buenas|buenos|buen día|buen dia|buenas noches|buenas tardes|buenos dias|buenos días)\b", t):
         # saludos + frases cortas típicas
         if any(k in t for k in ["como estas", "cómo estás", "que tal", "qué tal", "todo bien", "todo bn", "como vas", "cómo vas"]) or len(t) <= 22:
             return "GREETING"
@@ -936,6 +939,11 @@ def detect_intent_es(texto: str) -> str:
         "que hago ahora", "qué hago ahora", "siguiente paso"
     ]):
         return "NEXT_STEP"
+
+    # Si el mensaje contiene un ID (número) en cualquier parte (prioridad alta)
+    m_id = re.search(r"\b\d{6,12}\b", t)
+    if m_id:
+        return "ID_SUBMIT"
 
     # ---- Dónde enviar el ID / te envío el ID ----
     if ("id" in t) and any(k in t for k in [
@@ -1030,36 +1038,15 @@ def respuesta_where_send_id_es() -> str:
 
 def fallback_johabot_es() -> str:
     return (
-        "Para este caso prefiero revisarlo contigo directamente 🤍\n\n"
-        "Soy **Johabot** y para ayudarte correctamente escríbeme aquí 👇"
+        "Entiendo 🤍\n\n"
+        "Para ayudarte bien, prefiero revisarlo contigo directamente.\n\n"
+        "Soy **Johabot** y puedes escribirme aquí 👇"
     )
 
+
 async def binomo_helpcenter_snippets(query: str, max_results: int = 3) -> str:
-    if not HAS_HTTPX:
-        return ""
-    try:
-        q = urllib.parse.quote(query)
-        url = f"https://binomo2.zendesk.com/api/v2/help_center/articles/search.json?query={q}&locale=es-419"
-        async with httpx.AsyncClient(timeout=12) as client:
-            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code != 200:
-            return ""
-        data = r.json()
-        results = data.get("results") or []
-        if not results:
-            return ""
-        chunks = []
-        for item in results[:max_results]:
-            title = item.get("title") or ""
-            body = item.get("body") or ""
-            body = html.unescape(body)
-            body = re.sub(r"<[^>]+>", " ", body)
-            body = re.sub(r"\s+", " ", body).strip()[:900]
-            link = item.get("html_url") or ""
-            chunks.append(f"TITULO: {title}\nCONTENIDO: {body}\nFUENTE: {link}".strip())
-        return "\n\n---\n\n".join(chunks)
-    except Exception:
-        return ""
+    # Desactivado: no consultamos páginas externas desde el bot.
+    return ""
 
 async def openai_answer_es(question: str, context_text: str) -> str:
     if not (HAS_HTTPX and OPENAI_API_KEY):
@@ -1139,10 +1126,11 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "GREETING":
-        msg = "Hola 👋 ¿Cómo estás? Cuéntame en qué te ayudo 😊"
+        msg = "¡Hola! 🤍 ¿En qué puedo ayudarte hoy?\n\nSi prefieres, también puedes escribirme al chat personal 👇"
         await update.message.reply_text(msg, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "GREETING", msg)
+        await send_admin_auto_log(context, update, "AUTO_GREETING", msg)
         return
+
 
     if intent == "YA_REGISTRE":
         msg = (
@@ -1187,6 +1175,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Si el usuario solo está enviando su ID, confirmamos recibido (validación manual)
     if intent == "ID_SUBMIT":
+        m = re.search(r"\b\d{6,12}\b", (update.message.text or "").strip())
+        if m:
+            context.user_data["binomo_id"] = m.group(0)
         respuesta_id_submit = (
             "✅ **Recibido.** Ya tengo tu ID.\n"
             "Lo dejo en **validación** y en breve te confirmo si está correcto.\n"
@@ -1242,14 +1233,43 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, "ID", respuesta_id_es())
         return
 
-    # Captura sin texto durante POST: confirmación
-    if stage == STAGE_POST and update.message.photo and not (update.message.caption or "").strip():
+    # Imagen SIN texto: flujo guiado por botones (ID / Depósito / Otra cosa)
+    if update.message.photo and not (update.message.caption or "").strip():
+        # Si ya veníamos esperando el comprobante, no volvemos a preguntar: lo tomamos como depósito
+        if context.user_data.get("awaiting_deposit_proof"):
+            # Si ya tenemos ID guardado, confirmamos recepción y pasamos a validación (sin pedirlo otra vez)
+            saved_id = context.user_data.get("binomo_id")
+            if saved_id:
+                msg = (
+                    "Perfecto ✅\n\n"
+                    "Recibido. Estoy validando tu información ahora mismo.\n"
+                    "Si todo está OK, te escribo para habilitar tu acceso y enviarte las herramientas 🤍"
+                )
+                context.user_data["awaiting_deposit_proof"] = False
+                await update.message.reply_text(msg, reply_markup=support_keyboard())
+                await send_admin_auto_log(context, update, "AUTO_DEPOSIT_PROOF_VALIDATING", msg)
+                return
+
+            # Si aún no tenemos ID, lo pedimos una sola vez
+            msg = (
+                "Perfecto ✅\n\n"
+                "Ahora envíame tu **ID de Binomo en texto** (solo el número) para dejarlo en validación y habilitar tu acceso 👇"
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+            await send_admin_auto_log(context, update, "AUTO_DEPOSIT_PROOF_NEED_ID", msg)
+            return
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Sí, ya deposité", callback_data=f"DEP_YES|{chat_id}")],
-            [InlineKeyboardButton("❌ No, era otra cosa", callback_data=f"DEP_NO|{chat_id}")]
+            [
+                InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
+                InlineKeyboardButton("💳 Es mi depósito", callback_data=f"IMG_IS_DEP|{chat_id}"),
+            ],
+            [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")],
         ])
-        await update.message.reply_text("📩 Recibido. ¿Esto es tu comprobante de depósito/activación?", reply_markup=kb)
+        msg = "Recibido. ¿Esta imagen es tu ID de Binomo, tu comprobante de depósito/activación o era otra cosa?"
+        await update.message.reply_text(msg, reply_markup=kb)
+        await send_admin_auto_log(context, update, "AUTO_IMAGE", msg)
         return
+
 
     # En validación: no IA externa
     if in_validation_flow:
