@@ -185,7 +185,7 @@ MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Solo debes abrir tu cuenta de trad
 💰 Depósito mínimo 50 USD
 
 IMPORTANTE: LA CANTIDAD DE BENEFICIOS VARÍA SEGÚN TU DEPÓSITO.
-
+ 
 ¡Te espero!"""
 
 MENSAJE_REGISTRARME_EN = f"""It’s super simple. Open your trading account on Binomo using this link:
@@ -437,8 +437,8 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🚀 Completar registro", callback_data="registrarme")],
             [InlineKeyboardButton("✅ Valida tu ID | ¿Dudas? Escríbeme", url="https://t.me/Johaaletradervalidacion")],
             [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_tengo_cuenta")],
-            [InlineKeyboardButton("🎁 Beneficios VIP",
-            "📊 Niveles y Planes", callback_data="beneficios_vip")],
+            [InlineKeyboardButton("🎁 Beneficios VIP", callback_data="beneficios_vip")],
+            [InlineKeyboardButton("📊 Niveles y Planes", callback_data="niveles_planes")],
             [InlineKeyboardButton("📲 Canal en Español", url=CANAL_ES)],
             [InlineKeyboardButton("📊 Canal de resultados", url=CANAL_RESULTADOS)],
             [InlineKeyboardButton("🌐 Redes sociales", callback_data="redes_sociales")],
@@ -506,6 +506,23 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Notificar interacción
     await notificar_interaccion(update, context)
+
+    # --- Niveles y Planes (informativo) ---
+    if q.data == "niveles_planes":
+        texto = (
+            "📊 NUEVA ESTRUCTURA OFICIAL JT TRADERS\n\n"
+            "🟢 Básico — desde $50 inversión en tu cuenta Binomo.\n"
+            "Señales Crypto IDX limitadas + formación y gestión.\n\n"
+            "🔵 Premium — desde $200 inversión.\n"
+            "Señales completas, bots IA, operativa en vivo y multi-broker.\n\n"
+            "🟣 Prestige — desde $500 inversión.\n"
+            "Mentorías privadas, Forex automatizado y preparación para cuentas de fondeo.\n\n"
+            "Consulta todos los detalles aquí:"
+        )
+        kb = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-TRADING-02-24")]]
+        await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
+        return
+
 
     # --- Acciones para imagen (ID vs depósito) ---
     if q.data and q.data.startswith("IMG_IS_ID|"):
@@ -1362,27 +1379,6 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("⚠️ Ocurrió un error al intentar enviar el mensaje.")
 
 
-# =========================
-# INFORMACIÓN NIVELES OFICIALES
-# =========================
-
-async def niveles_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto = (
-        "📊 NUEVA ESTRUCTURA OFICIAL JT TRADERS\n\n"
-        "🟢 Básico — desde $50 inversión en tu cuenta Binomo.\n"
-        "Señales Crypto IDX limitadas + formación y gestión.\n\n"
-        "🔵 Premium — desde $200 inversión.\n"
-        "Señales completas, bots IA, operativa en vivo y multi‑broker.\n\n"
-        "🟣 Prestige — desde $500 inversión.\n"
-        "Mentorías privadas, Forex automatizado y preparación para cuentas de fondeo.\n\n"
-        "Consulta todos los detalles aquí:"
-    )
-
-    keyboard = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-TRADING-02-24")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(texto, reply_markup=reply_markup)
-
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
@@ -1400,8 +1396,6 @@ if __name__ == "__main__":
 
     # Callback de comprobante depósito (Serie B)
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^dep_"))
-
-    app.add_handler(MessageHandler(filters.Regex("📊 Niveles y Planes"), niveles_info))
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
 
