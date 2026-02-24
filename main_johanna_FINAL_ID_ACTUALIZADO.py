@@ -155,7 +155,24 @@ ENLACE_REFERIDO  = "https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
 SUPPORT_URL = "https://t.me/Johaaletradervalidacion"
 
 # Mensajes gatillo exactos (los que tú envías cuando validas manualmente)
-GATILLO_ID_OK = "Tu ID es correcto puedes depositar en tu cuenta de trading Binomo a partir de 50 USD.\n\nCuando tú deposito este listo escríbeme para darte acceso"
+GATILLO_ID_OK = """ID validado correctamente. ✅
+
+Para activar tu acceso necesitas:
+
+1️⃣ Depósito en tu cuenta de trading según el nivel elegido.
+2️⃣ Activación de tu membresía correspondiente.
+
+Cuando tengas tu depósito listo, escríbeme directamente y te guío para activar tu membresía y acceso."""
+
+GATILLO_ID_OK_EN = """ID successfully validated. ✅
+
+To activate your access you need:
+
+1️⃣ Deposit into your trading account according to your chosen level.
+2️⃣ Activation of your corresponding membership.
+
+Once your deposit is ready, message me directly and I’ll guide you to activate your membership and access."""
+
 GATILLO_ACCESO_OK = "confirmo cuenta activa"
 GATILLO_ID_ERRADO = "Tu ID está errado.\n\nPara tener acceso a mi comunidad vip y todas las herramientas debes realizar tu registro con mi enlace..\n\nCopia y pega el enlace de registro en barra de búsqueda de una ventana de incógnito de tu navegador y usa otro correo.. luego me envías ID de binomo para validar.\n\nEnlace de registro:\n\nhttps://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
 
@@ -182,7 +199,7 @@ MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Solo debes abrir tu cuenta de trad
 
 👉 Luego de crear la cuenta es necesario y súper importante que me envíes tu ID de Binomo para validar tu registro antes de que realices un depósito en tu cuenta de trading.
 
-💰 Depósito mínimo 50 USD
+💰 Depósito según nivel elegido 
 
 IMPORTANTE: LA CANTIDAD DE BENEFICIOS VARÍA SEGÚN TU DEPÓSITO.
  
@@ -194,7 +211,7 @@ MENSAJE_REGISTRARME_EN = f"""It’s super simple. Open your trading account on B
 
 👉 After creating the account, it’s very important that you send me your Binomo ID so I can validate your registration **before** you make any deposit.
 
-💰 Minimum deposit: 50 USD
+💰 Minimum deposit according to the chosen level
 
 IMPORTANT: The amount of benefits varies depending on your deposit.
 
@@ -792,7 +809,12 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                 try:
                     txt = (update.message.text or "")
                     txtn = _norm(txt)
-                    if (_norm(GATILLO_ID_OK) in txtn) or ("tu id es correcto" in txtn and "50" in txtn):
+                    if (
+    _norm(GATILLO_ID_OK) in txtn
+    or _norm(GATILLO_ID_OK_EN) in txtn
+    or ("id validado" in txtn)
+    or ("id successfully validated" in txtn)
+):
                         set_user_stage(destinatario_id, STAGE_POST)
                         # Cancelar Serie A y activar Serie B
                         _cancel_jobs_prefix(context, "A", destinatario_id)
