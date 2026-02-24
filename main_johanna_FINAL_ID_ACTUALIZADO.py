@@ -1360,6 +1360,93 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         print(f"❌ Error al enviar mensaje directo: {e}")
         await update.message.reply_text("⚠️ Ocurrió un error al intentar enviar el mensaje.")
 
+
+
+# =========================
+# INFORMACIÓN NIVELES NUEVA ESTRUCTURA
+# =========================
+
+TELEGRAPH_LINK = "https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-TRADING-02-24"  # Reemplazar por tu link real
+
+async def niveles(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🟢 Básico", callback_data="nivel_basic")],
+        [InlineKeyboardButton("🔵 Premium", callback_data="nivel_premium")],
+        [InlineKeyboardButton("🟣 Prestige", callback_data="nivel_prestige")],
+        [InlineKeyboardButton("📄 Ver información completa", url=TELEGRAPH_LINK)],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "📊 NUEVA ESTRUCTURA JT TRADERS\n\n"
+        "Elige un nivel para ver detalles:",
+        reply_markup=reply_markup
+    )
+
+
+async def nivel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+
+    if data == "nivel_basic":
+        texto = (
+            "🟢 NIVEL BÁSICO\n"
+            "Capital recomendado: desde 50 USD en Binomo.\n\n"
+            "Incluye:\n"
+            "• VIP formación (planes + gestión)\n"
+            "• ~30 señales Crypto IDX\n"
+            "• Martes a viernes\n"
+            "• Horarios variados\n\n"
+            "Inversión membresía:\n"
+            "1 mes: 20 USD\n"
+            "3 meses: 45 USD\n"
+            "6 meses: 70 USD"
+        )
+
+    elif data == "nivel_premium":
+        texto = (
+            "🔵 NIVEL PREMIUM\n"
+            "Capital recomendado: 200–450 USD en Binomo.\n\n"
+            "Incluye:\n"
+            "• Señales completas\n"
+            "• Bots IA 24/7\n"
+            "• Operativa en vivo\n"
+            "• Multi-broker\n\n"
+            "Inversión membresía:\n"
+            "1 mes: 45 USD\n"
+            "3 meses: 110 USD\n"
+            "6 meses: 220 USD"
+        )
+
+    elif data == "nivel_prestige":
+        texto = (
+            "🟣 NIVEL PRESTIGE\n"
+            "Capital recomendado: 500 USD o más.\n\n"
+            "Incluye:\n"
+            "• Todo Premium\n"
+            "• Mentorías privadas\n"
+            "• Forex automatizado\n"
+            "• Preparación fondeo\n\n"
+            "Inversión membresía:\n"
+            "1 mes: 85 USD\n"
+            "3 meses: 190 USD\n"
+            "6 meses: 320 USD"
+        )
+
+    else:
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("📄 Ver detalles completos", url=TELEGRAPH_LINK)]
+    ]
+
+    await query.edit_message_text(
+        texto,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
@@ -1378,7 +1465,7 @@ if __name__ == "__main__":
     # Callback de comprobante depósito (Serie B)
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^dep_"))
 
-    # Callback del botón "Responder"
+        # Comando /niveles (informativo)\n    app.add_handler(CommandHandler("niveles", niveles))\n\n    # Callback niveles\n    app.add_handler(CallbackQueryHandler(nivel_callback, pattern="^nivel_"))\n\n    # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
 
     # Callback del botón ❌ Cancelar
