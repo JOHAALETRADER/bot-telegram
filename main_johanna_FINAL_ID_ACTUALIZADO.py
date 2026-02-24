@@ -186,7 +186,6 @@ MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Solo debes abrir tu cuenta de trad
 
 IMPORTANTE: LA CANTIDAD DE BENEFICIOS VARÍA SEGÚN TU DEPÓSITO.
 
-Mi comunidad VIP es gratuita. 
 ¡Te espero!"""
 
 MENSAJE_REGISTRARME_EN = f"""It’s super simple. Open your trading account on Binomo using this link:
@@ -199,7 +198,6 @@ MENSAJE_REGISTRARME_EN = f"""It’s super simple. Open your trading account on B
 
 IMPORTANT: The amount of benefits varies depending on your deposit.
 
-My VIP community is free.
 I’ll be waiting for you!"""
 
 MENSAJE_YA_TENGO_CUENTA_ES = f"""Para tener acceso a mi comunidad VIP y todas las herramientas debes realizar tu registro con mi enlace.
@@ -1403,7 +1401,7 @@ if __name__ == "__main__":
     # Callback de comprobante depósito (Serie B)
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^dep_"))
 
-        app.add_handler(MessageHandler(filters.Regex("📊 Niveles y Planes"), niveles_info))
+    app.add_handler(MessageHandler(filters.Regex("📊 Niveles y Planes"), niveles_info))
     # Callback del botón "Responder"
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^responder:"))
 
