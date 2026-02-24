@@ -427,6 +427,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("✅ Validate your ID | Questions? DM me", url="https://t.me/Johaaletradervalidacion")],
             [InlineKeyboardButton("✅ I already have an account", callback_data="ya_tengo_cuenta")],
             [InlineKeyboardButton("🎁 VIP Benefits", callback_data="beneficios_vip")],
+            [InlineKeyboardButton("📊 Levels & Plans", callback_data="levels_plans_en")],
             [InlineKeyboardButton("📲 Channel in English", url=CANAL_EN)],
             [InlineKeyboardButton("📊 Results Channel", url=CANAL_RESULTADOS)],
             [InlineKeyboardButton("🌐 Social media", callback_data="redes_sociales")],
@@ -523,6 +524,21 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
 
+
+
+    # --- Levels & Plans (EN) ---
+    if q.data == "levels_plans_en":
+        texto = (
+            "📊 OFFICIAL JT TRADERS COMMUNITY STRUCTURE\n\n"
+            "🟢 Level 1 — Basic (from $50 trading capital in your Binomo account).\n"
+            "Limited Crypto IDX signals + education & risk management.\n\n"
+            "🔵 Level 2 — Premium (from $200 trading capital).\n"
+            "Full signals, AI bots, live trading and multi-broker.\n\n"
+            "See full details here:"
+        )
+        kb = [[InlineKeyboardButton("📄 View full structure", url="https://telegra.ph/OFFICIAL-COMMUNITY-STRUCTURE--ENGLISH-VERSION-02-24")]]
+        await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
+        return
 
     # --- Acciones para imagen (ID vs depósito) ---
     if q.data and q.data.startswith("IMG_IS_ID|"):
