@@ -288,32 +288,32 @@ Do it now using my link and send me your Binomo ID for validation ✅
 # Beneficios (ES/EN)
 BENEFICIOS_ES = """✨ Beneficios Exclusivos que Recibirás ✨
 
-✅ Acceso a cursos completos: Binarias, Forex e Índices Sintéticos, con certificación incluida.
-✅ Clases grabadas y privadas: acceso de por vida, mentorías en vivo y acompañamiento constante.
-✅ Material premium: guías, PDFs, audiolibros, tablas de plan de trading y gestión de riesgo.
-✅ +200 señales diarias: de lunes a lunes, generadas con software propio de alta precisión.
-✅ Bot de señales automático 24/7: opera en tiempo real sin que pierdas ninguna oportunidad.
-✅ Señales de alto valor: CRYPTO IDX, pares de divisas, Forex, índices sintéticos, futuros y spot en Binance.
-✅ Herramientas avanzadas: bot y plantillas listas para MT4 (Forex) y MT5 (Crash & Boom).
-✅ Bonos y recompensas: sorteos, premios y beneficios adicionales para tu crecimiento.
-✅ Sistema Forex automatizado supervisado para crecimiento progresivo.
-✅ Preparación estratégica para cuentas de fondeo y escalamiento profesional.
+✅ Formación certificada: Binarias, Forex, Índices Sintéticos y enfoque Multi-Broker.
+✅ Material premium de estudio: guías, PDFs, estrategias exitosas, planes de trading, gestión de riesgo e interés compuesto.
+✅ Mentorías y operativas en vivo: acompañamiento constante y clases grabadas.
+✅ +200 señales diarias de alta precisión: Divisas, CRYPTO IDX, Forex, índices sintéticos, futuros y spot en Binance.
+✅ Bots automáticos 24/7: no pierdas oportunidades incluso cuando no estés conectado.
+✅ Forex Automatizado: sistemas listos para ejecutar con configuración profesional.
+✅ Preparación para Cuentas de Fondeo: estructura, disciplina y plan real de escalamiento.
+✅ Herramientas avanzadas para MT4 y MT5.
+✅ Bonos y beneficios adicionales según nivel.
 
-⚡ Recuerda: la cantidad de beneficios puede variar según tu inversión personal. ⚡
+⚡️ Los beneficios pueden variar según el nivel e inversión elegida. ⚡️
 """
 
 BENEFICIOS_EN = """✨ Exclusive Benefits You’ll Receive ✨
 
-✅ Full courses included: Binary Options, Forex, and Synthetic Indices, with certification.
-✅ Recorded & private classes: lifetime access, live mentoring, and ongoing support.
-✅ Premium materials: guides, PDFs, audiobooks, trading plan tables, and risk management sheets.
-✅ 200+ daily signals: from Monday to Sunday, generated with proprietary high-accuracy software.
-✅ 24/7 auto signal bot: trade in real time so you never miss an opportunity.
-✅ High-value signals: CRYPTO IDX, currency pairs, Forex, synthetic indices, futures, and Binance spot.
-✅ Advanced tools: ready-to-use bots and templates for MT4 (Forex) and MT5 (Crash & Boom).
-✅ Bonuses & rewards: raffles, prizes, and extra perks for your growth.
+✅ Certified Training: Binary Options, Forex, Synthetic Indices and a Multi-Broker approach.
+✅ Premium Study Materials: guides, PDFs, proven strategies, trading plans, risk management and compound interest structures.
+✅ Live Mentorship & Trading Sessions: ongoing support and recorded classes.
+✅ 200+ High-Precision Signals Daily: Forex pairs, CRYPTO IDX, synthetic indices, futures and spot trading on Binance.
+✅ 24/7 Automated Bots: never miss opportunities, even when you're offline.
+✅ Automated Forex Systems: professionally configured and ready to execute.
+✅ Funding Account Preparation: structure, discipline and real capital scaling strategy.
+✅ Advanced Tools for MT4 and MT5.
+✅ Additional bonuses and benefits depending on your level.
 
-⚡ Note: the amount of benefits may vary depending on your personal investment. ⚡
+⚡️ Benefits may vary according to the selected level and capital. ⚡️
 """
 
 # === FUNCIONES DE MENSAJES PROGRAMADOS (usa lang por usuario) ===
