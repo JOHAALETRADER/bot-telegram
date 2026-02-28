@@ -537,7 +537,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Mentorías privadas, Forex automatizado y preparación para cuentas de fondeo.\n\n"
             "Consulta todos los detalles aquí:"
         )
-        kb = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-TRADING-02-24")]]
+        kb = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-02-27")]]
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
 
@@ -553,7 +553,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Full signals, AI bots, live trading and multi-broker.\n\n"
             "See full details here:"
         )
-        kb = [[InlineKeyboardButton("📄 View full structure", url="https://telegra.ph/OFFICIAL-COMMUNITY-STRUCTURE--ENGLISH-VERSION-02-24")]]
+        kb = [[InlineKeyboardButton("📄 View full structure", url="https://telegra.ph/OFFICIAL-EVOLUTION-OF-OUR-TRADING-COMMUNITY-02-28")]]
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
 
