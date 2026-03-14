@@ -149,6 +149,7 @@ CANAL_RESULTADOS = "https://t.me/+wyjkDFenUMlmMTUx"
 CANAL_ES = "https://t.me/JohaaleTrader_es"
 CANAL_EN = "https://t.me/JohaaleTrader_en"
 ENLACE_REFERIDO  = "https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
+ENLACE_REFERIDO_STOCKITY = "https://stockity-r3.com/?a=95604cd745da&t=0&ac=JOHAALETRADER"
 
 
 # Chat personal / validación (URL del botón de soporte)
@@ -193,11 +194,15 @@ MENSAJE_BIENVENIDA_EN = """👋 Hi! I’m JOHAALETRADER.
 I’m here to help you start in binary options trading safely, with guidance and real profitability.
 Ready to register and start earning?"""
 
-MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Solo debes abrir tu cuenta de trading en Binomo con este enlace:
+MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Solo debes abrir tu cuenta de trading en Binomo o Stockity con uno de estos enlaces:
 
+🔗 Binomo:
 {ENLACE_REFERIDO}
 
-👉 Luego de crear la cuenta es necesario y súper importante que me envíes tu ID de Binomo para validar tu registro antes de que realices un depósito en tu cuenta de trading.
+🔗 Stockity:
+{ENLACE_REFERIDO_STOCKITY}
+
+👉 Luego de crear la cuenta es necesario y súper importante que me envíes tu ID de Binomo o Stockity para validar tu registro antes de que realices un depósito en tu cuenta de trading.
 
 💰 Depósito según nivel elegido 
 
@@ -205,11 +210,15 @@ IMPORTANTE: LA CANTIDAD DE BENEFICIOS VARÍA SEGÚN TU DEPÓSITO.
  
 ¡Te espero!"""
 
-MENSAJE_REGISTRARME_EN = f"""It’s super simple. Open your trading account on Binomo using this link:
+MENSAJE_REGISTRARME_EN = f"""It’s super simple. Open your trading account on Binomo or Stockity using one of these links:
 
+🔗 Binomo:
 {ENLACE_REFERIDO}
 
-👉 After creating the account, it’s very important that you send me your Binomo ID so I can validate your registration **before** you make any deposit.
+🔗 Stockity:
+{ENLACE_REFERIDO_STOCKITY}
+
+👉 After creating the account, it’s very important that you send me your Binomo or Stockity ID so I can validate your registration **before** you make any deposit.
 
 💰 Minimum deposit according to the chosen level
 
@@ -219,32 +228,36 @@ I’ll be waiting for you!"""
 
 MENSAJE_YA_TENGO_CUENTA_ES = f"""Para tener acceso a mi comunidad VIP y todas las herramientas debes realizar tu registro con mi enlace.
 
-¿Qué debes hacer? 👉 Si creaste tu cuenta con mi enlace envíame tu ID de Binomo en el botón de arriba.
+¿Qué debes hacer? 👉 Si creaste tu cuenta con mi enlace envíame tu ID de Binomo o Stockity en el botón de arriba.
 
 🟡 Si no lo hiciste con mi enlace, haz lo siguiente:
 
 1️⃣ Copia y pega el enlace de registro en una ventana de incógnito o activa una VPN para cambiar tu IP. Luego inicia sesión normal.
 
-2️⃣ Usa un correo que NO hayas usado en Binomo y regístrate de forma manual.
+2️⃣ Usa un correo que NO hayas usado en Binomo o Stockity y regístrate de forma manual.
 
-3️⃣ ❗️SUPER IMPORTANTE: Envíame tu ID de Binomo para validar.
+3️⃣ ❗️SUPER IMPORTANTE: Envíame tu ID de Binomo o Stockity para validar.
 
-🔗 Enlace de registro: {ENLACE_REFERIDO}
+🔗 Enlace de registro Binomo: {ENLACE_REFERIDO}
+
+🔗 Enlace de registro Stockity: {ENLACE_REFERIDO_STOCKITY}
 """
 
 MENSAJE_YA_TENGO_CUENTA_EN = f"""To access my VIP community and all tools, you must register with my link.
 
-What to do? 👉 If you created your account with my link, send me your Binomo ID using the button above.
+What to do? 👉 If you created your account with my link, send me your Binomo or Stockity ID using the button above.
 
 🟡 If you didn’t use my link, do this:
 
 1️⃣ Copy and paste the registration link in an incognito window or turn on a VPN to change your IP. Then log in normally.
 
-2️⃣ Use an email you have NOT used on Binomo and register manually.
+2️⃣ Use an email you have NOT used on Binomo or Stockity and register manually.
 
-3️⃣ ❗️VERY IMPORTANT: Send me your Binomo ID for validation.
+3️⃣ ❗️VERY IMPORTANT: Send me your Binomo or Stockity ID for validation.
 
-🔗 Registration link: {ENLACE_REFERIDO}
+🔗 Binomo registration link: {ENLACE_REFERIDO}
+
+🔗 Stockity registration link: {ENLACE_REFERIDO_STOCKITY}
 """
 
 # Recordatorios (ES)
@@ -258,12 +271,12 @@ No dejes pasar esta oportunidad. Cada día que pasa es una nueva posibilidad de 
 
 MENSAJE_24H_ES = f"""🚀 Tu momento es ahora.
 Tienes acceso a una comunidad, herramientas exclusivas y formación completa para despegar en el trading.
-Da tu primer paso y asegúrate de enviarme tu ID de Binomo para recibir todos los beneficios.
+Da tu primer paso y asegúrate de enviarme tu ID de Binomo o Stockity para recibir todos los beneficios.
 🔗 Canal de resultados: {CANAL_RESULTADOS}"""
 
 MENSAJE_48H_ES = f"""🚀 Han pasado 48 horas desde que iniciaste tu registro.
 Aún estás a tiempo de activar tu cuenta y recibir todos los beneficios VIP.
-Hazlo ahora con mi enlace y envíame tu ID de Binomo para validarlo ✅
+Hazlo ahora con mi enlace y envíame tu ID de Binomo o Stockity para validarlo ✅
 🔗 Registro: {ENLACE_REFERIDO}"""
 
 # Recordatorios (EN)
@@ -277,12 +290,12 @@ Don’t miss this opportunity. Every day is a new chance to generate income and 
 
 MENSAJE_24H_EN = f"""🚀 This is your moment.
 You get access to a community, exclusive tools, and complete training to take off in trading.
-Take the first step and be sure to send me your Binomo ID to receive all the benefits.
+Take the first step and be sure to send me your Binomo or Stockity ID to receive all the benefits.
 🔗 Results channel: {CANAL_RESULTADOS}"""
 
 MENSAJE_48H_EN = f"""🚀 It’s been 48 hours since you started your registration.
 You can still activate your account and unlock all VIP benefits.
-Do it now using my link and send me your Binomo ID for validation ✅
+Do it now using my link and send me your Binomo or Stockity ID for validation ✅
 🔗 Registration: {ENLACE_REFERIDO}"""
 
 # Beneficios (ES/EN)
@@ -455,6 +468,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🚀 Completar registro", callback_data="registrarme")],
             [InlineKeyboardButton("✅ Valida tu ID | ¿Dudas? Escríbeme", url="https://t.me/Johaaletradervalidacion")],
             [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_tengo_cuenta")],
+            [InlineKeyboardButton("📊 Gestión de capital", callback_data="gestion_capital")],
             [InlineKeyboardButton("🎁 Beneficios VIP", callback_data="beneficios_vip")],
             [InlineKeyboardButton("📊 Niveles y Planes", callback_data="niveles_planes")],
             [InlineKeyboardButton("📲 Canal en Español", url=CANAL_ES)],
@@ -562,7 +576,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "Perfecto ✅\n"
             "Para poder validarlo necesito que me envíes el **ID en texto** (solo el número).\n"
-            "📌 Ábrelo en Binomo, cópialo y pégalo aquí.\n\n"
+            "📌 Ábrelo en Binomo o Stockity, cópialo y pégalo aquí.\n\n"
             "Si prefieres, también puedes escribirme al chat personal 👇"
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
@@ -584,7 +598,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = (
             "Perfecto ✅\n\n"
-            "Recibido. Para continuar, envíame tu **ID de Binomo en texto** (solo el número) y lo dejo en validación 👇\n\n"
+            "Recibido. Para continuar, envíame tu **ID de Binomo o Stockity en texto** (solo el número) y lo dejo en validación 👇\n\n"
             "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
@@ -605,7 +619,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data and (q.data.startswith("DEP_YES|") or q.data.startswith("dep_yes:")):
         msg = (
             "Perfecto ✅\n\n"
-            "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) y tu **ID de Binomo en texto** "
+            "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) y tu **ID de Binomo o Stockity en texto** "
             "(solo el número) para validarlo y habilitar tu acceso 👇"
         )
         context.user_data["awaiting_deposit_proof"] = True
@@ -649,6 +663,21 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif q.data == "ya_tengo_cuenta":
         await q.message.reply_text(MENSAJE_YA_TENGO_CUENTA_ES if lang=="es" else MENSAJE_YA_TENGO_CUENTA_EN)
+
+    elif q.data == "gestion_capital":
+        texto_gestion = (
+            "📊 GESTIÓN DE CAPITAL\n\n"
+            "He habilitado un sistema limitado de gestión de capital para quienes desean participar directamente en mis operaciones.\n\n"
+            "💼 Condiciones\n\n"
+            "• Inversión mínima: $200 USD\n"
+            "• Duración del ciclo: 4 meses\n"
+            "• Objetivo de rendimiento aproximado: hasta 40% mensual según condiciones del mercado\n\n"
+            "🔒 Por motivos de seguridad y control operativo, el capital se envía directamente a mi gestión, desde donde se ejecutan las operaciones siguiendo mi plan de trading y gestión de riesgo.\n\n"
+            "📈 Durante el proceso recibirás reportes periódicos del crecimiento del capital.\n\n"
+            "⚠️ El trading implica riesgo y los resultados pueden variar según condiciones del mercado.\n\n"
+            "Si deseas participar, escribe GESTIÓN y te enviaré la información para comenzar."
+        )
+        await q.message.reply_text(texto_gestion)
 
     elif q.data == "beneficios_vip":
         await q.message.reply_text(BENEFICIOS_ES if lang=="es" else BENEFICIOS_EN)
@@ -1081,7 +1110,7 @@ def respuesta_bono_es() -> str:
 
 def respuesta_id_es() -> str:
     return (
-        "🆔 **¿Dónde encuentro mi ID de Binomo?**\n\n"
+        "🆔 **¿Dónde encuentro mi ID de Binomo o Stockity?**\n\n"
         "1) Entra a tu cuenta (app o web).\n"
         "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
         "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
@@ -1093,7 +1122,7 @@ def respuesta_next_step_es() -> str:
     return (
         "✅ Perfecto. El **siguiente paso** es validar tu **ID** para confirmar que tu registro quedó bien "
         "**antes de que deposites**.\n\n"
-        "📌 Envíame aquí tu **ID de Binomo** (solo el número) y lo dejo en validación.\n\n"
+        "📌 Envíame aquí tu **ID de Binomo o Stockity** (solo el número) y lo dejo en validación.\n\n"
         "Si prefieres, también puedes escribirme al chat personal 👇"
     )
 
@@ -1174,7 +1203,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = (update.message.caption or "").strip()
         # Solo si viene SIN texto/caption mostramos los 3 botones, sin depender del stage
         if not caption:
-            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo, tu **comprobante de depósito/activación** o **era otra cosa**?"
+            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o Stockity, tu **comprobante de depósito/activación** o **era otra cosa**?"
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
                  InlineKeyboardButton("💳 Es mi depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
@@ -1233,7 +1262,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "Perfecto ✅\n\n"
             "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) "
-            "y también tu **ID de Binomo en texto** (solo el número) para validarlo y habilitar tu acceso 👇"
+            "y también tu **ID de Binomo o Stockity en texto** (solo el número) para validarlo y habilitar tu acceso 👇"
         )
         # Nota: NO detenemos Campaña B aquí. Solo pedimos comprobante/ID.
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
@@ -1321,7 +1350,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Si aún no tenemos ID, lo pedimos una sola vez
             msg = (
                 "Perfecto ✅\n\n"
-                "Ahora envíame tu **ID de Binomo en texto** (solo el número) para dejarlo en validación y habilitar tu acceso 👇"
+                "Ahora envíame tu **ID de Binomo o Stockity en texto** (solo el número) para dejarlo en validación y habilitar tu acceso 👇"
             )
             await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
             await send_admin_auto_log(context, update, "AUTO_DEPOSIT_PROOF_NEED_ID", msg)
@@ -1333,7 +1362,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")],
         ])
-        msg = "Recibido. ¿Esta imagen es tu ID de Binomo, tu comprobante de depósito/activación o era otra cosa?"
+        msg = "Recibido. ¿Esta imagen es tu ID de Binomo o Stockity, tu comprobante de depósito/activación o era otra cosa?"
         await update.message.reply_text(msg, reply_markup=kb)
         await send_admin_auto_log(context, update, "AUTO_IMAGE", msg)
         return
