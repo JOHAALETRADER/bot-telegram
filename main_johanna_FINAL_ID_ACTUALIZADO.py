@@ -944,11 +944,22 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 LIVE_HORARIOS_ES = (
     "📅 **Horarios de mis lives (hora Colombia):**\n"
-    "• **Martes:** 11:00 am y 8:00 pm\n"
-    "• **Miércoles:** 8:00 pm\n"
-    "• **Jueves:** 11:00 am y 8:00 pm\n"
-    "• **Viernes:** 8:00 pm\n"
-    "• **Sábados:** 11:00 am y 8:00 pm\n"
+    "• **Lunes:** 11:00 am, 5:00 pm y 9:00 pm\n"
+    "• **Martes:** 11:00 am, 5:00 pm y 9:00 pm\n"
+    "• **Miércoles:** 11:00 am, 5:00 pm y 9:00 pm\n"
+    "• **Jueves:** 11:00 am, 5:00 pm y 9:00 pm\n"
+    "• **Viernes:** 11:00 am, 5:00 pm y 9:00 pm\n"
+    "• **Sábados:** 11:00 am, 5:00 pm y 9:00 pm\n"
+)
+
+LIVE_HORARIOS_EN = (
+    "📅 **My live schedule (Colombia time):**\n"
+    "• **Monday:** 11:00 am, 5:00 pm and 9:00 pm\n"
+    "• **Tuesday:** 11:00 am, 5:00 pm and 9:00 pm\n"
+    "• **Wednesday:** 11:00 am, 5:00 pm and 9:00 pm\n"
+    "• **Thursday:** 11:00 am, 5:00 pm and 9:00 pm\n"
+    "• **Friday:** 11:00 am, 5:00 pm and 9:00 pm\n"
+    "• **Saturday:** 11:00 am, 5:00 pm and 9:00 pm\n"
 )
 
 def _norm(s: str) -> str:
@@ -1250,7 +1261,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent == "MIN_50":
         msg = (
-            "Para ingresar a mi comunidad VIP gratuita y acceder a todas las herramientas, "
+            "Para ingresar a mi comunidad VIP gratuita y acceder a herramientas limitadas, "
             "el depósito mínimo es de **50 USD**."
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
