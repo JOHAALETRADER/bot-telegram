@@ -943,23 +943,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 LIVE_HORARIOS_ES = (
-    "📅 **Horarios de mis lives (hora Colombia):**\n"
-    "• **Lunes:** 11:00 am, 5:00 pm y 9:00 pm\n"
-    "• **Martes:** 11:00 am, 5:00 pm y 9:00 pm\n"
-    "• **Miércoles:** 11:00 am, 5:00 pm y 9:00 pm\n"
-    "• **Jueves:** 11:00 am, 5:00 pm y 9:00 pm\n"
-    "• **Viernes:** 11:00 am, 5:00 pm y 9:00 pm\n"
-    "• **Sábados:** 11:00 am, 5:00 pm y 9:00 pm\n"
+    "📅 **HORARIOS DE MIS LIVES**\n\n"
+    "🗓 **Lunes a Sábado**\n"
+    "• 11:00 am\n"
+    "• 5:00 pm\n"
+    "• 9:00 pm\n\n"
+    "🚀 *Nos vemos en vivo*"
 )
 
 LIVE_HORARIOS_EN = (
-    "📅 **My live schedule (Colombia time):**\n"
-    "• **Monday:** 11:00 am, 5:00 pm and 9:00 pm\n"
-    "• **Tuesday:** 11:00 am, 5:00 pm and 9:00 pm\n"
-    "• **Wednesday:** 11:00 am, 5:00 pm and 9:00 pm\n"
-    "• **Thursday:** 11:00 am, 5:00 pm and 9:00 pm\n"
-    "• **Friday:** 11:00 am, 5:00 pm and 9:00 pm\n"
-    "• **Saturday:** 11:00 am, 5:00 pm and 9:00 pm\n"
+    "📅 **MY LIVE SCHEDULE**\n\n"
+    "🗓 **Monday to Saturday**\n"
+    "• 11:00 am\n"
+    "• 5:00 pm\n"
+    "• 9:00 pm\n\n"
+    "🚀 *See you live*"
 )
 
 def _norm(s: str) -> str:
