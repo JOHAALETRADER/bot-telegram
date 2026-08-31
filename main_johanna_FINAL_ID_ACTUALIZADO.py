@@ -1,7 +1,8 @@
 import logging
 import asyncio
 import re
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -17,7 +18,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
@@ -55,6 +56,10 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
         if len(text) > 3900:
             text = text[:3900] + "\n\n...(recortado)"
         await context.bot.send_message(chat_id=ADMIN_ID, text=text, disable_web_page_preview=True)
+        try:
+            _append_ai_exchange(chat_id, pregunta, respuesta)
+        except Exception:
+            pass
     except Exception as e:
         logging.info("No pude enviar log de auto-respuesta: %s", e)
 
@@ -85,6 +90,11 @@ class Usuario(Base):
     lang           = Column(String, default="es")
     # Etapa del usuario: PRE (sin validar), POST (validado, esperando depósito), DEPOSITED
     stage          = Column(String, default="PRE")
+    # Memoria y cola persistente para respuestas con IA
+    ai_history             = Column(Text)
+    ai_pending_text        = Column(Text)
+    ai_pending_message_id  = Column(String)
+    ai_pending_due_at      = Column(DateTime)
 
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
@@ -142,6 +152,30 @@ except Exception as e:
     logging.warning("No se pudo verificar/crear columna 'stage': %s", e)
 # --- fin migración stage ---
 
+# --- Migración robusta de columnas IA (memoria + respuesta pendiente) ---
+try:
+    backend = engine.url.get_backend_name()
+    if backend.startswith("postgres"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_history TEXT"))
+            conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_pending_text TEXT"))
+            conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_pending_message_id VARCHAR"))
+            conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_pending_due_at TIMESTAMP"))
+    elif backend == "sqlite":
+        with engine.begin() as conn:
+            cols = conn.execute(text("PRAGMA table_info(usuarios)")).fetchall()
+            names = {c[1] for c in cols}
+            if "ai_history" not in names:
+                conn.execute(text("ALTER TABLE usuarios ADD COLUMN ai_history TEXT"))
+            if "ai_pending_text" not in names:
+                conn.execute(text("ALTER TABLE usuarios ADD COLUMN ai_pending_text TEXT"))
+            if "ai_pending_message_id" not in names:
+                conn.execute(text("ALTER TABLE usuarios ADD COLUMN ai_pending_message_id TEXT"))
+            if "ai_pending_due_at" not in names:
+                conn.execute(text("ALTER TABLE usuarios ADD COLUMN ai_pending_due_at DATETIME"))
+except Exception as e:
+    logging.warning("No se pudieron verificar/crear columnas IA: %s", e)
+
 # --- fin migración ---
 
 # === ENLACES ===
@@ -177,11 +211,58 @@ Once your deposit is ready, message me directly and I’ll guide you to activate
 GATILLO_ACCESO_OK = "confirmo cuenta activa"
 GATILLO_ID_ERRADO = "Tu ID está errado.\n\nPara tener acceso a mi comunidad vip y todas las herramientas debes realizar tu registro con mi enlace..\n\nCopia y pega el enlace de registro en barra de búsqueda de una ventana de incógnito de tu navegador y usa otro correo.. luego me envías ID de binomo para validar.\n\nEnlace de registro:\n\nhttps://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
 
-# Mensajes Serie B (post-validación ES) — mismos tiempos (1h, 3h, 24h, 48h)
-MENSAJE_B_1H_ES = "✅ Tu ID ya quedó validado.\n\n¿Ya activaste o depositaste en tu cuenta de Binomo?\nResponde: **Ya deposité** cuando esté listo 👇"
-MENSAJE_B_3H_ES = "💰 Tip rápido: si tienes disponible el bono del **100%**, úsalo para potenciar tu primer depósito.\n\nCuando tu depósito esté listo, escríbeme **Ya deposité** y te habilito el acceso 👇"
-MENSAJE_B_24H_ES = "🚀 Recuerda: para habilitar tu acceso VIP necesito confirmar tu **depósito/activación**.\n\nCuando esté listo, dime **Ya deposité** y lo activamos. Quedan cupos limitados ✅"
-MENSAJE_B_48H_ES = "⏳ Último recordatorio: si ya activaste tu cuenta con depósito, escríbeme **Ya deposité** para habilitar tu acceso VIP gratuita.\n\nSi aún no, activa tu cuenta cuando puedas y me avisas ✅"
+# Mensajes Serie B (post-validación) — mismos tiempos internos, sin mencionar cuánto tiempo pasó
+MENSAJE_B_1H_ES = """✅ Tu ID ya quedó validado y ya diste el paso más importante.
+
+Ahora solo falta activar tu cuenta con el depósito correspondiente a tu nivel para desbloquear tu acceso y empezar a aprovechar las herramientas de la comunidad.
+
+🚀 Haz tu depósito y escríbeme Ya deposité. Yo continúo contigo para habilitar tu acceso."""
+
+MENSAJE_B_3H_ES = """💰 Si este será tu primer depósito, tienes disponible un bono del 100% con el código TOP1_JOHATRADER.
+
+Tu registro ya está validado: estás a un solo paso de activar tu acceso. Aprovecha tu depósito, completa la activación y empieza con formación, señales y herramientas según tu nivel.
+
+✅ Cuando lo hagas, escríbeme Ya deposité y continuamos de inmediato."""
+
+MENSAJE_B_24H_ES = """🚀 Tu cuenta ya está lista para avanzar. Elige el nivel que mejor se ajuste a ti, realiza el depósito y activa los beneficios correspondientes.
+
+🟢 Básico desde 50 USD
+🔵 Premium desde 200 USD
+🟣 Prestige desde 500 USD
+
+Da el siguiente paso ahora y escríbeme Ya deposité para validar la activación y habilitar tu acceso."""
+
+MENSAJE_B_48H_ES = """✨ Ya hiciste el registro y tu ID está validado. No dejes el proceso a medias cuando estás tan cerca de comenzar.
+
+Completa tu depósito, activa tu nivel y empieza a utilizar la formación, señales, herramientas y acompañamiento disponibles para ti.
+
+🔥 Hazlo ahora y escríbeme Ya deposité. Te ayudo a completar la activación."""
+
+MENSAJE_B_1H_EN = """✅ Your ID has been validated and you have already completed the most important step.
+
+Now you only need to fund your account according to your selected level to unlock your access and start using the community tools.
+
+🚀 Make your deposit and message me I deposited so I can continue with your activation."""
+
+MENSAJE_B_3H_EN = """💰 If this is your first deposit, you currently have a 100% bonus available with code TOP1_JOHATRADER.
+
+Your registration is already validated. Complete your deposit and start accessing the education, signals and tools included in your level.
+
+✅ Once done, message me I deposited and we will continue immediately."""
+
+MENSAJE_B_24H_EN = """🚀 Your account is ready to move forward. Choose the level that fits you, make the deposit and activate the corresponding benefits.
+
+🟢 Basic from 50 USD
+🔵 Premium from 200 USD
+🟣 Prestige from 500 USD
+
+Take the next step and message me I deposited so I can validate the activation and enable your access."""
+
+MENSAJE_B_48H_EN = """✨ Your registration is complete and your ID is validated. You are very close to starting, so there is no need to leave the process unfinished.
+
+Complete your deposit, activate your level and start using the education, signals, tools and guidance available to you.
+
+🔥 Do it now and message me I deposited so I can help you finish the activation."""
 
 # === MENSAJES (ES/EN) ===
 WELCOME_IMG = "bienvenidanuevasi.jpg"
@@ -218,7 +299,7 @@ MENSAJE_REGISTRARME_EN = f"""It’s super simple. Open your trading account on B
 🔗 Stockity:
 {ENLACE_REFERIDO_STOCKITY}
 
-👉 After creating the account, it’s very important that you send me your Binomo or Stockity ID so I can validate your registration **before** you make any deposit.
+👉 After creating the account, it’s very important that you send me your Binomo or Stockity ID so I can validate your registration before you make any deposit.
 
 💰 Minimum deposit according to the chosen level
 
@@ -260,43 +341,83 @@ What to do? 👉 If you created your account with my link, send me your Binomo o
 🔗 Stockity registration link: {ENLACE_REFERIDO_STOCKITY}
 """
 
-# Recordatorios (ES)
-MENSAJE_1H_ES = """📊 Recuerda que este camino no lo recorrerás sol@.
-Tendrás acceso a cursos, señales y acompañamiento paso a paso.
-Estoy aquí para ayudarte a lograr resultados reales en el trading. ¡Activa ya tu cuenta y empecemos!"""
+# Recordatorios (ES) — tiempos internos; los mensajes no mencionan cuánto tiempo pasó
+MENSAJE_1H_ES = f"""🚀 Si quieres empezar, el primer paso es mucho más sencillo de lo que parece.
 
-MENSAJE_3H_ES = """📈 ¿Aún no te has registrado?
-No dejes pasar esta oportunidad. Cada día que pasa es una nueva posibilidad de generar ingresos y adquirir habilidades reales.
-✅ ¡Recuerda que solo necesitas 50 USD para comenzar con todo el respaldo!"""
+Registra tu cuenta con uno de mis enlaces y envíame tu ID antes de depositar para validar que todo haya quedado correctamente vinculado.
 
-MENSAJE_24H_ES = f"""🚀 Tu momento es ahora.
-Tienes acceso a una comunidad, herramientas exclusivas y formación completa para despegar en el trading.
-Da tu primer paso y asegúrate de enviarme tu ID de Binomo o Stockity para recibir todos los beneficios.
-🔗 Canal de resultados: {CANAL_RESULTADOS}"""
+✨ Desde el nivel Básico puedes comenzar con 50 USD y acceder a formación y herramientas según tu nivel.
 
-MENSAJE_48H_ES = f"""🚀 Han pasado 48 horas desde que iniciaste tu registro.
-Aún estás a tiempo de activar tu cuenta y recibir todos los beneficios VIP.
-Hazlo ahora con mi enlace y envíame tu ID de Binomo o Stockity para validarlo ✅
-🔗 Registro: {ENLACE_REFERIDO}"""
+👉 Da el paso ahora:
+Binomo: {ENLACE_REFERIDO}
+Stockity: {ENLACE_REFERIDO_STOCKITY}"""
 
-# Recordatorios (EN)
-MENSAJE_1H_EN = """📊 Remember, you won’t walk this path alone.
-You’ll get access to courses, signals, and step-by-step support.
-I’m here to help you achieve real trading results. Activate your account and let’s begin!"""
+MENSAJE_3H_ES = f"""📈 No necesitas aprender trading sin dirección. La idea de la comunidad es que tengas una ruta, formación, señales y herramientas que te ayuden a desarrollar tu operativa con estructura.
 
-MENSAJE_3H_EN = """📈 Haven’t registered yet?
-Don’t miss this opportunity. Every day is a new chance to generate income and build real skills.
-✅ Remember: you only need 50 USD to start with full support!"""
+Tu siguiente acción es simple: crea tu cuenta con mi enlace y envíame tu ID para validarlo antes del depósito.
 
-MENSAJE_24H_EN = f"""🚀 This is your moment.
-You get access to a community, exclusive tools, and complete training to take off in trading.
-Take the first step and be sure to send me your Binomo or Stockity ID to receive all the benefits.
-🔗 Results channel: {CANAL_RESULTADOS}"""
+✅ Empieza hoy y deja listo tu acceso:
+Binomo: {ENLACE_REFERIDO}
+Stockity: {ENLACE_REFERIDO_STOCKITY}"""
 
-MENSAJE_48H_EN = f"""🚀 It’s been 48 hours since you started your registration.
-You can still activate your account and unlock all VIP benefits.
-Do it now using my link and send me your Binomo or Stockity ID for validation ✅
-🔗 Registration: {ENLACE_REFERIDO}"""
+MENSAJE_24H_ES = f"""✨ Si estabas esperando el momento para comenzar, conviértelo en una acción concreta.
+
+Puedes elegir el nivel que mejor se ajuste a tu capital y avanzar paso a paso con formación, señales, bots y otras herramientas según corresponda.
+
+🔥 Regístrate ahora, envíame tu ID y yo te indico el siguiente paso para activar correctamente tu acceso.
+
+📊 Resultados de la comunidad: {CANAL_RESULTADOS}
+🔗 Binomo: {ENLACE_REFERIDO}
+🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+
+MENSAJE_48H_ES = f"""🎯 La diferencia entre seguir pensando en empezar y realmente avanzar es completar el primer paso.
+
+Haz tu registro con mi enlace, envíame tu ID antes de depositar y déjame validar tu cuenta. A partir de ahí podrás elegir tu nivel y continuar con la activación.
+
+🚀 Empieza ahora:
+Binomo: {ENLACE_REFERIDO}
+Stockity: {ENLACE_REFERIDO_STOCKITY}
+
+Cuando termines, envíame tu ID y continuamos."""
+
+# Recordatorios (EN) — internal timing only; messages do not mention elapsed time
+MENSAJE_1H_EN = f"""🚀 If you want to get started, the first step is simpler than it looks.
+
+Create your account using one of my links and send me your ID before depositing so I can validate that it was linked correctly.
+
+✨ You can start at the Basic level from 50 USD and access education and tools according to your level.
+
+👉 Take the first step now:
+Binomo: {ENLACE_REFERIDO}
+Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+
+MENSAJE_3H_EN = f"""📈 You do not have to learn trading without direction. The community gives you a structured path with education, signals and tools to develop your trading process.
+
+Your next action is simple: create your account with my link and send me your ID for validation before depositing.
+
+✅ Start today:
+Binomo: {ENLACE_REFERIDO}
+Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+
+MENSAJE_24H_EN = f"""✨ If you were waiting for the right moment to begin, turn that intention into a concrete action.
+
+Choose the level that fits your capital and move forward step by step with education, signals, bots and other tools according to your level.
+
+🔥 Register now, send me your ID and I will guide you through the next activation step.
+
+📊 Community results: {CANAL_RESULTADOS}
+🔗 Binomo: {ENLACE_REFERIDO}
+🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+
+MENSAJE_48H_EN = f"""🎯 The difference between thinking about starting and actually moving forward is completing the first step.
+
+Register with my link, send me your ID before depositing, and let me validate your account. Then you can choose your level and continue with activation.
+
+🚀 Start now:
+Binomo: {ENLACE_REFERIDO}
+Stockity: {ENLACE_REFERIDO_STOCKITY}
+
+When you finish, send me your ID and we will continue."""
 
 # Beneficios (ES/EN)
 BENEFICIOS_ES = """✨ Beneficios Exclusivos que Recibirás ✨
@@ -419,34 +540,39 @@ def schedule_series_a(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYP
     context.job_queue.run_once(mensaje_48h, when=172800, data=(chat_id, lang), name=f"A_48h_{chat_id}")
     logging.info("✅ Serie A programada para chat_id %s (lang=%s)", chat_id, lang)
 
-async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str):
-    chat_id, _lang = context.job.data
+async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str, text_en: str):
+    chat_id, lang = context.job.data
     try:
-        await context.bot.send_message(chat_id=chat_id, text=text_es, reply_markup=support_keyboard(), )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text_es if lang == "es" else text_en,
+            reply_markup=support_keyboard(),
+        )
     except Exception as e:
         logging.warning("Job B send failed to %s: %s", chat_id, e)
 
 async def mensaje_B_1h(context: ContextTypes.DEFAULT_TYPE):
-    await _send_job_message_B(context, MENSAJE_B_1H_ES)
+    await _send_job_message_B(context, MENSAJE_B_1H_ES, MENSAJE_B_1H_EN)
 
 async def mensaje_B_3h(context: ContextTypes.DEFAULT_TYPE):
-    await _send_job_message_B(context, MENSAJE_B_3H_ES)
+    await _send_job_message_B(context, MENSAJE_B_3H_ES, MENSAJE_B_3H_EN)
 
 async def mensaje_B_24h(context: ContextTypes.DEFAULT_TYPE):
-    await _send_job_message_B(context, MENSAJE_B_24H_ES)
+    await _send_job_message_B(context, MENSAJE_B_24H_ES, MENSAJE_B_24H_EN)
 
 async def mensaje_B_48h(context: ContextTypes.DEFAULT_TYPE):
-    await _send_job_message_B(context, MENSAJE_B_48H_ES)
+    await _send_job_message_B(context, MENSAJE_B_48H_ES, MENSAJE_B_48H_EN)
 
 def schedule_series_b(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     if not context.job_queue:
         return
+    lang = get_user_lang(chat_id)
     _cancel_jobs_prefix(context, "B", chat_id)
-    context.job_queue.run_once(mensaje_B_1h, when=3600,  data=(chat_id, "es"), name=f"B_1h_{chat_id}")
-    context.job_queue.run_once(mensaje_B_3h, when=10800, data=(chat_id, "es"), name=f"B_3h_{chat_id}")
-    context.job_queue.run_once(mensaje_B_24h, when=86400, data=(chat_id, "es"), name=f"B_24h_{chat_id}")
-    context.job_queue.run_once(mensaje_B_48h, when=172800, data=(chat_id, "es"), name=f"B_48h_{chat_id}")
-    logging.info("✅ Serie B (post-validación ES) programada para chat_id %s", chat_id)
+    context.job_queue.run_once(mensaje_B_1h, when=3600,  data=(chat_id, lang), name=f"B_1h_{chat_id}")
+    context.job_queue.run_once(mensaje_B_3h, when=10800, data=(chat_id, lang), name=f"B_3h_{chat_id}")
+    context.job_queue.run_once(mensaje_B_24h, when=86400, data=(chat_id, lang), name=f"B_24h_{chat_id}")
+    context.job_queue.run_once(mensaje_B_48h, when=172800, data=(chat_id, lang), name=f"B_48h_{chat_id}")
+    logging.info("✅ Serie B post-validación programada para chat_id %s (lang=%s)", chat_id, lang)
 
 
 # === MENÚS POR IDIOMA ===
@@ -818,7 +944,7 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
             or update.message.reply_to_message.caption
             or ""
         )
-        chat_id_match = re.search(r'ID:\s*(\d+)', base_text)
+        chat_id_match = re.search(r'ID(?:\s+del\s+usuario)?[^0-9]{0,40}(\d+)', base_text, re.IGNORECASE)
         if chat_id_match:
             destinatario_id = int(chat_id_match.group(1))
             try:
@@ -833,6 +959,10 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         chat_id=destinatario_id,
                         text=update.message.text
                     )
+
+                # Si Johanna respondió dentro de la ventana de espera, la IA pendiente se cancela.
+                manual_reply_text = update.message.text or "[Respuesta de voz enviada por Johanna]"
+                _cancel_pending_ai(context, destinatario_id, manual_reply=manual_reply_text)
 
                 # --- NUEVO: detectar mensaje gatillo y cambiar flujo ---
                 try:
@@ -928,19 +1058,176 @@ async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         query = update.callback_query
-        chat_id = query.message.chat.id
+        admin_key = query.from_user.id
 
-        if chat_id in usuarios_objetivo:
-            del usuarios_objetivo[chat_id]
+        if admin_key in usuarios_objetivo:
+            del usuarios_objetivo[admin_key]
             await query.edit_message_text("❌ Has cancelado la respuesta al usuario.")
         else:
             await query.edit_message_text("ℹ️ No había ninguna respuesta pendiente por cancelar.")
 
 
 
-# === IA / FAQ (ES) ===
+# === IA / FAQ + RESPUESTA DIFERIDA ===
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Modelo económico para alto volumen; puede sobreescribirse desde Railway con OPENAI_MODEL
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+# 12 minutos: punto medio entre 10 y 15. Puede cambiarse en Railway con AI_WAIT_MINUTES.
+try:
+    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "12")))
+except Exception:
+    AI_WAIT_MINUTES = 12
+AI_WAIT_SECONDS = AI_WAIT_MINUTES * 60
+AI_HISTORY_MAX_MESSAGES = 16
+
+JOHA_KNOWLEDGE = os.getenv("JOHA_KNOWLEDGE", "").strip() or f"""
+INFORMACIÓN OFICIAL DE JOHAALETRADER / JT TRADERS TEAMS
+
+REGISTRO Y ACCESO
+- Para acceder a la comunidad, el usuario debe registrarse con uno de los enlaces oficiales y enviar su ID de Binomo o Stockity para validación ANTES de depositar.
+- Binomo: {ENLACE_REFERIDO}
+- Stockity: {ENLACE_REFERIDO_STOCKITY}
+- Chat personal/validación: {SUPPORT_URL}
+- El depósito mínimo del nivel Básico es 50 USD. Los beneficios cambian según el nivel.
+- Nunca confirmes por tu cuenta que un ID, depósito o acceso quedó validado. Esa confirmación la realiza Johanna manualmente.
+
+NIVELES
+- Básico: desde 50 USD. Formación completa, comunidad inicial y señales Crypto IDX limitadas.
+- Premium: desde 200 USD. Incluye lo anterior más señales completas, bots IA 24/7, operativas en vivo y enfoque multi-broker.
+- Prestige: desde 500 USD. Incluye Premium más mentorías privadas, acompañamiento cercano, Forex automatizado y preparación para cuentas de fondeo.
+
+BENEFICIOS GENERALES
+- Formación en binarias, Forex, índices sintéticos y enfoque multi-broker.
+- Material de estudio, guías, PDFs, estrategias, planes de trading y gestión de riesgo.
+- Mentorías, operativas en vivo y clases grabadas.
+- Señales de Divisas, CRYPTO IDX, Forex, índices sintéticos, futuros y spot en Binance, según nivel.
+- Bots automáticos 24/7, herramientas MT4/MT5 y otros beneficios según nivel.
+
+BONOS ACTIVOS
+- 100%: código TOP1_JOHATRADER. Solo para el PRIMER depósito. Puede utilizarse una sola vez.
+- 70%: código TOP_1JOHAALE. Para depósitos posteriores. Puede utilizarse una sola vez.
+- No inventes condiciones adicionales de los bonos. Si preguntan por requisitos de retiro, volumen, elegibilidad concreta de una cuenta o reglas que no estén aquí, explica que deben verificarse en la plataforma/cuenta y ofrece escalarlo a Johanna.
+
+LIVES
+- Lunes a sábado: 11:00 am, 5:00 pm y 9:00 pm (hora de Colombia), según la programación actual del bot.
+
+GESTIÓN DE CAPITAL
+- Sistema limitado. Inversión mínima 200 USD. Ciclo de 4 meses. Objetivo aproximado de hasta 40% mensual según condiciones de mercado. El trading implica riesgo y los resultados pueden variar. Nunca presentes ese objetivo como garantía.
+
+REGLAS DE RESPUESTA
+- No prometas ganancias, rentabilidad garantizada ni resultados seguros.
+- No inventes datos. Si falta información, dilo y deriva a Johanna.
+- No des instrucciones para evadir restricciones mediante VPN/proxy.
+- Para validación de ID, comprobantes, depósitos, activación de acceso, bloqueos o casos particulares de cuenta, no tomes decisiones: deriva a Johanna.
+""".strip()
+
+
+def _load_ai_history(chat_id: int):
+    with Session() as session:
+        u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+        if not u or not u.ai_history:
+            return []
+        try:
+            data = json.loads(u.ai_history)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+
+def _save_ai_history(chat_id: int, history):
+    history = history[-AI_HISTORY_MAX_MESSAGES:]
+    with Session() as session:
+        u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+        if u:
+            u.ai_history = json.dumps(history, ensure_ascii=False)
+            session.commit()
+
+
+def _append_ai_exchange(chat_id: int, user_text: str, assistant_text: str):
+    if not user_text and not assistant_text:
+        return
+    history = _load_ai_history(chat_id)
+    if user_text and user_text != "(sin texto)":
+        history.append({"role": "user", "content": str(user_text)[:1800]})
+    if assistant_text:
+        history.append({"role": "assistant", "content": str(assistant_text)[:2200]})
+    _save_ai_history(chat_id, history)
+
+
+def _history_as_text(chat_id: int) -> str:
+    history = _load_ai_history(chat_id)[-12:]
+    parts = []
+    for item in history:
+        role = "USUARIO" if item.get("role") == "user" else "ASISTENTE"
+        content = str(item.get("content") or "").strip()
+        if content:
+            parts.append(f"{role}: {content}")
+    return "\n".join(parts)
+
+
+def _set_pending_ai(chat_id: int, text_value: str, message_id: int):
+    due_at = datetime.utcnow() + timedelta(seconds=AI_WAIT_SECONDS)
+    with Session() as session:
+        u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+        if not u:
+            return due_at
+        previous = (u.ai_pending_text or "").strip()
+        # Si el usuario envía varios mensajes antes de que responda Johanna, se agrupan y el reloj se reinicia.
+        if previous and u.ai_pending_due_at and u.ai_pending_due_at >= datetime.utcnow():
+            combined = (previous + "\n" + text_value.strip()).strip()
+        else:
+            combined = text_value.strip()
+        u.ai_pending_text = combined[-5000:]
+        u.ai_pending_message_id = str(message_id)
+        u.ai_pending_due_at = due_at
+        session.commit()
+    return due_at
+
+
+def _get_pending_ai(chat_id: int):
+    with Session() as session:
+        u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+        if not u or not u.ai_pending_text or not u.ai_pending_due_at:
+            return None
+        return {
+            "text": u.ai_pending_text,
+            "message_id": u.ai_pending_message_id,
+            "due_at": u.ai_pending_due_at,
+        }
+
+
+def _clear_pending_ai_db(chat_id: int):
+    pending_text = ""
+    with Session() as session:
+        u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+        if u:
+            pending_text = (u.ai_pending_text or "").strip()
+            u.ai_pending_text = None
+            u.ai_pending_message_id = None
+            u.ai_pending_due_at = None
+            session.commit()
+    return pending_text
+
+
+def _cancel_ai_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    if not context.job_queue:
+        return
+    try:
+        for job in context.job_queue.get_jobs_by_name(f"AI_REPLY_{chat_id}"):
+            job.schedule_removal()
+    except Exception:
+        pass
+
+
+def _cancel_pending_ai(context: ContextTypes.DEFAULT_TYPE, chat_id: int, manual_reply: str = ""):
+    _cancel_ai_job(context, chat_id)
+    pending_text = _clear_pending_ai_db(chat_id)
+    if pending_text and manual_reply:
+        _append_ai_exchange(chat_id, pending_text, manual_reply)
+    elif pending_text:
+        # Conserva la pregunta previa en memoria aunque un nuevo flujo automático la haya dejado obsoleta.
+        _append_ai_exchange(chat_id, pending_text, "")
+
 
 LIVE_HORARIOS_ES = (
     "📅 **HORARIOS DE MIS LIVES**\n\n"
@@ -977,7 +1264,7 @@ def detect_intent_es(texto: str) -> str:
         if any(k in t for k in ["como estas", "cómo estás", "que tal", "qué tal", "todo bien", "todo bn", "como vas", "cómo vas"]) or len(t) <= 22:
             return "GREETING"
 
-    # ---- CONSULTA HUMANA (NO responder) ----
+    # ---- CONSULTA ABIERTA (si Johanna no responde, la atiende la IA diferida) ----
     if any(k in t for k in [
         "quiero consultar", "queria consultar", "quería consultar", "quiero hacerte una consulta", "quiero hacer una consulta", "quiero una consulta", "consulta",
         "tengo una duda", "tengo dudas", "no entiendo", "no entendi", "no entendí",
@@ -1085,7 +1372,7 @@ def detect_intent_es(texto: str) -> str:
 ]):
         return "LIVE"
 
-    if any(k in t for k in ["bono", "bonus", "100%"]):
+    if any(k in t for k in ["bono", "bonus", "100%", "70%", "top1_johatrader", "top_1johaale"]):
         return "BONO"
 
     if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
@@ -1109,13 +1396,36 @@ def detect_intent_es(texto: str) -> str:
 
 def respuesta_bono_es() -> str:
     return (
-        "💰 **¿Cómo funciona el bono en Binomo?**\n\n"
-        "El bono es **opcional** y puede aparecer al momento de depositar. "
-        "Si lo activas, Binomo te añade un porcentaje extra para operar con más capital.\n\n"
-        "📌 Ojo: los bonos suelen tener **condiciones** antes de poder retirar (por ejemplo, volumen mínimo). "
-        "Las reglas exactas varían según tu cuenta y promo activa.\n\n"
-        "Si quieres, escríbeme y lo revisamos según tu caso 👇"
+        "🎁 Bonos activos\n\n"
+        "💯 100% — TOP1_JOHATRADER\n"
+        "Solo para el primer depósito. Se utiliza una sola vez.\n\n"
+        "🔥 70% — TOP_1JOHAALE\n"
+        "Para depósitos posteriores. Se utiliza una sola vez."
     )
+
+
+def respuesta_bono_en() -> str:
+    return (
+        "🎁 Active bonuses\n\n"
+        "💯 100% — TOP1_JOHATRADER\n"
+        "For the first deposit only. It can be used once.\n\n"
+        "🔥 70% — TOP_1JOHAALE\n"
+        "For later deposits. It can be used once."
+    )
+
+
+def bono_requiere_guia(texto: str) -> bool:
+    t = _norm(texto)
+    detalles = [
+        "como funciona", "cómo funciona", "explica", "explicame", "explícame",
+        "condicion", "condición", "condiciones", "requisito", "requisitos",
+        "retirar", "retiro", "withdraw", "volumen", "turnover", "rollover",
+        "como usar", "cómo usar", "como aplic", "cómo aplic", "donde coloc", "dónde coloc",
+        "que pasa", "qué pasa", "pierdo", "cancelar bono", "quitar bono",
+        "how does", "how it works", "how does it work", "condition", "conditions",
+        "requirement", "requirements", "how to use", "how do i use", "apply the bonus",
+    ]
+    return any(k in t for k in detalles) or len(t) > 130
 
 def respuesta_id_es() -> str:
     return (
@@ -1151,35 +1461,66 @@ def fallback_johabot_es() -> str:
 
 
 async def binomo_helpcenter_snippets(query: str, max_results: int = 3) -> str:
-    # Desactivado: no consultamos páginas externas desde el bot.
+    # Se conserva por compatibilidad; la IA usa la base de conocimiento de JOHAALETRADER.
     return ""
 
-async def openai_answer_es(question: str, context_text: str) -> str:
+
+async def openai_answer(question: str, chat_id: int, lang: str, stage: str) -> str:
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
     try:
-        system = (
-            "Eres un asistente de soporte para usuarios de Binomo en español. "
-            "Responde en 6–10 líneas, claro y directo. "
-            "NO inventes información. Si algo depende del país, método de pago o datos de la cuenta, dilo. "
-            "NO des instrucciones para evadir restricciones (VPN/proxy). "
-            "Si el contexto no alcanza, responde exactamente con: NO_DATA"
+        language_instruction = (
+            "Responde en español." if lang == "es" else "Reply in English."
+        )
+        system = f"""
+Eres Johabot, asistente virtual oficial de JOHAALETRADER / JT TRADERS TEAMS.
+Tu función es responder consultas comerciales y de soporte usando EXCLUSIVAMENTE la información oficial suministrada abajo y el historial de la conversación.
+{language_instruction}
+
+ESTILO
+- Cercano, positivo, claro, comercial y útil.
+- Normalmente 2 a 6 líneas; amplía solo si la pregunta lo necesita.
+- Da una respuesta directa primero.
+- Puedes usar emojis con moderación.
+- No digas que un dato está confirmado si requiere revisión humana.
+
+LÍMITES IMPORTANTES
+- No inventes información ni condiciones.
+- No prometas ganancias ni resultados garantizados.
+- No confirmes ID, depósito, afiliación, pago ni acceso VIP.
+- Si la consulta requiere revisar la cuenta específica del usuario, comprobantes, validaciones o una condición que no aparece en la base, indícale que Johanna debe revisarlo personalmente y usa el chat de validación.
+- No des instrucciones para saltar restricciones con VPN o proxy.
+- Si preguntan por bonos de forma detallada, explica solo lo confirmado en la base; para condiciones de retiro/volumen/elegibilidad no documentadas, indica que deben verificarse en la cuenta o con Johanna.
+
+ETAPA ACTUAL DEL USUARIO: {stage}
+
+BASE DE CONOCIMIENTO OFICIAL:
+{JOHA_KNOWLEDGE}
+""".strip()
+
+        history_text = _history_as_text(chat_id)
+        user_input = (
+            f"HISTORIAL RECIENTE:\n{history_text or '(sin historial previo)'}\n\n"
+            f"MENSAJE ACTUAL DEL USUARIO:\n{question.strip()}"
         )
         payload = {
             "model": OPENAI_MODEL,
-            "input": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"PREGUNTA: {question}\n\nCONTEXTO:\n{context_text}"}
-            ],
-            "temperature": 0.2,
+            "instructions": system,
+            "input": user_input,
+            "max_output_tokens": 700,
+            "store": False,
         }
-        async with httpx.AsyncClient(timeout=18) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/responses",
-                headers={"Authorization": "Bearer " + OPENAI_API_KEY},
+                headers={
+                    "Authorization": "Bearer " + OPENAI_API_KEY,
+                    "Content-Type": "application/json",
+                },
                 json=payload,
             )
         if resp.status_code != 200:
+            logging.warning("OpenAI Responses API devolvió %s: %s", resp.status_code, resp.text[:500])
             return ""
         out = resp.json()
         texts = []
@@ -1187,32 +1528,150 @@ async def openai_answer_es(question: str, context_text: str) -> str:
             for c in item.get("content", []):
                 if c.get("type") == "output_text":
                     texts.append(c.get("text", ""))
-        ans = "\n".join([t for t in texts if t]).strip()
-        if (not ans) or ("NO_DATA" in ans):
-            return ""
-        return ans
-    except Exception:
+        return "\n".join(t for t in texts if t).strip()
+    except Exception as e:
+        logging.warning("Error generando respuesta IA: %s", e)
         return ""
+
+
+async def _send_scheduled_ai_admin_log(context: ContextTypes.DEFAULT_TYPE, chat_id: int, question: str, answer: str):
+    text_value = (
+        "🤖 RESPUESTA IA DIFERIDA\n"
+        f"Usuario ID: {chat_id}\n"
+        f"Espera configurada: {AI_WAIT_MINUTES} min\n\n"
+        f"Pregunta:\n{question}\n\n"
+        f"Respuesta:\n{answer}"
+    )
+    if len(text_value) > 3900:
+        text_value = text_value[:3900] + "\n\n...(recortado)"
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text_value, disable_web_page_preview=True)
+    except Exception as e:
+        logging.info("No pude enviar log de IA diferida: %s", e)
+
+
+async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = int(data.get("chat_id"))
+    expected_message_id = str(data.get("message_id") or "")
+    pending = _get_pending_ai(chat_id)
+    if not pending:
+        return
+
+    # Un mensaje nuevo puede haber reemplazado este job.
+    if expected_message_id and str(pending.get("message_id") or "") != expected_message_id:
+        return
+
+    now = datetime.utcnow()
+    due_at = pending["due_at"]
+    if due_at > now + timedelta(seconds=1):
+        delay = max(1, int((due_at - now).total_seconds()))
+        if context.job_queue:
+            context.job_queue.run_once(
+                delayed_ai_reply,
+                when=delay,
+                data={"chat_id": chat_id, "message_id": pending.get("message_id")},
+                name=f"AI_REPLY_{chat_id}",
+            )
+        return
+
+    question = (pending.get("text") or "").strip()
+    if not question:
+        _clear_pending_ai_db(chat_id)
+        return
+
+    lang = get_user_lang(chat_id)
+    stage = get_user_stage(chat_id)
+    answer = await openai_answer(question, chat_id, lang, stage)
+    if not answer:
+        answer = (
+            "Quiero darte una respuesta correcta y este caso necesita revisión directa. Escríbeme aquí 👇"
+            if lang == "es" else
+            "I want to give you an accurate answer and this case needs a direct review. Message me here 👇"
+        )
+
+    # Verificación final inmediatamente antes de enviar, por si Johanna respondió mientras se generaba la respuesta.
+    latest = _get_pending_ai(chat_id)
+    if not latest or str(latest.get("message_id") or "") != expected_message_id:
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=answer,
+            reply_markup=support_keyboard(),
+            disable_web_page_preview=True,
+        )
+        _clear_pending_ai_db(chat_id)
+        _append_ai_exchange(chat_id, question, answer)
+        await _send_scheduled_ai_admin_log(context, chat_id, question, answer)
+    except Exception as e:
+        logging.warning("No se pudo enviar la respuesta IA a %s: %s", chat_id, e)
+
+
+def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_value: str):
+    if not text_value or not text_value.strip():
+        return
+    chat_id = update.effective_chat.id
+    message_id = update.effective_message.message_id
+    _cancel_ai_job(context, chat_id)
+    _set_pending_ai(chat_id, text_value, message_id)
+    if context.job_queue:
+        context.job_queue.run_once(
+            delayed_ai_reply,
+            when=AI_WAIT_SECONDS,
+            data={"chat_id": chat_id, "message_id": str(message_id)},
+            name=f"AI_REPLY_{chat_id}",
+        )
+
+
+async def recover_pending_ai_jobs(application):
+    """Recupera respuestas pendientes si Railway reinicia el servicio durante la espera."""
+    if not application.job_queue:
+        return
+    now = datetime.utcnow()
+    try:
+        with Session() as session:
+            users = session.query(Usuario).filter(Usuario.ai_pending_due_at.isnot(None)).all()
+            for u in users:
+                if not u.ai_pending_text:
+                    continue
+                delay = max(2, int((u.ai_pending_due_at - now).total_seconds()))
+                application.job_queue.run_once(
+                    delayed_ai_reply,
+                    when=delay,
+                    data={"chat_id": int(u.telegram_id), "message_id": str(u.ai_pending_message_id or "")},
+                    name=f"AI_REPLY_{u.telegram_id}",
+                )
+        logging.info("✅ Respuestas IA pendientes recuperadas al iniciar el bot")
+    except Exception as e:
+        logging.warning("No se pudieron recuperar respuestas IA pendientes: %s", e)
+
 
 # Nueva función para manejar mensajes de usuarios (texto o media)
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Guardar y notificar al admin primero (así ves la pregunta antes del auto-reply)
+    # Guardar y notificar al admin primero: Johanna siempre ve el mensaje antes de cualquier IA diferida.
     await guardar_mensaje(update, context)
     await notificar_admin(update, context)
 
     chat_id = update.effective_chat.id
     lang = get_user_lang(chat_id)
-    if lang != "es":
-        return  # IA solo español por ahora
-
     stage = get_user_stage(chat_id)
 
-    # --- PRECHECK: si llega una imagen SIN TEXTO, NO llamamos IA. Preguntamos siempre qué es ---
+    # Voz/audio/video sin texto: se deja para revisión humana.
+    if update.message.voice or update.message.audio or update.message.video:
+        if not (update.message.caption or "").strip():
+            return
+
+    # Imagen sin texto: flujo guiado inmediato; no se envía a IA.
     if update.message and update.message.photo:
         caption = (update.message.caption or "").strip()
-        # Solo si viene SIN texto/caption mostramos los 3 botones, sin depender del stage
         if not caption:
-            qtxt = "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o Stockity, tu **comprobante de depósito/activación** o **era otra cosa**?"
+            qtxt = (
+                "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o Stockity, tu **comprobante de depósito/activación** o **era otra cosa**?"
+                if lang == "es" else
+                "📩 Received. Is this image your **Binomo/Stockity ID**, your **deposit/activation proof**, or **something else**?"
+            )
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
                  InlineKeyboardButton("💳 Es mi depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
@@ -1221,37 +1680,49 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(qtxt, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
             await send_admin_auto_log(context, update, "AUTO_IMAGE", qtxt)
             return
-        # Si trae caption, lo tratamos como texto normal (se sigue abajo)
 
     texto = update.message.text or update.message.caption or ""
-    intent = detect_intent_es(texto)
-
-    # --- Intenciones nuevas (reglas, SIN IA) ---
-    if intent == "HUMAN_CHAT":
-        # No responder (aquí contestas tú como humana)
+    if not texto.strip():
         return
+    intent = detect_intent_es(texto)
+    bonus_needs_guide = intent == "BONO" and bono_requiere_guia(texto)
 
+    # Si había una respuesta IA pendiente y el nuevo mensaje cae en un flujo inmediato,
+    # se cancela la respuesta anterior para no contestar algo viejo minutos después.
+    immediate_intents = {
+        "GREETING", "YA_REGISTRE", "DEP_LATER", "MIN_50", "DEPOSITO",
+        "ID_SUBMIT", "VPN", "PAIS", "NEXT_STEP", "WHERE_SEND_ID", "LIVE", "ID",
+    }
+    if intent in immediate_intents or (intent == "BONO" and not bonus_needs_guide):
+        _cancel_pending_ai(context, chat_id)
+
+    # Saludo simple: respuesta inmediata.
     if intent == "GREETING":
-        msg = "¡Hola! 🤍 ¿En qué puedo ayudarte hoy?\n\nSi prefieres, también puedes escribirme al chat personal 👇"
+        msg = (
+            "¡Hola! 🤍 ¿En qué puedo ayudarte hoy?\n\nSi prefieres, también puedes escribirme al chat personal 👇"
+            if lang == "es" else
+            "Hi! 🤍 How can I help you today?\n\nIf you prefer, you can also message me directly 👇"
+        )
         await update.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_GREETING", msg)
         return
 
-
+    # Flujos críticos y respuestas estructuradas: se mantienen automáticos para no romper la lógica actual.
     if intent == "YA_REGISTRE":
         msg = (
-            "Sí ✅ Puedes enviarme tu ID por aquí mismo (solo el número) y lo dejo en validación.\n\n"
-            "Si prefieres hacerlo directo conmigo, también puedes escribirme al chat personal 👇"
+            "Sí ✅ Puedes enviarme tu ID por aquí mismo (solo el número) y lo dejo en validación.\n\nSi prefieres hacerlo directo conmigo, también puedes escribirme al chat personal 👇"
+            if lang == "es" else
+            "Yes ✅ Send me your ID here (numbers only) and I will leave it for validation.\n\nYou can also message me directly 👇"
         )
         await update.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_YA_REGISTRE", msg)
         return
 
-
     if intent == "DEP_LATER":
         msg = (
-            "Perfecto ✅\n\n"
-            "Cuando tengas listo tu depósito de **50 USD o más**, escríbeme y lo revisamos para darte acceso 👇"
+            "Perfecto ✅\n\nCuando tengas listo tu depósito de **50 USD o más**, escríbeme y continuamos con la activación 👇"
+            if lang == "es" else
+            "Perfect ✅\n\nWhen you are ready with a **50 USD or higher** deposit, message me and we will continue with activation 👇"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_LATER", msg)
@@ -1259,140 +1730,86 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent == "MIN_50":
         msg = (
-            "Para ingresar a mi comunidad VIP gratuita y acceder a herramientas limitadas, "
-            "el depósito mínimo es de **50 USD**."
+            "Para ingresar a la comunidad y acceder a las herramientas del nivel Básico, el depósito mínimo es de **50 USD**."
+            if lang == "es" else
+            "The minimum deposit for the Basic level and its included tools is **50 USD**."
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_MIN50", msg)
         return
 
     if intent == "DEPOSITO":
-        # Pide prueba/ID para habilitar acceso (sin inventar nada, sin HelpCenter)
         msg = (
-            "Perfecto ✅\n\n"
-            "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) "
-            "y también tu **ID de Binomo o Stockity en texto** (solo el número) para validarlo y habilitar tu acceso 👇"
+            "Perfecto ✅\n\nEnvíame aquí tu **comprobante de depósito/activación** (foto o captura) y también tu **ID de Binomo o Stockity en texto** (solo el número) para validarlo y habilitar tu acceso 👇"
+            if lang == "es" else
+            "Perfect ✅\n\nSend me your **deposit/activation proof** (photo or screenshot) and your **Binomo/Stockity ID as text** (numbers only) so it can be validated and your access enabled 👇"
         )
-        # Nota: NO detenemos Campaña B aquí. Solo pedimos comprobante/ID.
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM", msg)
         return
 
-
-        # Si el usuario solo está enviando su ID, confirmamos recibido (validación manual)
     if intent == "ID_SUBMIT":
         m = re.search(r"\b\d{6,12}\b", (update.message.text or "").strip())
         if m:
             context.user_data["binomo_id"] = m.group(0)
+            with Session() as session:
+                u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+                if u:
+                    u.binomo_id = m.group(0)
+                    session.commit()
         respuesta_id_submit = (
-            "✅ **Recibido.** Ya tengo tu ID.\n"
-            "Lo dejo en **validación** y en breve te confirmo si está correcto.\n"
-            "Mientras tanto, si quieres adelantar el proceso, escríbeme aquí 👇"
+            "✅ **Recibido.** Ya tengo tu ID.\nLo dejo en **validación** y en breve te confirmo si está correcto.\nMientras tanto, si quieres adelantar el proceso, escríbeme aquí 👇"
+            if lang == "es" else
+            "✅ **Received.** I have your ID.\nIt is now **pending validation** and I will confirm once it has been checked.\nYou can also message me directly here 👇"
         )
-        await update.message.reply_text(
-            respuesta_id_submit,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=support_keyboard()
-        )
+        await update.message.reply_text(respuesta_id_submit, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "ID_SUBMIT", respuesta_id_submit)
         return
 
-    in_validation_flow = stage in (STAGE_POST, STAGE_DEPOSITED)
-
-    # VPN o error país -> directo a chat personal
     if intent in ("VPN", "PAIS"):
-        msg = "Para temas de VPN / error de país prefiero revisarlo contigo directo 🤍\n\nToca el botón 👇"
+        msg = (
+            "Para temas de VPN / error de país prefiero revisarlo contigo directamente 🤍\n\nToca el botón 👇"
+            if lang == "es" else
+            "For VPN / country restriction issues, I prefer to review your specific case directly 🤍\n\nTap the button below 👇"
+        )
         await update.message.reply_text(msg, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, intent, msg)
         return
 
-
-    # Qué sigue / siguiente paso
     if intent == "NEXT_STEP":
-        msg = respuesta_next_step_es()
+        msg = respuesta_next_step_es() if lang == "es" else "✅ The next step is to validate your Binomo or Stockity ID before depositing. Send me the ID as text (numbers only) and I will leave it for validation 👇"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, intent, msg)
         return
 
-    # Dónde enviar el ID
     if intent == "WHERE_SEND_ID":
-        msg = respuesta_where_send_id_es()
+        msg = respuesta_where_send_id_es() if lang == "es" else "Yes ✅ You can send your ID right here (numbers only) and I will leave it for validation. You can also message me directly 👇"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, intent, msg)
         return
 
-    # Lives
     if intent == "LIVE":
-        await update.message.reply_text(LIVE_HORARIOS_ES, parse_mode=ParseMode.MARKDOWN, reply_markup=live_keyboard())
-        await send_admin_auto_log(context, update, "LIVE", LIVE_HORARIOS_ES)
+        msg = LIVE_HORARIOS_ES if lang == "es" else LIVE_HORARIOS_EN
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=live_keyboard())
+        await send_admin_auto_log(context, update, "LIVE", msg)
         return
 
-    # Bono
-    if intent == "BONO":
-        await update.message.reply_text(respuesta_bono_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "BONO", respuesta_bono_es())
+    # Bono simple: solo muestra bonos activos. Si la consulta pide explicación/condiciones, entra la IA diferida.
+    if intent == "BONO" and not bonus_needs_guide:
+        msg = respuesta_bono_es() if lang == "es" else respuesta_bono_en()
+        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "BONO_ACTIVO", msg)
         return
 
-    # Dónde ver ID
     if intent == "ID":
-        await update.message.reply_text(respuesta_id_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "ID", respuesta_id_es())
+        msg = respuesta_id_es() if lang == "es" else "🆔 Open your Binomo or Stockity profile/settings, find the **ID / User ID** field and copy the number. If you cannot find it, tell me whether you are using the app or browser 👇"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "ID", msg)
         return
 
-    # Imagen SIN texto: flujo guiado por botones (ID / Depósito / Otra cosa)
-    if update.message.photo and not (update.message.caption or "").strip():
-        # Si ya veníamos esperando el comprobante, no volvemos a preguntar: lo tomamos como depósito
-        if context.user_data.get("awaiting_deposit_proof"):
-            # Si ya tenemos ID guardado, confirmamos recepción y pasamos a validación (sin pedirlo otra vez)
-            saved_id = context.user_data.get("binomo_id")
-            if saved_id:
-                msg = (
-                    "Perfecto ✅\n\n"
-                    "Recibido. Estoy validando tu información ahora mismo.\n"
-                    "Si todo está OK, te escribo para habilitar tu acceso y enviarte las herramientas 🤍"
-                )
-                context.user_data["awaiting_deposit_proof"] = False
-                await update.message.reply_text(msg, reply_markup=support_keyboard())
-                await send_admin_auto_log(context, update, "AUTO_DEPOSIT_PROOF_VALIDATING", msg)
-                return
-
-            # Si aún no tenemos ID, lo pedimos una sola vez
-            msg = (
-                "Perfecto ✅\n\n"
-                "Ahora envíame tu **ID de Binomo o Stockity en texto** (solo el número) para dejarlo en validación y habilitar tu acceso 👇"
-            )
-            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-            await send_admin_auto_log(context, update, "AUTO_DEPOSIT_PROOF_NEED_ID", msg)
-            return
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
-                InlineKeyboardButton("💳 Es mi depósito", callback_data=f"IMG_IS_DEP|{chat_id}"),
-            ],
-            [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")],
-        ])
-        msg = "Recibido. ¿Esta imagen es tu ID de Binomo o Stockity, tu comprobante de depósito/activación o era otra cosa?"
-        await update.message.reply_text(msg, reply_markup=kb)
-        await send_admin_auto_log(context, update, "AUTO_IMAGE", msg)
-        return
-
-
-    # En validación: no IA externa
-    if in_validation_flow:
-        await update.message.reply_text(fallback_johabot_es(), parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        return
-
-    # PRE: intent de retiro/metodos/email/otro -> HelpCenter + OpenAI (si hay key)
-    q = (texto.strip()[:200] if texto else "Binomo ayuda")
-    snippets = await binomo_helpcenter_snippets(q)
-    ans = ""
-    if snippets:
-        ans = await openai_answer_es(texto or q, snippets)
-    if not ans:
-        ans = fallback_johabot_es()
-
-    await update.message.reply_text(ans, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-    await send_admin_auto_log(context, update, "AI_ANSWER", ans)
+    # Todas las demás preguntas: Johanna tiene prioridad. Si no responde, entra la IA después del tiempo configurado.
+    # Esto incluye HUMAN_CHAT, RETIRO, METODOS, EMAIL, OTRO y consultas detalladas sobre bonos.
+    schedule_ai_reply(update, context, texto)
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1417,36 +1834,42 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         # Enviar imagen como PHOTO
         if update.message.photo:
             await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
+            _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Imagen enviada por Johanna]")
             await update.message.reply_text("✅ Imagen enviada con éxito.")
             return
 
         # Enviar imagen como DOCUMENTO
         if update.message.document and update.message.document.mime_type.startswith("image/"):
             await context.bot.send_document(chat_id=chat_id, document=update.message.document.file_id, caption=mensaje)
+            _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Imagen enviada por Johanna]")
             await update.message.reply_text("✅ Imagen enviada como documento.")
             return
 
         # Enviar video
         if update.message.video:
             await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
+            _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Video enviado por Johanna]")
             await update.message.reply_text("✅ Video enviado con éxito.")
             return
 
         # Enviar audio
         if update.message.audio:
             await context.bot.send_audio(chat_id=chat_id, audio=update.message.audio.file_id, caption=mensaje)
+            _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Audio enviado por Johanna]")
             await update.message.reply_text("✅ Audio enviado con éxito.")
             return
 
         # Enviar nota de voz
         if update.message.voice:
             await context.bot.send_voice(chat_id=chat_id, voice=update.message.voice.file_id)
+            _cancel_pending_ai(context, chat_id, manual_reply="[Nota de voz enviada por Johanna]")
             await update.message.reply_text("✅ Nota de voz enviada con éxito.")
             return
 
         # Si no es archivo multimedia, enviar como texto
         if mensaje:
             await context.bot.send_message(chat_id=chat_id, text=mensaje)
+            _cancel_pending_ai(context, chat_id, manual_reply=mensaje)
             await update.message.reply_text("✅ Mensaje enviado con éxito.")
         else:
             await update.message.reply_text("⚠️ No se pudo enviar nada. Revisa el contenido.")
@@ -1457,7 +1880,7 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
 
 # === EJECUCIÓN ===
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(recover_pending_ai_jobs).build()
 
     # Comando /start (selector de idioma)
     app.add_handler(CommandHandler("start", start))
