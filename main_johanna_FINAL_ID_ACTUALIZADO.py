@@ -2,6 +2,10 @@ import logging
 import asyncio
 import re
 import json
+import tempfile
+import shutil
+import subprocess
+from pathlib import Path
 from datetime import datetime, timedelta
 from telegram import (
     Update,
@@ -18,7 +22,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, text, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
@@ -95,6 +99,26 @@ class Usuario(Base):
     ai_pending_text        = Column(Text)
     ai_pending_message_id  = Column(String)
     ai_pending_due_at      = Column(DateTime)
+    # Última interacción conocida; sirve para avisos LIVE a usuarios recientes.
+    last_activity_at       = Column(DateTime, default=datetime.utcnow)
+
+
+class JohannaExample(Base):
+    """Ejemplos reales de cómo Johanna responde a usuarios.
+
+    Se usan como memoria progresiva de estilo y contexto operativo.
+    No sustituyen las reglas oficiales ni convierten automáticamente una
+    excepción individual en una regla general.
+    """
+    __tablename__ = "johanna_examples"
+    id             = Column(Integer, primary_key=True)
+    source_chat_id = Column(String)
+    user_text      = Column(Text)
+    response_text  = Column(Text)
+    response_type  = Column(String, default="text")
+    lang           = Column(String, default="es")
+    created_at     = Column(DateTime, default=datetime.utcnow)
+
 
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
@@ -176,6 +200,23 @@ try:
 except Exception as e:
     logging.warning("No se pudieron verificar/crear columnas IA: %s", e)
 
+# --- Migración de última actividad para avisos LIVE ---
+try:
+    backend = engine.url.get_backend_name()
+    if backend.startswith("postgres"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP"))
+            conn.execute(text("UPDATE usuarios SET last_activity_at = COALESCE(last_activity_at, fecha_registro)"))
+    elif backend == "sqlite":
+        with engine.begin() as conn:
+            cols = conn.execute(text("PRAGMA table_info(usuarios)")).fetchall()
+            names = {c[1] for c in cols}
+            if "last_activity_at" not in names:
+                conn.execute(text("ALTER TABLE usuarios ADD COLUMN last_activity_at DATETIME"))
+            conn.execute(text("UPDATE usuarios SET last_activity_at = COALESCE(last_activity_at, fecha_registro)"))
+except Exception as e:
+    logging.warning("No se pudo verificar/crear last_activity_at: %s", e)
+
 # --- fin migración ---
 
 # === ENLACES ===
@@ -192,24 +233,33 @@ SUPPORT_URL = "https://t.me/Johaaletradervalidacion"
 # Mensajes gatillo exactos (los que tú envías cuando validas manualmente)
 GATILLO_ID_OK = """ID validado correctamente. ✅
 
-Para activar tu acceso necesitas:
+Tu acceso a la comunidad es gratuito. Para continuar solo necesitas:
 
-1️⃣ Depósito en tu cuenta de trading según el nivel elegido.
-2️⃣ Activación de tu membresía correspondiente.
+1️⃣ Realizar el depósito en tu propia cuenta de trading según el nivel elegido.
+2️⃣ Escribirme cuando esté listo para validar la activación y habilitar tus herramientas.
 
-Cuando tengas tu depósito listo, escríbeme directamente y te guío para activar tu membresía y acceso."""
+Cuando tengas tu depósito listo, escríbeme directamente y continuamos."""
 
 GATILLO_ID_OK_EN = """ID successfully validated. ✅
 
-To activate your access you need:
+Access to my community is free. To continue, you only need to:
 
-1️⃣ Deposit into your trading account according to your chosen level.
-2️⃣ Activation of your corresponding membership.
+1️⃣ Make the deposit in your own trading account according to your selected level.
+2️⃣ Message me once it is ready so I can validate the activation and enable your tools.
 
-Once your deposit is ready, message me directly and I’ll guide you to activate your membership and access."""
+When your deposit is ready, message me directly and we will continue."""
 
 GATILLO_ACCESO_OK = "confirmo cuenta activa"
-GATILLO_ID_ERRADO = "Tu ID está errado.\n\nPara tener acceso a mi comunidad vip y todas las herramientas debes realizar tu registro con mi enlace..\n\nCopia y pega el enlace de registro en barra de búsqueda de una ventana de incógnito de tu navegador y usa otro correo.. luego me envías ID de binomo para validar.\n\nEnlace de registro:\n\nhttps://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
+GATILLO_ID_ERRADO = f"""Tu ID está errado.
+
+Para tener acceso a mi comunidad VIP y sus herramientas, tu cuenta debe quedar registrada correctamente con uno de mis enlaces oficiales.
+
+Haz un nuevo registro únicamente si la plataforma lo permite, utilizando un correo que NO hayas usado antes en esa plataforma y tus datos reales y verificables.
+
+🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
+🔗 Binomo: {ENLACE_REFERIDO}
+
+Luego envíame el nuevo ID para validarlo antes de depositar."""
 
 # Mensajes Serie B (post-validación) — mismos tiempos internos, sin mencionar cuánto tiempo pasó
 MENSAJE_B_1H_ES = """✅ Tu ID ya quedó validado y ya diste el paso más importante.
@@ -275,71 +325,63 @@ MENSAJE_BIENVENIDA_EN = """👋 Hi! I’m JOHAALETRADER.
 I’m here to help you start in binary options trading safely, with guidance and real profitability.
 Ready to register and start earning?"""
 
-MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Solo debes abrir tu cuenta de trading en Binomo o Stockity con uno de estos enlaces:
+MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Abre tu cuenta de trading con uno de mis enlaces oficiales:
 
-🔗 Binomo:
-{ENLACE_REFERIDO}
-
-🔗 Stockity:
+🔗 Stockity — opción principal:
 {ENLACE_REFERIDO_STOCKITY}
 
-👉 Luego de crear la cuenta es necesario y súper importante que me envíes tu ID de Binomo o Stockity para validar tu registro antes de que realices un depósito en tu cuenta de trading.
-
-💰 Depósito según nivel elegido 
-
-IMPORTANTE: LA CANTIDAD DE BENEFICIOS VARÍA SEGÚN TU DEPÓSITO.
- 
-¡Te espero!"""
-
-MENSAJE_REGISTRARME_EN = f"""It’s super simple. Open your trading account on Binomo or Stockity using one of these links:
-
-🔗 Binomo:
+🔗 Binomo — opción secundaria:
 {ENLACE_REFERIDO}
 
-🔗 Stockity:
+👉 Después de crear la cuenta, envíame tu ID de Stockity o Binomo para validar que el registro quedó correctamente vinculado ANTES de que realices cualquier depósito.
+
+💰 El acceso a mi comunidad es gratuito. Tu depósito queda en tu propia cuenta de trading y la cantidad de beneficios/herramientas depende del nivel que elijas.
+
+¡Te espero! 🚀"""
+
+MENSAJE_REGISTRARME_EN = f"""It’s very simple. Open your trading account using one of my official links:
+
+🔗 Stockity — primary option:
 {ENLACE_REFERIDO_STOCKITY}
 
-👉 After creating the account, it’s very important that you send me your Binomo or Stockity ID so I can validate your registration before you make any deposit.
+🔗 Binomo — secondary option:
+{ENLACE_REFERIDO}
 
-💰 Minimum deposit according to the chosen level
+👉 After creating the account, send me your Stockity or Binomo ID so I can validate that the registration is correctly linked BEFORE you make any deposit.
 
-IMPORTANT: The amount of benefits varies depending on your deposit.
+💰 Access to my community is free. Your deposit stays in your own trading account, and the benefits/tools depend on the level you choose.
 
-I’ll be waiting for you!"""
+I’ll be waiting for you! 🚀"""
 
-MENSAJE_YA_TENGO_CUENTA_ES = f"""Para tener acceso a mi comunidad VIP y todas las herramientas debes realizar tu registro con mi enlace.
+MENSAJE_YA_TENGO_CUENTA_ES = f"""Si ya tienes una cuenta de Stockity o Binomo y NO fue registrada con mi enlace, primero revisamos cómo dejar correctamente vinculada una nueva cuenta.
 
-¿Qué debes hacer? 👉 Si creaste tu cuenta con mi enlace envíame tu ID de Binomo o Stockity en el botón de arriba.
+✅ Si tu cuenta actual tiene saldo, retíralo primero si la plataforma y las condiciones de tu cuenta lo permiten. Si tienes un bono activo, revisa antes sus condiciones de retiro.
 
-🟡 Si no lo hiciste con mi enlace, haz lo siguiente:
+✅ Si la plataforma permite crear una nueva cuenta, haz el registro con mi enlace usando un correo diferente que nunca hayas usado en esa plataforma y datos reales/verificables del titular.
 
-1️⃣ Copia y pega el enlace de registro en una ventana de incógnito o activa una VPN para cambiar tu IP. Luego inicia sesión normal.
+✅ Si la cuenta pertenece a un familiar, debe ser realmente la cuenta de esa persona: sus propios datos, documento y medios de depósito/retiro a su nombre.
 
-2️⃣ Usa un correo que NO hayas usado en Binomo o Stockity y regístrate de forma manual.
+❗ No uses VPN para saltar restricciones de país. Si tienes un problema de disponibilidad o país, escríbeme directamente para revisar tu caso.
 
-3️⃣ ❗️SUPER IMPORTANTE: Envíame tu ID de Binomo o Stockity para validar.
+🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
+🔗 Binomo: {ENLACE_REFERIDO}
 
-🔗 Enlace de registro Binomo: {ENLACE_REFERIDO}
+📌 SUPER IMPORTANTE: envíame el nuevo ID antes de depositar para validarlo."""
 
-🔗 Enlace de registro Stockity: {ENLACE_REFERIDO_STOCKITY}
-"""
+MENSAJE_YA_TENGO_CUENTA_EN = f"""If you already have a Stockity or Binomo account and it was NOT registered through my link, the first step is to review how to correctly link a new account.
 
-MENSAJE_YA_TENGO_CUENTA_EN = f"""To access my VIP community and all tools, you must register with my link.
+✅ If your current account has funds, withdraw them first if the platform and your account conditions allow it. If you have an active bonus, review its withdrawal conditions first.
 
-What to do? 👉 If you created your account with my link, send me your Binomo or Stockity ID using the button above.
+✅ If the platform allows a new account, register through my link using a different email that has never been used on that platform and the account holder’s real, verifiable information.
 
-🟡 If you didn’t use my link, do this:
+✅ If the account belongs to a family member, it must genuinely be that person’s account: their own information, identity document, and deposit/withdrawal methods in their name.
 
-1️⃣ Copy and paste the registration link in an incognito window or turn on a VPN to change your IP. Then log in normally.
+❗ Do not use a VPN to bypass country restrictions. If you have a country/availability issue, message me directly so I can review your case.
 
-2️⃣ Use an email you have NOT used on Binomo or Stockity and register manually.
+🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
+🔗 Binomo: {ENLACE_REFERIDO}
 
-3️⃣ ❗️VERY IMPORTANT: Send me your Binomo or Stockity ID for validation.
-
-🔗 Binomo registration link: {ENLACE_REFERIDO}
-
-🔗 Stockity registration link: {ENLACE_REFERIDO_STOCKITY}
-"""
+📌 VERY IMPORTANT: send me the new ID before depositing so I can validate it."""
 
 # Recordatorios (ES) — tiempos internos; los mensajes no mencionan cuánto tiempo pasó
 MENSAJE_1H_ES = f"""🚀 Si quieres empezar, el primer paso es mucho más sencillo de lo que parece.
@@ -349,16 +391,16 @@ Registra tu cuenta con uno de mis enlaces y envíame tu ID antes de depositar pa
 ✨ Desde el nivel Básico puedes comenzar con 50 USD y acceder a formación y herramientas según tu nivel.
 
 👉 Da el paso ahora:
-Binomo: {ENLACE_REFERIDO}
-Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+Stockity: {ENLACE_REFERIDO_STOCKITY}
+Binomo: {ENLACE_REFERIDO}"""
 
 MENSAJE_3H_ES = f"""📈 No necesitas aprender trading sin dirección. La idea de la comunidad es que tengas una ruta, formación, señales y herramientas que te ayuden a desarrollar tu operativa con estructura.
 
 Tu siguiente acción es simple: crea tu cuenta con mi enlace y envíame tu ID para validarlo antes del depósito.
 
 ✅ Empieza hoy y deja listo tu acceso:
-Binomo: {ENLACE_REFERIDO}
-Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+Stockity: {ENLACE_REFERIDO_STOCKITY}
+Binomo: {ENLACE_REFERIDO}"""
 
 MENSAJE_24H_ES = f"""✨ Si estabas esperando el momento para comenzar, conviértelo en una acción concreta.
 
@@ -367,16 +409,16 @@ Puedes elegir el nivel que mejor se ajuste a tu capital y avanzar paso a paso co
 🔥 Regístrate ahora, envíame tu ID y yo te indico el siguiente paso para activar correctamente tu acceso.
 
 📊 Resultados de la comunidad: {CANAL_RESULTADOS}
-🔗 Binomo: {ENLACE_REFERIDO}
-🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
+🔗 Binomo: {ENLACE_REFERIDO}"""
 
 MENSAJE_48H_ES = f"""🎯 La diferencia entre seguir pensando en empezar y realmente avanzar es completar el primer paso.
 
 Haz tu registro con mi enlace, envíame tu ID antes de depositar y déjame validar tu cuenta. A partir de ahí podrás elegir tu nivel y continuar con la activación.
 
 🚀 Empieza ahora:
-Binomo: {ENLACE_REFERIDO}
 Stockity: {ENLACE_REFERIDO_STOCKITY}
+Binomo: {ENLACE_REFERIDO}
 
 Cuando termines, envíame tu ID y continuamos."""
 
@@ -388,16 +430,16 @@ Create your account using one of my links and send me your ID before depositing 
 ✨ You can start at the Basic level from 50 USD and access education and tools according to your level.
 
 👉 Take the first step now:
-Binomo: {ENLACE_REFERIDO}
-Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+Stockity: {ENLACE_REFERIDO_STOCKITY}
+Binomo: {ENLACE_REFERIDO}"""
 
 MENSAJE_3H_EN = f"""📈 You do not have to learn trading without direction. The community gives you a structured path with education, signals and tools to develop your trading process.
 
 Your next action is simple: create your account with my link and send me your ID for validation before depositing.
 
 ✅ Start today:
-Binomo: {ENLACE_REFERIDO}
-Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+Stockity: {ENLACE_REFERIDO_STOCKITY}
+Binomo: {ENLACE_REFERIDO}"""
 
 MENSAJE_24H_EN = f"""✨ If you were waiting for the right moment to begin, turn that intention into a concrete action.
 
@@ -406,48 +448,44 @@ Choose the level that fits your capital and move forward step by step with educa
 🔥 Register now, send me your ID and I will guide you through the next activation step.
 
 📊 Community results: {CANAL_RESULTADOS}
-🔗 Binomo: {ENLACE_REFERIDO}
-🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}"""
+🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
+🔗 Binomo: {ENLACE_REFERIDO}"""
 
 MENSAJE_48H_EN = f"""🎯 The difference between thinking about starting and actually moving forward is completing the first step.
 
 Register with my link, send me your ID before depositing, and let me validate your account. Then you can choose your level and continue with activation.
 
 🚀 Start now:
-Binomo: {ENLACE_REFERIDO}
 Stockity: {ENLACE_REFERIDO_STOCKITY}
+Binomo: {ENLACE_REFERIDO}
 
 When you finish, send me your ID and we will continue."""
 
 # Beneficios (ES/EN)
 BENEFICIOS_ES = """✨ Beneficios Exclusivos que Recibirás ✨
 
-✅ Formación certificada: Binarias, Forex, Índices Sintéticos y enfoque Multi-Broker.
-✅ Material premium de estudio: guías, PDFs, estrategias exitosas, planes de trading, gestión de riesgo e interés compuesto.
-✅ Mentorías y operativas en vivo: acompañamiento constante y clases grabadas.
-✅ +200 señales diarias de alta precisión: Divisas, CRYPTO IDX, Forex, índices sintéticos, futuros y spot en Binance.
-✅ Bots automáticos 24/7: no pierdas oportunidades incluso cuando no estés conectado.
-✅ Forex Automatizado: sistemas listos para ejecutar con configuración profesional.
-✅ Preparación para Cuentas de Fondeo: estructura, disciplina y plan real de escalamiento.
-✅ Herramientas avanzadas para MT4 y MT5.
+✅ Formación: Binarias, Forex, Índices Sintéticos y enfoque Multi-Broker.
+✅ Material premium de estudio: guías, PDFs, estrategias, planes de trading, gestión de riesgo e interés compuesto.
+✅ Mentorías y operativas en vivo: acompañamiento y clases grabadas.
+✅ Software Premium anticipado: aproximadamente 200 o más señales de lunes a sábado entre Divisas y CRYPTO IDX, según nivel.
+✅ Bot de inteligencia artificial con señales 24/7.
+✅ Forex automatizado, preparación para cuentas de fondeo y herramientas MT4/MT5 según nivel.
 ✅ Bonos y beneficios adicionales según nivel.
 
-⚡️ Los beneficios pueden variar según el nivel e inversión elegida. ⚡️
+⚡️ El acceso a la comunidad es gratuito; las herramientas disponibles dependen del nivel/inversión elegida. ⚡️
 """
 
 BENEFICIOS_EN = """✨ Exclusive Benefits You’ll Receive ✨
 
-✅ Certified Training: Binary Options, Forex, Synthetic Indices and a Multi-Broker approach.
-✅ Premium Study Materials: guides, PDFs, proven strategies, trading plans, risk management and compound interest structures.
-✅ Live Mentorship & Trading Sessions: ongoing support and recorded classes.
-✅ 200+ High-Precision Signals Daily: Forex pairs, CRYPTO IDX, synthetic indices, futures and spot trading on Binance.
-✅ 24/7 Automated Bots: never miss opportunities, even when you're offline.
-✅ Automated Forex Systems: professionally configured and ready to execute.
-✅ Funding Account Preparation: structure, discipline and real capital scaling strategy.
-✅ Advanced Tools for MT4 and MT5.
-✅ Additional bonuses and benefits depending on your level.
+✅ Education: Binary Options, Forex, Synthetic Indices and a Multi-Broker approach.
+✅ Premium study material: guides, PDFs, strategies, trading plans, risk management and compound interest.
+✅ Live mentoring and trading sessions, plus recorded classes.
+✅ Premium advance signal software: approximately 200 or more signals from Monday to Saturday across currency pairs and CRYPTO IDX, depending on level.
+✅ AI signal bot available 24/7.
+✅ Automated Forex, funded-account preparation and MT4/MT5 tools depending on level.
+✅ Additional bonuses and benefits according to level.
 
-⚡️ Benefits may vary according to the selected level and capital. ⚡️
+⚡️ Community access is free; available tools depend on the selected level/investment. ⚡️
 """
 
 # === FUNCIONES DE MENSAJES PROGRAMADOS (usa lang por usuario) ===
@@ -506,6 +544,19 @@ def set_user_stage(chat_id: int, stage: str):
         if u:
             u.stage = stage
             session.commit()
+
+
+def _touch_user_activity(chat_id: int):
+    """Actualiza la fecha de actividad sin alterar el resto del usuario."""
+    try:
+        with Session() as session:
+            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            if u:
+                u.last_activity_at = datetime.utcnow()
+                session.commit()
+    except Exception as e:
+        logging.info("No pude actualizar última actividad de %s: %s", chat_id, e)
+
 
 # === Teclado de soporte (solo para el flujo nuevo / redirecciones) ===
 def support_keyboard() -> InlineKeyboardMarkup:
@@ -582,6 +633,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🚀 Complete Registration", callback_data="registrarme")],
             [InlineKeyboardButton("✅ Validate your ID | Questions? DM me", url="https://t.me/Johaaletradervalidacion")],
             [InlineKeyboardButton("✅ I already have an account", callback_data="ya_tengo_cuenta")],
+            [InlineKeyboardButton("📊 Capital Management", callback_data="gestion_capital_en")],
             [InlineKeyboardButton("🎁 VIP Benefits", callback_data="beneficios_vip")],
             [InlineKeyboardButton("📊 Levels & Plans", callback_data="levels_plans_en")],
             [InlineKeyboardButton("📲 Channel in English", url=CANAL_EN)],
@@ -624,10 +676,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 nombre=nombre,
                 fecha_registro=datetime.utcnow(),
                 lang="es",
-                stage="PRE"
+                stage="PRE",
+                last_activity_at=datetime.utcnow(),
             )
             session.add(nuevo_usuario)
-            session.commit()
+        else:
+            user.nombre = nombre
+            user.last_activity_at = datetime.utcnow()
+        session.commit()
 
     await update.message.reply_text("Elige tu idioma / Choose your language:", reply_markup=build_lang_picker())
 
@@ -661,6 +717,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     q = update.callback_query
     await q.answer()
+    _touch_user_activity(chat_id)
 
     # Notificar interacción
     await notificar_interaccion(update, context)
@@ -668,13 +725,17 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Niveles y Planes (informativo) ---
     if q.data == "niveles_planes":
         texto = (
-            "📊 NUEVA ESTRUCTURA OFICIAL JT TRADERS\n\n"
-            "🟢 Básico — desde $50 inversión en tu cuenta Binomo.\n"
-            "Señales Crypto IDX limitadas + formación y gestión.\n\n"
-            "🔵 Premium — desde $200 inversión.\n"
-            "Señales completas, bots IA, operativa en vivo y multi-broker.\n\n"
-            "🟣 Prestige — desde $500 inversión.\n"
-            "Mentorías privadas, Forex automatizado y preparación para cuentas de fondeo.\n\n"
+            "📊 NIVELES JT TRADERS\n\n"
+            "🟢 Básico — desde $50 USD en tu propia cuenta de trading.\n"
+            "Formación + herramientas y señales CRYPTO IDX limitadas.\n\n"
+            "🔵 Premium — desde $200 USD en tu propia cuenta de trading.\n"
+            "Señales completas, bot IA 24/7, operativas en vivo y enfoque multi-broker.\n\n"
+            "🟣 Prestige — desde $500 USD en tu propia cuenta de trading.\n"
+            "Todo Premium + mentorías privadas, Forex automatizado y preparación para cuentas de fondeo.\n\n"
+            "✅ Mi comunidad es totalmente GRATIS: estos valores NO son un pago para mí, son capital que depositas directamente en TU cuenta de trading.\n\n"
+            f"⭐ Stockity (opción principal): {ENLACE_REFERIDO_STOCKITY}\n"
+            f"🔹 Binomo (opción secundaria): {ENLACE_REFERIDO}\n\n"
+            "⚠️ MUY IMPORTANTE: después de registrarte y ANTES de depositar, envíame tu ID para validar que la cuenta quedó correctamente vinculada conmigo.\n\n"
             "Consulta todos los detalles aquí:"
         )
         kb = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-02-27")]]
@@ -686,11 +747,17 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Levels & Plans (EN) ---
     if q.data == "levels_plans_en":
         texto = (
-            "📊 OFFICIAL JT TRADERS COMMUNITY STRUCTURE\n\n"
-            "🟢 Level 1 — Basic (from $50 trading capital in your Binomo account).\n"
-            "Limited Crypto IDX signals + education & risk management.\n\n"
-            "🔵 Level 2 — Premium (from $200 trading capital).\n"
-            "Full signals, AI bots, live trading and multi-broker.\n\n"
+            "📊 JT TRADERS LEVELS\n\n"
+            "🟢 Basic — from $50 USD in your own trading account.\n"
+            "Education + limited CRYPTO IDX signals/tools.\n\n"
+            "🔵 Premium — from $200 USD in your own trading account.\n"
+            "Full signals, 24/7 AI bot, live trading and multi-broker access.\n\n"
+            "🟣 Prestige — from $500 USD in your own trading account.\n"
+            "Everything in Premium + private mentoring, automated Forex and funded-account preparation.\n\n"
+            "✅ My community is completely FREE: these amounts are NOT a payment to me; they are capital you deposit directly into YOUR trading account.\n\n"
+            f"⭐ Stockity (primary option): {ENLACE_REFERIDO_STOCKITY}\n"
+            f"🔹 Binomo (secondary option): {ENLACE_REFERIDO}\n\n"
+            "⚠️ VERY IMPORTANT: after registering and BEFORE depositing, send me your ID so I can validate that the account is correctly linked to me.\n\n"
             "See full details here:"
         )
         kb = [[InlineKeyboardButton("📄 View full structure", url="https://telegra.ph/OFFICIAL-EVOLUTION-OF-OUR-TRADING-COMMUNITY-02-28")]]
@@ -702,7 +769,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "Perfecto ✅\n"
             "Para poder validarlo necesito que me envíes el **ID en texto** (solo el número).\n"
-            "📌 Ábrelo en Binomo o Stockity, cópialo y pégalo aquí.\n\n"
+            "📌 Ábrelo en Stockity o Binomo, cópialo y pégalo aquí.\n\n"
             "Si prefieres, también puedes escribirme al chat personal 👇"
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
@@ -724,7 +791,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = (
             "Perfecto ✅\n\n"
-            "Recibido. Para continuar, envíame tu **ID de Binomo o Stockity en texto** (solo el número) y lo dejo en validación 👇\n\n"
+            "Recibido. Para continuar, envíame tu **ID de Stockity o Binomo en texto** (solo el número) y lo dejo en validación 👇\n\n"
             "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
@@ -745,7 +812,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data and (q.data.startswith("DEP_YES|") or q.data.startswith("dep_yes:")):
         msg = (
             "Perfecto ✅\n\n"
-            "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) y tu **ID de Binomo o Stockity en texto** "
+            "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) y tu **ID de Stockity o Binomo en texto** "
             "(solo el número) para validarlo y habilitar tu acceso 👇"
         )
         context.user_data["awaiting_deposit_proof"] = True
@@ -793,17 +860,24 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data == "gestion_capital":
         texto_gestion = (
             "📊 GESTIÓN DE CAPITAL\n\n"
-            "He habilitado un sistema limitado de gestión de capital para quienes desean participar directamente en mis operaciones.\n\n"
-            "💼 Condiciones\n\n"
-            "• Inversión mínima: $200 USD\n"
-            "• Duración del ciclo: 4 meses\n"
-            "• Objetivo de rendimiento aproximado: hasta 40% mensual según condiciones del mercado\n\n"
-            "🔒 Por motivos de seguridad y control operativo, el capital se envía directamente a mi gestión, desde donde se ejecutan las operaciones siguiendo mi plan de trading y gestión de riesgo.\n\n"
-            "📈 Durante el proceso recibirás reportes periódicos del crecimiento del capital.\n\n"
-            "⚠️ El trading implica riesgo y los resultados pueden variar según condiciones del mercado.\n\n"
-            "Si deseas participar, escribe GESTIÓN y te enviaré la información para comenzar."
+            "Tengo dos modalidades disponibles y este proceso lo reviso personalmente contigo.\n\n"
+            "• Modalidad 3 meses: desde 200 USD. Objetivo estimado de 20–30% mensual, sujeto a resultados del trading.\n"
+            "• Modalidad 2 meses: desde 100 USD. La estructura planteada busca generar hasta 30 USD semanales, sujeto a resultados.\n\n"
+            "⚠️ Son objetivos, NO ganancias garantizadas. El trading implica riesgo.\n\n"
+            "Si te interesa, escríbeme directamente y te explico condiciones, disponibilidad y proceso 👇"
         )
-        await q.message.reply_text(texto_gestion)
+        await q.message.reply_text(texto_gestion, reply_markup=support_keyboard())
+
+    elif q.data == "gestion_capital_en":
+        texto_gestion = (
+            "📊 CAPITAL MANAGEMENT\n\n"
+            "I currently have two options, and I review this process with you personally.\n\n"
+            "• 3-month option: from 200 USD. Estimated target of 20–30% per month, subject to trading results.\n"
+            "• 2-month option: from 100 USD. The structure aims for up to 30 USD per week, subject to results.\n\n"
+            "⚠️ These are targets, NOT guaranteed profits. Trading involves risk.\n\n"
+            "If you are interested, message me directly so I can explain the current conditions and availability 👇"
+        )
+        await q.message.reply_text(texto_gestion, reply_markup=support_keyboard())
 
     elif q.data == "beneficios_vip":
         await q.message.reply_text(BENEFICIOS_ES if lang=="es" else BENEFICIOS_EN)
@@ -849,12 +923,14 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
         if user:
             user.mensaje = texto
+            user.last_activity_at = datetime.utcnow()
         else:
             session.add(Usuario(
                 telegram_id=str(chat_id),
                 nombre=update.effective_user.full_name,
                 mensaje=texto,
-                fecha_registro=datetime.utcnow()
+                fecha_registro=datetime.utcnow(),
+                last_activity_at=datetime.utcnow(),
             ))
         session.commit()
 
@@ -936,7 +1012,7 @@ async def notificar_interaccion(update: Update, context: ContextTypes.DEFAULT_TY
 
 # === RESPUESTA DEL ADMIN (texto/audio) ===
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Puede ser respuesta a un mensaje del admin que contenía texto o media con caption
+    # Puede ser respuesta a un mensaje del admin que contenía texto o media con caption.
     if update.message.reply_to_message:
         base_text = (
             update.message.reply_to_message.text_html_urled
@@ -947,56 +1023,97 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
         chat_id_match = re.search(r'ID(?:\s+del\s+usuario)?[^0-9]{0,40}(\d+)', base_text, re.IGNORECASE)
         if chat_id_match:
             destinatario_id = int(chat_id_match.group(1))
+            pending_before = _get_pending_ai(destinatario_id)
+            original_question = (pending_before or {}).get("text") or _extract_question_from_admin_message(base_text)
             try:
+                response_type = "text"
+                learned_reply = ""
+                pending_cleared_early = False
+
                 if update.message.voice:
                     await context.bot.send_voice(
                         chat_id=destinatario_id,
                         voice=update.message.voice.file_id,
                         caption="🎤 Respuesta en audio"
                     )
+                    response_type = "voice"
+                    # Cancelamos la IA INMEDIATAMENTE después de enviar el audio, antes
+                    # de transcribir, para que no pueda responder mientras procesamos la voz.
+                    _cancel_ai_job(context, destinatario_id)
+                    _clear_pending_ai_db(destinatario_id)
+                    pending_cleared_early = True
+
+                    # La transcripción ocurre después de enviar el audio, para no demorar al usuario.
+                    learned_reply = await _transcribe_admin_voice(context, update.message.voice.file_id)
+                    manual_reply_text = learned_reply or "[Respuesta de voz enviada por Johanna]"
                 else:
                     await context.bot.send_message(
                         chat_id=destinatario_id,
                         text=update.message.text
                     )
+                    learned_reply = (update.message.text or "").strip()
+                    manual_reply_text = learned_reply
 
                 # Si Johanna respondió dentro de la ventana de espera, la IA pendiente se cancela.
-                manual_reply_text = update.message.text or "[Respuesta de voz enviada por Johanna]"
-                _cancel_pending_ai(context, destinatario_id, manual_reply=manual_reply_text)
+                if pending_cleared_early:
+                    if original_question or manual_reply_text:
+                        _append_ai_exchange(destinatario_id, original_question or "", manual_reply_text)
+                else:
+                    _cancel_pending_ai(context, destinatario_id, manual_reply=manual_reply_text)
 
-                # --- NUEVO: detectar mensaje gatillo y cambiar flujo ---
+                # Aprende de la respuesta real (incluida la transcripción de audio, si fue posible).
+                if learned_reply:
+                    _save_johanna_example(
+                        destinatario_id,
+                        original_question or "",
+                        learned_reply,
+                        get_user_lang(destinatario_id),
+                        response_type=response_type,
+                    )
+
+                # Detectar mensajes gatillo y cambiar el flujo sin alterar la lógica actual.
                 try:
-                    txt = (update.message.text or "")
+                    txt = (learned_reply if response_type == "voice" else (update.message.text or ""))
                     txtn = _norm(txt)
                     if (
-    _norm(GATILLO_ID_OK) in txtn
-    or _norm(GATILLO_ID_OK_EN) in txtn
-    or ("id validado" in txtn)
-    or ("id successfully validated" in txtn)
-):
+                        _norm(GATILLO_ID_OK) in txtn
+                        or _norm(GATILLO_ID_OK_EN) in txtn
+                        or ("id validado" in txtn)
+                        or ("id successfully validated" in txtn)
+                    ):
                         set_user_stage(destinatario_id, STAGE_POST)
-                        # Cancelar Serie A y activar Serie B
                         _cancel_jobs_prefix(context, "A", destinatario_id)
                         schedule_series_b(destinatario_id, context)
                         await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Gatillo OK detectado. Serie B activada para {destinatario_id}")
 
                     elif ("confirmo cuenta activa" in txtn) or ("cuenta esta activa" in txtn) or ("cuenta está activa" in txtn) or ("acceso confirmado" in txtn) or ("acceso activado" in txtn):
-                        # Acceso final confirmado por admin: detener campañas A y B
                         set_user_stage(destinatario_id, STAGE_DEPOSITED)
                         _cancel_jobs_prefix(context, "A", destinatario_id)
                         _cancel_jobs_prefix(context, "B", destinatario_id)
                         await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Acceso confirmado. Campañas detenidas para {destinatario_id}")
+
                     elif (_norm(GATILLO_ID_ERRADO) in txtn) or ("tu id esta errado" in txtn) or ("tu id está errado" in txtn):
                         set_user_stage(destinatario_id, STAGE_PRE)
-                        # Mantener/renovar Serie A
                         schedule_series_a(destinatario_id, get_user_lang(destinatario_id), context)
-                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"ℹ️ Gatillo ERRADO detectado. Serie A continua para {destinatario_id}")
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"ℹ️ Gatillo ERRADO detectado. Serie A continúa para {destinatario_id}")
                 except Exception as _e:
-                    pass
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="✅ Mensaje enviado al usuario correctamente."
-                )
+                    logging.info("No pude procesar gatillo de respuesta manual: %s", _e)
+
+                if response_type == "voice" and learned_reply:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="✅ Audio enviado al usuario y transcrito para aprendizaje de estilo."
+                    )
+                elif response_type == "voice":
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="✅ Audio enviado al usuario. (La transcripción para aprendizaje no estuvo disponible, pero el envío funcionó correctamente.)"
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="✅ Mensaje enviado al usuario correctamente."
+                    )
             except Exception as e:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
@@ -1012,6 +1129,7 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
             chat_id=update.effective_chat.id,
             text="❌ Debes responder directamente al mensaje del usuario para que funcione."
         )
+
 
 async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1072,6 +1190,8 @@ async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 # Modelo económico para alto volumen; puede sobreescribirse desde Railway con OPENAI_MODEL
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+# Modelo recomendado para transcribir respuestas de voz de Johanna.
+OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
 # 12 minutos: punto medio entre 10 y 15. Puede cambiarse en Railway con AI_WAIT_MINUTES.
 try:
     AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "12")))
@@ -1083,43 +1203,289 @@ AI_HISTORY_MAX_MESSAGES = 16
 JOHA_KNOWLEDGE = os.getenv("JOHA_KNOWLEDGE", "").strip() or f"""
 INFORMACIÓN OFICIAL DE JOHAALETRADER / JT TRADERS TEAMS
 
+IDENTIDAD Y FORMA DE RESPONDER
+- Responde en primera persona como Johanna / JOHAALETRADER. Nunca te presentes como Johabot ni como una IA.
+- Puedes atender tanto prospectos que quieren entrar a la comunidad como miembros que ya están dentro.
+- Mantén respuestas breves, normalmente 2 a 5 párrafos cortos, positivas, claras, comerciales y fáciles de leer.
+- Usa algunos emojis con moderación y termina, cuando sea natural, llevando al siguiente paso útil: registro → envío de ID → depósito → activación/acceso.
+- No presiones de forma engañosa y no inventes urgencias, cupos ni resultados.
+
 REGISTRO Y ACCESO
-- Para acceder a la comunidad, el usuario debe registrarse con uno de los enlaces oficiales y enviar su ID de Binomo o Stockity para validación ANTES de depositar.
-- Binomo: {ENLACE_REFERIDO}
-- Stockity: {ENLACE_REFERIDO_STOCKITY}
+- El acceso a la comunidad es GRATUITO. No existe una membresía adicional que el usuario deba pagar a Johanna para entrar.
+- El usuario invierte/deposita en su PROPIA cuenta de trading. La cantidad de herramientas y beneficios depende del nivel elegido.
+- Opción principal de registro: Stockity: {ENLACE_REFERIDO_STOCKITY}
+- Opción secundaria: Binomo: {ENLACE_REFERIDO}
+- Después del registro, el usuario debe enviar su ID de Stockity o Binomo para validación ANTES de depositar.
 - Chat personal/validación: {SUPPORT_URL}
-- El depósito mínimo del nivel Básico es 50 USD. Los beneficios cambian según el nivel.
-- Nunca confirmes por tu cuenta que un ID, depósito o acceso quedó validado. Esa confirmación la realiza Johanna manualmente.
+- Nunca confirmes por tu cuenta que un ID, depósito, afiliación o acceso quedó validado. Esa confirmación la realiza Johanna manualmente.
 
 NIVELES
-- Básico: desde 50 USD. Formación completa, comunidad inicial y señales Crypto IDX limitadas.
-- Premium: desde 200 USD. Incluye lo anterior más señales completas, bots IA 24/7, operativas en vivo y enfoque multi-broker.
+- Básico: desde 50 USD en la cuenta de trading. Formación completa, comunidad inicial y herramientas/señales CRYPTO IDX limitadas.
+- Premium: desde 200 USD. Incluye lo anterior más señales completas del software Premium, bot IA 24/7, operativas en vivo y enfoque multi-broker.
 - Prestige: desde 500 USD. Incluye Premium más mentorías privadas, acompañamiento cercano, Forex automatizado y preparación para cuentas de fondeo.
+- Si un usuario tiene menos de 50 USD, no negocies una excepción ni prometas acceso: indícale que debe escribirle directamente a Johanna para revisar su caso.
 
-BENEFICIOS GENERALES
-- Formación en binarias, Forex, índices sintéticos y enfoque multi-broker.
-- Material de estudio, guías, PDFs, estrategias, planes de trading y gestión de riesgo.
-- Mentorías, operativas en vivo y clases grabadas.
-- Señales de Divisas, CRYPTO IDX, Forex, índices sintéticos, futuros y spot en Binance, según nivel.
-- Bots automáticos 24/7, herramientas MT4/MT5 y otros beneficios según nivel.
+SI YA TIENE CUENTA
+- Si la cuenta actual no fue registrada con los enlaces de Johanna y tiene saldo, puede retirarlo primero si la plataforma y las condiciones de la cuenta lo permiten. Si existe un bono activo, debe revisar antes las condiciones aplicables.
+- Solo se debe crear una nueva cuenta si la plataforma lo permite, con un correo distinto que nunca haya sido usado en esa plataforma y con datos reales/verificables del titular.
+- Si un familiar abre una cuenta, debe ser genuinamente la cuenta de esa persona: sus propios datos, documento y medios de depósito/retiro a su nombre.
+- Nunca recomiendes usar identidad/documentos ajenos para hacer pasar una cuenta como propia.
+- Nunca indiques usar VPN/proxy para evadir restricciones geográficas. Los casos de país o disponibilidad se escalan directamente a Johanna.
 
 BONOS ACTIVOS
 - 100%: código TOP1_JOHATRADER. Solo para el PRIMER depósito. Puede utilizarse una sola vez.
 - 70%: código TOP_1JOHAALE. Para depósitos posteriores. Puede utilizarse una sola vez.
-- No inventes condiciones adicionales de los bonos. Si preguntan por requisitos de retiro, volumen, elegibilidad concreta de una cuenta o reglas que no estén aquí, explica que deben verificarse en la plataforma/cuenta y ofrece escalarlo a Johanna.
+- Para una pregunta simple sobre bonos, indica únicamente los bonos activos anteriores.
+- Si preguntan por requisitos de retiro, volumen, elegibilidad concreta, reglas o condiciones que no estén aquí, no inventes: explica que deben verificarse en la plataforma/cuenta y ofrece escalarlo a Johanna.
 
 LIVES
-- Lunes a sábado: 11:00 am, 5:00 pm y 9:00 pm (hora de Colombia), según la programación actual del bot.
+- Los lives públicos suelen realizarse de lunes a sábado.
+- Normalmente hay una sesión alrededor de las 5:00 p. m. (hora Colombia) y una sesión nocturna que puede variar entre 8:00 p. m., 8:30 p. m. o 9:00 p. m.
+- Algunos sábados puede no haber transmisión.
+- Las sesiones privadas VIP no tienen un horario fijo que debas inventar: Johanna las anuncia previamente dentro del canal VIP.
 
-GESTIÓN DE CAPITAL
-- Sistema limitado. Inversión mínima 200 USD. Ciclo de 4 meses. Objetivo aproximado de hasta 40% mensual según condiciones de mercado. El trading implica riesgo y los resultados pueden variar. Nunca presentes ese objetivo como garantía.
+SEÑALES — SOFTWARE PREMIUM ANTICIPADO
+- Aproximadamente 200 o más señales de lunes a sábado, principalmente Divisas y CRYPTO IDX.
+- Cada señal ya trae un minuto de entrada preestablecido. La entrada se toma en ese minuto o aproximadamente 2 segundos antes para reducir el efecto del delay de la plataforma.
+- Todas las señales se trabajan con expiración de 1 minuto.
+- Puede utilizarse Martingala 1 y Martingala 2 de forma opcional. No es obligatorio y aumenta el riesgo/exposición; nunca lo presentes como garantía de recuperación ni de ganancia.
 
-REGLAS DE RESPUESTA
-- No prometas ganancias, rentabilidad garantizada ni resultados seguros.
-- No inventes datos. Si falta información, dilo y deriva a Johanna.
-- No des instrucciones para evadir restricciones mediante VPN/proxy.
-- Para validación de ID, comprobantes, depósitos, activación de acceso, bloqueos o casos particulares de cuenta, no tomes decisiones: deriva a Johanna.
+SEÑALES — BOT DE INTELIGENCIA ARTIFICIAL
+- El bot de señales funciona 24/7.
+- La entrada se toma en el minuto inmediatamente siguiente al minuto en que llega la alerta. Ejemplo: si la alerta llega durante el minuto 10, la entrada se toma en el minuto 11, aunque haya llegado con 20 o 30 segundos avanzados.
+- Expiración: 1 minuto. Martingala 1 y 2 son opcionales y aumentan el riesgo.
+
+GESTIÓN DE CAPITAL — SIEMPRE ESCALAR A JOHANNA
+- Johanna maneja personalmente cualquier consulta o activación de gestión de capital. Nunca entregues wallets, instrucciones de transferencia ni confirmes recepción de dinero.
+- Modalidad 3 meses: desde 200 USD. Se ha planteado un objetivo estimado de 20–30% mensual, sujeto a resultados de trading. Al finalizar el tercer mes se liquida el ciclo según resultados y se devuelve el capital correspondiente.
+- Modalidad 2 meses: desde 100 USD. La estructura planteada busca hasta 30 USD semanales durante 2 meses, sujeto a resultados.
+- Estas cifras son objetivos/estructuras anunciadas, NO ganancias garantizadas. El trading implica riesgo y los resultados pueden ser inferiores o existir pérdidas.
+- Ante cualquier interés en gestión, deriva al chat personal de Johanna.
+
+TEMAS SENSIBLES — ESCALAR A JOHANNA
+- País donde Stockity/Binomo no esté disponible, VPN/proxy o restricción geográfica.
+- Usuario con menos de 50 USD que solicita una excepción.
+- Gestión de capital.
+- Validación de ID, comprobantes, depósitos, activación de acceso, bloqueos y casos particulares de una cuenta.
+- Cualquier dato que requiera comprobar el estado real de una cuenta.
+
+REGLAS GENERALES
+- No prometas ganancias, rentabilidad garantizada, precisión garantizada ni resultados seguros.
+- No inventes información. Si falta un dato, dilo y deriva a Johanna.
+- No solicites contraseñas, códigos 2FA, seed phrases ni credenciales sensibles.
 """.strip()
+
+
+
+def _should_learn_manual_response(response_text: str) -> bool:
+    """Evita convertir comandos/gatillos técnicos en ejemplos de conversación."""
+    t = (response_text or "").strip()
+    if len(t) < 8 or t.startswith("/"):
+        return False
+    tn = _norm(t) if "_norm" in globals() else t.lower()
+    technical = [
+        "confirmo cuenta activa",
+        "acceso confirmado",
+        "acceso activado",
+        "id validado correctamente",
+        "id successfully validated",
+        "tu id esta errado",
+        "tu id está errado",
+    ]
+    return not any(k in tn for k in technical)
+
+
+def _save_johanna_example(source_chat_id: int, user_text: str, response_text: str, lang: str, response_type: str = "text"):
+    """Guarda una respuesta real de Johanna como memoria global de estilo/conocimiento.
+
+    Los ejemplos nuevos ayudan a la IA a parecerse cada vez más a Johanna. Las
+    excepciones claramente individuales deben seguir tratándose como individuales.
+    """
+    response_text = (response_text or "").strip()
+    if not _should_learn_manual_response(response_text):
+        return
+    try:
+        with Session() as session:
+            session.add(JohannaExample(
+                source_chat_id=str(source_chat_id),
+                user_text=(user_text or "")[:3500],
+                response_text=response_text[:5000],
+                response_type=(response_type or "text")[:20],
+                lang=lang if lang in ("es", "en") else "es",
+                created_at=datetime.utcnow(),
+            ))
+            # Los ejemplos se conservan: forman la memoria acumulativa de Johanna.
+            # Al responder no se envían todos al modelo; se recuperan los más
+            # recientes y los más relacionados con la pregunta actual.
+            session.commit()
+    except Exception as e:
+        logging.warning("No pude guardar ejemplo de Johanna: %s", e)
+
+
+def _memory_keywords(question: str):
+    """Palabras útiles para recuperar ejemplos antiguos relacionados con la consulta."""
+    raw = (question or "").lower()
+    words = re.findall(r"[a-záéíóúüñ0-9_]{4,}", raw)
+    stop = {
+        "para", "como", "cómo", "esto", "esta", "este", "tengo", "quiero", "puedo", "donde", "dónde",
+        "cuando", "cuándo", "cual", "cuál", "porque", "sobre", "hola", "gracias", "favor", "informacion",
+        "información", "with", "what", "when", "where", "which", "that", "this", "have", "want", "your",
+        "about", "please", "hello", "thanks", "could", "would", "there",
+    }
+    out = []
+    for w in words:
+        if w in stop or w in out:
+            continue
+        out.append(w)
+        if len(out) >= 7:
+            break
+    return out
+
+
+def _johanna_examples_as_text(question: str = "", limit: int = 28) -> str:
+    """Recupera memoria relevante + ejemplos recientes de cómo responde Johanna."""
+    try:
+        limit = max(4, min(limit, 40))
+        with Session() as session:
+            recent = (
+                session.query(JohannaExample)
+                .order_by(JohannaExample.created_at.desc())
+                .limit(max(8, limit // 2))
+                .all()
+            )
+
+            relevant = []
+            keywords = _memory_keywords(question)
+            if keywords:
+                conditions = []
+                for kw in keywords:
+                    conditions.append(JohannaExample.user_text.ilike(f"%{kw}%"))
+                    conditions.append(JohannaExample.response_text.ilike(f"%{kw}%"))
+                relevant = (
+                    session.query(JohannaExample)
+                    .filter(or_(*conditions))
+                    .order_by(JohannaExample.created_at.desc())
+                    .limit(limit)
+                    .all()
+                )
+
+        # Primero los ejemplos relacionados; completamos con estilo reciente.
+        rows = []
+        seen = set()
+        for r in relevant + recent:
+            if r.id in seen:
+                continue
+            seen.add(r.id)
+            rows.append(r)
+            if len(rows) >= limit:
+                break
+
+        parts = []
+        total = 0
+        for r in rows:
+            q = (r.user_text or "").strip()
+            a = (r.response_text or "").strip()
+            if not a:
+                continue
+            piece = (f"USUARIO: {q}\n" if q else "") + f"JOHANNA: {a}"
+            if total + len(piece) > 14000:
+                continue
+            parts.append(piece)
+            total += len(piece)
+        return "\n\n".join(parts)
+    except Exception as e:
+        logging.info("No pude cargar ejemplos de Johanna: %s", e)
+        return ""
+
+
+def _extract_question_from_admin_message(base_text: str) -> str:
+    """Intenta recuperar la pregunta original desde la notificación enviada al admin."""
+    s = (base_text or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"🗨️\s*(.*?)(?:\n\n✏️|\Z)", s, flags=re.S)
+    if m:
+        return m.group(1).strip()
+    # Para notificaciones de media, el caption suele quedar después del encabezado.
+    if s.startswith("📩") and "\n\n" in s:
+        tail = s.split("\n\n", 1)[1].strip()
+        if tail and not tail.startswith("Pulsa para responder"):
+            return tail
+    return ""
+
+
+def _convert_voice_to_mp3(raw_bytes: bytes):
+    """Convierte la nota OGG/Opus de Telegram a MP3 si ffmpeg está disponible."""
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        try:
+            import imageio_ffmpeg  # opcional; si está instalado, trae un binario ffmpeg
+            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="joha_voice_") as td:
+            in_path = os.path.join(td, "voice.ogg")
+            out_path = os.path.join(td, "voice.mp3")
+            with open(in_path, "wb") as f:
+                f.write(raw_bytes)
+            subprocess.run(
+                [ffmpeg_bin, "-y", "-loglevel", "error", "-i", in_path, "-vn", "-ac", "1", "-b:a", "64k", out_path],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=45,
+            )
+            return Path(out_path).read_bytes()
+    except Exception as e:
+        logging.info("No pude convertir nota de voz para transcripción: %s", e)
+        return None
+
+
+async def _transcribe_admin_voice(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:
+    """Transcribe una respuesta de voz de Johanna para aprender su estilo/contenido.
+
+    La voz se envía al usuario aunque esta transcripción falle; el aprendizaje de
+    audio es una capa adicional y nunca rompe el flujo principal.
+    """
+    if not (HAS_HTTPX and OPENAI_API_KEY and file_id):
+        return ""
+    try:
+        tg_file = await context.bot.get_file(file_id)
+        raw = bytes(await tg_file.download_as_bytearray())
+        if not raw:
+            return ""
+
+        # Telegram entrega notas de voz normalmente como OGG/Opus; OpenAI admite
+        # formatos como MP3/WAV/WEBM, por eso convertimos de forma local.
+        mp3_bytes = await asyncio.to_thread(_convert_voice_to_mp3, raw)
+        if not mp3_bytes:
+            logging.warning("Transcripción de voz omitida: Railway necesita ffmpeg (o imageio-ffmpeg) para convertir OGG/Opus.")
+            return ""
+        if len(mp3_bytes) > 25 * 1024 * 1024:
+            logging.warning("Nota de voz demasiado grande para transcripción (>25 MB).")
+            return ""
+
+        files_payload = {"file": ("johanna_voice.mp3", mp3_bytes, "audio/mpeg")}
+        data_payload = {
+            "model": OPENAI_TRANSCRIBE_MODEL,
+            "prompt": "Conversación de trading de JOHAALETRADER. Términos frecuentes: Stockity, Binomo, CRYPTO IDX, martingala, señales, Premium, Prestige, ID, depósito.",
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": "Bearer " + OPENAI_API_KEY},
+                files=files_payload,
+                data=data_payload,
+            )
+        if resp.status_code != 200:
+            logging.warning("OpenAI transcription devolvió %s: %s", resp.status_code, resp.text[:350])
+            return ""
+        data = resp.json()
+        return str(data.get("text") or "").strip()
+    except Exception as e:
+        logging.warning("No pude transcribir respuesta de voz de Johanna: %s", e)
+        return ""
 
 
 def _load_ai_history(chat_id: int):
@@ -1231,19 +1597,21 @@ def _cancel_pending_ai(context: ContextTypes.DEFAULT_TYPE, chat_id: int, manual_
 
 LIVE_HORARIOS_ES = (
     "📅 **HORARIOS DE MIS LIVES**\n\n"
-    "🗓 **Lunes a Sábado**\n"
-    "• 11:00 am\n"
-    "• 5:00 pm\n"
-    "• 9:00 pm\n\n"
+    "🗓 **Normalmente de lunes a sábado**\n"
+    "• Primera sesión: alrededor de 5:00 pm\n"
+    "• Sesión nocturna: puede ser 8:00 pm, 8:30 pm o 9:00 pm\n\n"
+    "🇨🇴 Hora Colombia. Algunos sábados puede no haber transmisión.\n"
+    "🔐 Las sesiones privadas VIP las anuncio previamente dentro del canal VIP.\n\n"
     "🚀 *Nos vemos en vivo*"
 )
 
 LIVE_HORARIOS_EN = (
     "📅 **MY LIVE SCHEDULE**\n\n"
-    "🗓 **Monday to Saturday**\n"
-    "• 11:00 am\n"
-    "• 5:00 pm\n"
-    "• 9:00 pm\n\n"
+    "🗓 **Usually Monday to Saturday**\n"
+    "• First session: around 5:00 pm\n"
+    "• Evening session: may be 8:00 pm, 8:30 pm or 9:00 pm\n\n"
+    "🇨🇴 Colombia time. Some Saturdays there may be no public live.\n"
+    "🔐 Private VIP sessions are announced in advance inside the VIP channel.\n\n"
     "🚀 *See you live*"
 )
 
@@ -1272,6 +1640,14 @@ def detect_intent_es(texto: str) -> str:
         "me explicas", "me explica", "necesito que me expliques", "necesito ayuda con las señales",
     ]):
         return "HUMAN_CHAT"
+
+    # ---- Gestión de capital: siempre la revisa Johanna directamente ----
+    if any(k in t for k in [
+        "gestion de capital", "gestión de capital", "gestionar capital", "manejas capital",
+        "manejo de capital", "inversion contigo", "inversión contigo", "enviarte capital",
+        "capital management", "manage my capital", "investment with you"
+    ]):
+        return "GESTION_CAPITAL"
 
     # ---- Depósito luego / esperando pago ----
     if any(k in t for k in [
@@ -1372,6 +1748,17 @@ def detect_intent_es(texto: str) -> str:
 ]):
         return "LIVE"
 
+    # ---- Niveles / planes / inversión mínima ----
+    if any(k in t for k in [
+        "niveles", "nivel basico", "nivel básico", "nivel premium", "nivel prestige",
+        "planes", "plan basico", "plan básico", "plan premium", "plan prestige",
+        "cuanto necesito para entrar", "cuánto necesito para entrar",
+        "cuanto debo depositar", "cuánto debo depositar",
+        "inversion minima", "inversión mínima", "minimum investment",
+        "levels", "plans", "basic level", "premium level", "prestige level"
+    ]):
+        return "NIVELES"
+
     if any(k in t for k in ["bono", "bonus", "100%", "70%", "top1_johatrader", "top_1johaale"]):
         return "BONO"
 
@@ -1392,6 +1779,38 @@ def detect_intent_es(texto: str) -> str:
         return "ID_SUBMIT"
 
     return "OTRO"
+
+
+def respuesta_niveles_es() -> str:
+    return (
+        "📊 **Niveles JT TRADERS**\n\n"
+        "🟢 **Básico — desde 50 USD**\n"
+        "Formación + herramientas y señales CRYPTO IDX limitadas.\n\n"
+        "🔵 **Premium — desde 200 USD**\n"
+        "Señales completas, bot IA 24/7, operativas en vivo y enfoque multi-broker.\n\n"
+        "🟣 **Prestige — desde 500 USD**\n"
+        "Todo Premium + mentorías privadas, Forex automatizado y preparación para cuentas de fondeo.\n\n"
+        "✅ **Mi comunidad es totalmente GRATIS.** Estos valores no son un pago para mí: son capital que depositas directamente en **TU propia cuenta de trading**.\n\n"
+        f"⭐ **Stockity (opción principal):** {ENLACE_REFERIDO_STOCKITY}\n"
+        f"🔹 **Binomo (opción secundaria):** {ENLACE_REFERIDO}\n\n"
+        "⚠️ **Antes de depositar**, envíame tu ID para validar que tu cuenta quedó correctamente vinculada conmigo. 🚀"
+    )
+
+
+def respuesta_niveles_en() -> str:
+    return (
+        "📊 **JT TRADERS Levels**\n\n"
+        "🟢 **Basic — from 50 USD**\n"
+        "Education + limited CRYPTO IDX signals/tools.\n\n"
+        "🔵 **Premium — from 200 USD**\n"
+        "Full signals, 24/7 AI bot, live trading and multi-broker access.\n\n"
+        "🟣 **Prestige — from 500 USD**\n"
+        "Everything in Premium + private mentoring, automated Forex and funded-account preparation.\n\n"
+        "✅ **My community is completely FREE.** These amounts are not a payment to me: they are capital you deposit directly into **YOUR own trading account**.\n\n"
+        f"⭐ **Stockity (primary option):** {ENLACE_REFERIDO_STOCKITY}\n"
+        f"🔹 **Binomo (secondary option):** {ENLACE_REFERIDO}\n\n"
+        "⚠️ **Before depositing**, send me your ID so I can validate that your account is correctly linked to me. 🚀"
+    )
 
 
 def respuesta_bono_es() -> str:
@@ -1429,7 +1848,7 @@ def bono_requiere_guia(texto: str) -> bool:
 
 def respuesta_id_es() -> str:
     return (
-        "🆔 **¿Dónde encuentro mi ID de Binomo o Stockity?**\n\n"
+        "🆔 **¿Dónde encuentro mi ID de Stockity o Binomo?**\n\n"
         "1) Entra a tu cuenta (app o web).\n"
         "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
         "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
@@ -1441,7 +1860,7 @@ def respuesta_next_step_es() -> str:
     return (
         "✅ Perfecto. El **siguiente paso** es validar tu **ID** para confirmar que tu registro quedó bien "
         "**antes de que deposites**.\n\n"
-        "📌 Envíame aquí tu **ID de Binomo o Stockity** (solo el número) y lo dejo en validación.\n\n"
+        "📌 Envíame aquí tu **ID de Stockity o Binomo** (solo el número) y lo dejo en validación.\n\n"
         "Si prefieres, también puedes escribirme al chat personal 👇"
     )
 
@@ -1454,8 +1873,8 @@ def respuesta_where_send_id_es() -> str:
 def fallback_johabot_es() -> str:
     return (
         "Entiendo 🤍\n\n"
-        "Soy Johabot y para ayudarte mejor, prefiero revisarlo contigo directamente.\n\n"
-        "Escríbeme a mi chat personal aquí 👇"
+        "Quiero revisar bien tu caso para darte la información correcta.\n\n"
+        "Escríbeme directamente aquí y lo revisamos 👇"
     )
 
 
@@ -1469,38 +1888,44 @@ async def openai_answer(question: str, chat_id: int, lang: str, stage: str) -> s
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
     try:
-        language_instruction = (
-            "Responde en español." if lang == "es" else "Reply in English."
-        )
+        language_instruction = "Responde en español." if lang == "es" else "Reply in English."
+        real_examples = _johanna_examples_as_text(question=question, limit=28)
         system = f"""
-Eres Johabot, asistente virtual oficial de JOHAALETRADER / JT TRADERS TEAMS.
-Tu función es responder consultas comerciales y de soporte usando EXCLUSIVAMENTE la información oficial suministrada abajo y el historial de la conversación.
+Eres la voz digital de Johanna, conocida como JOHAALETRADER / JT TRADERS TEAMS.
+RESPONDE EN PRIMERA PERSONA COMO SI FUERAS JOHANNA. No digas que eres Johabot, un asistente virtual, una IA o un modelo.
+Tu función es atender prospectos y miembros de la comunidad usando la base oficial, el historial del usuario y ejemplos reales de respuestas de Johanna.
 {language_instruction}
 
-ESTILO
-- Cercano, positivo, claro, comercial y útil.
-- Normalmente 2 a 6 líneas; amplía solo si la pregunta lo necesita.
-- Da una respuesta directa primero.
-- Puedes usar emojis con moderación.
-- No digas que un dato está confirmado si requiere revisión humana.
+ESTILO DE JOHANNA
+- Cercano, muy positivo, directo, comercial y útil, sin exageraciones engañosas.
+- Normalmente 2 a 5 párrafos CORTOS. La gente debe poder leer la respuesta rápido.
+- Usa algunos emojis para hacer la respuesta atractiva, sin saturar.
+- Contesta primero lo que preguntaron y, cuando sea natural, mueve al siguiente paso útil: registro → ID → depósito → acceso.
+- Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer cualquier CTA comercial.
+- Si preguntan por niveles, planes, inversión mínima o cuánto necesitan para entrar, SIEMPRE debes incluir: que mi comunidad es GRATIS; que el dinero se deposita en la PROPIA cuenta de trading del usuario; los enlaces de Stockity primero y Binomo segundo; y que ANTES de depositar deben enviarme el ID para validarlo conmigo.
+- Los ejemplos reales de Johanna sirven para aprender vocabulario, ritmo y conocimiento nuevo. Si un ejemplo contiene una regla general claramente expresada por Johanna y es más reciente que información vieja, puedes usarla. NUNCA generalices una excepción que claramente se refiera a una sola persona o caso.
 
 LÍMITES IMPORTANTES
-- No inventes información ni condiciones.
+- No inventes información, promociones, cupos, resultados ni horarios exactos no confirmados.
 - No prometas ganancias ni resultados garantizados.
 - No confirmes ID, depósito, afiliación, pago ni acceso VIP.
-- Si la consulta requiere revisar la cuenta específica del usuario, comprobantes, validaciones o una condición que no aparece en la base, indícale que Johanna debe revisarlo personalmente y usa el chat de validación.
-- No des instrucciones para saltar restricciones con VPN o proxy.
-- Si preguntan por bonos de forma detallada, explica solo lo confirmado en la base; para condiciones de retiro/volumen/elegibilidad no documentadas, indica que deben verificarse en la cuenta o con Johanna.
+- Para gestión de capital, menos de 50 USD, VPN/restricción de país, validaciones, comprobantes, bloqueos o revisión de una cuenta específica: deriva directamente a Johanna usando el chat de validación.
+- No des instrucciones para evadir KYC, usar identidad/documentos ajenos como si fueran propios, ni saltar restricciones con VPN/proxy.
+- No solicites claves, contraseñas, códigos 2FA, seed phrases ni credenciales.
+- Si falta un dato oficial, dilo con naturalidad y deriva a Johanna; no rellenes huecos.
 
 ETAPA ACTUAL DEL USUARIO: {stage}
 
 BASE DE CONOCIMIENTO OFICIAL:
 {JOHA_KNOWLEDGE}
+
+EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
+{real_examples or '(todavía no hay suficientes ejemplos manuales guardados)'}
 """.strip()
 
         history_text = _history_as_text(chat_id)
         user_input = (
-            f"HISTORIAL RECIENTE:\n{history_text or '(sin historial previo)'}\n\n"
+            f"HISTORIAL RECIENTE DE ESTE USUARIO:\n{history_text or '(sin historial previo)'}\n\n"
             f"MENSAJE ACTUAL DEL USUARIO:\n{question.strip()}"
         )
         payload = {
@@ -1668,9 +2093,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = (update.message.caption or "").strip()
         if not caption:
             qtxt = (
-                "📩 Recibido. ¿Esta imagen es tu **ID** de Binomo o Stockity, tu **comprobante de depósito/activación** o **era otra cosa**?"
+                "📩 Recibido. ¿Esta imagen es tu **ID** de Stockity o Binomo, tu **comprobante de depósito/activación** o **era otra cosa**?"
                 if lang == "es" else
-                "📩 Received. Is this image your **Binomo/Stockity ID**, your **deposit/activation proof**, or **something else**?"
+                "📩 Received. Is this image your **Stockity/Binomo ID**, your **deposit/activation proof**, or **something else**?"
             )
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
@@ -1691,7 +2116,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # se cancela la respuesta anterior para no contestar algo viejo minutos después.
     immediate_intents = {
         "GREETING", "YA_REGISTRE", "DEP_LATER", "MIN_50", "DEPOSITO",
-        "ID_SUBMIT", "VPN", "PAIS", "NEXT_STEP", "WHERE_SEND_ID", "LIVE", "ID",
+        "ID_SUBMIT", "VPN", "PAIS", "NEXT_STEP", "WHERE_SEND_ID", "LIVE", "ID", "NIVELES", "GESTION_CAPITAL",
     }
     if intent in immediate_intents or (intent == "BONO" and not bonus_needs_guide):
         _cancel_pending_ai(context, chat_id)
@@ -1730,19 +2155,19 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent == "MIN_50":
         msg = (
-            "Para ingresar a la comunidad y acceder a las herramientas del nivel Básico, el depósito mínimo es de **50 USD**."
+            "El nivel Básico inicia desde **50 USD** ✅\n\nSi en este momento cuentas con menos de ese monto, escríbeme directamente y reviso tu caso contigo 👇"
             if lang == "es" else
-            "The minimum deposit for the Basic level and its included tools is **50 USD**."
+            "The Basic level starts from **50 USD** ✅\n\nIf you currently have less than that amount, message me directly so I can review your case with you 👇"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
-        await send_admin_auto_log(context, update, "AUTO_MIN50", msg)
+        await send_admin_auto_log(context, update, "AUTO_MIN50_ESCALATE", msg)
         return
 
     if intent == "DEPOSITO":
         msg = (
-            "Perfecto ✅\n\nEnvíame aquí tu **comprobante de depósito/activación** (foto o captura) y también tu **ID de Binomo o Stockity en texto** (solo el número) para validarlo y habilitar tu acceso 👇"
+            "Perfecto ✅\n\nEnvíame aquí tu **comprobante de depósito/activación** (foto o captura) y también tu **ID de Stockity o Binomo en texto** (solo el número) para validarlo y habilitar tu acceso 👇"
             if lang == "es" else
-            "Perfect ✅\n\nSend me your **deposit/activation proof** (photo or screenshot) and your **Binomo/Stockity ID as text** (numbers only) so it can be validated and your access enabled 👇"
+            "Perfect ✅\n\nSend me your **deposit/activation proof** (photo or screenshot) and your **Stockity/Binomo ID as text** (numbers only) so it can be validated and your access enabled 👇"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM", msg)
@@ -1766,6 +2191,16 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, "ID_SUBMIT", respuesta_id_submit)
         return
 
+    if intent == "GESTION_CAPITAL":
+        msg = (
+            "📊 Sí, manejo opciones de gestión de capital, pero este tema lo reviso **personalmente** contigo porque depende de la modalidad, condiciones y disponibilidad.\n\nEscríbeme directamente aquí y te explico todo 👇"
+            if lang == "es" else
+            "📊 Yes, I offer capital-management options, but I review this **personally** with you because it depends on the current option, conditions and availability.\n\nMessage me directly here and I’ll explain everything 👇"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await send_admin_auto_log(context, update, "GESTION_CAPITAL_ESCALATE", msg)
+        return
+
     if intent in ("VPN", "PAIS"):
         msg = (
             "Para temas de VPN / error de país prefiero revisarlo contigo directamente 🤍\n\nToca el botón 👇"
@@ -1777,7 +2212,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "NEXT_STEP":
-        msg = respuesta_next_step_es() if lang == "es" else "✅ The next step is to validate your Binomo or Stockity ID before depositing. Send me the ID as text (numbers only) and I will leave it for validation 👇"
+        msg = respuesta_next_step_es() if lang == "es" else "✅ The next step is to validate your Stockity or Binomo ID before depositing. Send me the ID as text (numbers only) and I will leave it for validation 👇"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, intent, msg)
         return
@@ -1786,6 +2221,12 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = respuesta_where_send_id_es() if lang == "es" else "Yes ✅ You can send your ID right here (numbers only) and I will leave it for validation. You can also message me directly 👇"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, intent, msg)
+        return
+
+    if intent == "NIVELES":
+        msg = respuesta_niveles_es() if lang == "es" else respuesta_niveles_en()
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(), disable_web_page_preview=True)
+        await send_admin_auto_log(context, update, "NIVELES", msg)
         return
 
     if intent == "LIVE":
@@ -1802,14 +2243,24 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "ID":
-        msg = respuesta_id_es() if lang == "es" else "🆔 Open your Binomo or Stockity profile/settings, find the **ID / User ID** field and copy the number. If you cannot find it, tell me whether you are using the app or browser 👇"
+        msg = respuesta_id_es() if lang == "es" else "🆔 Open your Stockity or Binomo profile/settings, find the **ID / User ID** field and copy the number. If you cannot find it, tell me whether you are using the app or browser 👇"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
         await send_admin_auto_log(context, update, "ID", msg)
         return
 
     # Todas las demás preguntas: Johanna tiene prioridad. Si no responde, entra la IA después del tiempo configurado.
     # Esto incluye HUMAN_CHAT, RETIRO, METODOS, EMAIL, OTRO y consultas detalladas sobre bonos.
+    # Gestión de capital, VPN/país, menos de 50 USD y validaciones se escalan de inmediato y no llegan a la IA.
     schedule_ai_reply(update, context, texto)
+
+def _learn_direct_admin_message(chat_id: int, response_text: str, response_type: str = "text"):
+    try:
+        pending = _get_pending_ai(chat_id)
+        question = (pending or {}).get("text") or ""
+        _save_johanna_example(chat_id, question, response_text, get_user_lang(chat_id), response_type=response_type)
+    except Exception as e:
+        logging.info("No pude guardar aprendizaje de /enviar: %s", e)
+
 
 # Función para enviar texto/imagen/video al usuario, desde caption con /enviar
 async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1834,6 +2285,8 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         # Enviar imagen como PHOTO
         if update.message.photo:
             await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
+            if mensaje:
+                _learn_direct_admin_message(chat_id, mensaje, "photo_caption")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Imagen enviada por Johanna]")
             await update.message.reply_text("✅ Imagen enviada con éxito.")
             return
@@ -1841,6 +2294,8 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         # Enviar imagen como DOCUMENTO
         if update.message.document and update.message.document.mime_type.startswith("image/"):
             await context.bot.send_document(chat_id=chat_id, document=update.message.document.file_id, caption=mensaje)
+            if mensaje:
+                _learn_direct_admin_message(chat_id, mensaje, "document_caption")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Imagen enviada por Johanna]")
             await update.message.reply_text("✅ Imagen enviada como documento.")
             return
@@ -1848,6 +2303,8 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         # Enviar video
         if update.message.video:
             await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
+            if mensaje:
+                _learn_direct_admin_message(chat_id, mensaje, "video_caption")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Video enviado por Johanna]")
             await update.message.reply_text("✅ Video enviado con éxito.")
             return
@@ -1855,6 +2312,8 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         # Enviar audio
         if update.message.audio:
             await context.bot.send_audio(chat_id=chat_id, audio=update.message.audio.file_id, caption=mensaje)
+            if mensaje:
+                _learn_direct_admin_message(chat_id, mensaje, "audio_caption")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Audio enviado por Johanna]")
             await update.message.reply_text("✅ Audio enviado con éxito.")
             return
@@ -1869,6 +2328,7 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         # Si no es archivo multimedia, enviar como texto
         if mensaje:
             await context.bot.send_message(chat_id=chat_id, text=mensaje)
+            _learn_direct_admin_message(chat_id, mensaje, "text")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje)
             await update.message.reply_text("✅ Mensaje enviado con éxito.")
         else:
@@ -1878,12 +2338,148 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("⚠️ Ocurrió un error al intentar enviar el mensaje.")
 
 
+# === AVISO MASIVO DE LIVE PARA USUARIOS RECIENTES ===
+try:
+    LIVE_BROADCAST_DAYS = max(1, int(os.getenv("LIVE_BROADCAST_DAYS", "14")))
+except Exception:
+    LIVE_BROADCAST_DAYS = 14
+
+LIVE_BROADCAST_MESSAGE_ES = (
+    "🔴 **¡NOS VEMOS EN VIVO!** 🚀\n\n"
+    "Estoy por comenzar una sesión en vivo de trading. Conéctate para acompañarme en la operativa, análisis y oportunidades del mercado.\n\n"
+    "👇 Entra ahora por tu red preferida:"
+)
+
+LIVE_BROADCAST_MESSAGE_EN = (
+    "🔴 **I’M GOING LIVE!** 🚀\n\n"
+    "I’m about to start a live trading session. Join me for the trading session, market analysis and current opportunities.\n\n"
+    "👇 Join from your preferred platform:"
+)
+
+
+def _recent_live_recipients(days: int = LIVE_BROADCAST_DAYS):
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    try:
+        with Session() as session:
+            rows = (
+                session.query(Usuario.telegram_id, Usuario.lang)
+                .filter(Usuario.last_activity_at.isnot(None))
+                .filter(Usuario.last_activity_at >= cutoff)
+                .all()
+            )
+        recipients = []
+        seen = set()
+        for telegram_id, lang in rows:
+            try:
+                cid = int(telegram_id)
+            except Exception:
+                continue
+            if cid == ADMIN_ID or cid in seen:
+                continue
+            seen.add(cid)
+            recipients.append((cid, lang if lang in ("es", "en") else "es"))
+        return recipients
+    except Exception as e:
+        logging.warning("No pude obtener destinatarios LIVE: %s", e)
+        return []
+
+
+async def live_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Abre confirmación; escribir /live o exactamente 'live' nunca envía sin confirmar."""
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+        return
+    recipients = _recent_live_recipients()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Sí, enviar aviso LIVE", callback_data="live_broadcast_confirm")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data="live_broadcast_cancel")],
+    ])
+    await update.effective_message.reply_text(
+        f"🔴 Aviso LIVE preparado.\n\n"
+        f"Se enviará a **{len(recipients)} usuarios** con actividad en los últimos **{LIVE_BROADCAST_DAYS} días**.\n\n"
+        "¿Confirmas el envío?",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=kb,
+    )
+
+
+async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    if query.data == "live_broadcast_cancel":
+        await query.edit_message_text("❌ Aviso LIVE cancelado. No se envió ningún mensaje.")
+        return
+
+    if query.data != "live_broadcast_confirm":
+        return
+
+    recipients = _recent_live_recipients()
+    await query.edit_message_text(
+        f"⏳ Enviando aviso LIVE a {len(recipients)} usuarios recientes..."
+    )
+
+    sent = 0
+    failed = 0
+    for chat_id, lang in recipients:
+        msg = LIVE_BROADCAST_MESSAGE_ES if lang == "es" else LIVE_BROADCAST_MESSAGE_EN
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=msg,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=live_keyboard(),
+                disable_web_page_preview=True,
+            )
+            sent += 1
+        except Exception as e:
+            # Si Telegram pide una pausa por rate limit, esperamos y reintentamos una vez.
+            retry_after = getattr(e, "retry_after", None)
+            if retry_after:
+                try:
+                    await asyncio.sleep(float(retry_after) + 1)
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=msg,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=live_keyboard(),
+                        disable_web_page_preview=True,
+                    )
+                    sent += 1
+                    await asyncio.sleep(0.06)
+                    continue
+                except Exception:
+                    pass
+            failed += 1
+            logging.info("Aviso LIVE no entregado a %s: %s", chat_id, e)
+
+        # Ritmo conservador para no golpear límites de Telegram.
+        await asyncio.sleep(0.06)
+
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            "✅ Aviso LIVE finalizado.\n\n"
+            f"👥 Enviados: {sent}\n"
+            f"🚫 No entregados: {failed}\n"
+            f"📅 Ventana usada: últimos {LIVE_BROADCAST_DAYS} días"
+        ),
+    )
+
+
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).post_init(recover_pending_ai_jobs).build()
 
     # Comando /start (selector de idioma)
     app.add_handler(CommandHandler("start", start))
+
+    # Aviso LIVE: /live o escribir exactamente "live" abre confirmación; nunca envía accidentalmente.
+    app.add_handler(CommandHandler("live", live_command))
+    app.add_handler(MessageHandler(filters.User(ADMIN_ID) & filters.Regex(r"(?i)^live$"), live_command))
 
     # Enviar imagen, video, audio usando /enviar desde caption (solo multimedia)
     app.add_handler(MessageHandler(
@@ -1892,6 +2488,9 @@ if __name__ == "__main__":
         filters.CaptionRegex(r"^/enviar "),
         enviar_mensaje_directo
     ))
+
+    # Confirmación/cancelación del aviso LIVE (antes del callback general).
+    app.add_handler(CallbackQueryHandler(live_broadcast_callback, pattern="^live_broadcast_"))
 
     # Callback de comprobante depósito (Serie B)
     app.add_handler(CallbackQueryHandler(manejar_callback, pattern="^dep_"))
