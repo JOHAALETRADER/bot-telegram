@@ -38,12 +38,20 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9.4-20260901-VIP-INBOUND-BLOCK-COMPLETE"
+BOT_VERSION = "v7.9.5-20260901-PRIVATE-USER-HARDENED"
 
 
 def utcnow_naive():
     """UTC actual sin tzinfo, compatible con las columnas TIMESTAMP existentes."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _is_private_user_id(value) -> bool:
+    """True únicamente para IDs positivos de chats privados de usuarios."""
+    try:
+        return int(value) > 0
+    except Exception:
+        return False
 
 
 async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, respuesta: str):
@@ -612,6 +620,8 @@ BENEFICIOS_EN = """✨ Exclusive Benefits You’ll Receive ✨
 # === FUNCIONES DE MENSAJES PROGRAMADOS (usa lang por usuario) ===
 async def _send_job_message(context: ContextTypes.DEFAULT_TYPE, text_es: str, text_en: str):
     chat_id, lang = context.job.data  # (chat_id, "es"/"en")
+    if not _is_private_user_id(chat_id):
+        return
     try:
         await context.bot.send_message(chat_id=chat_id, text=text_es if lang == "es" else text_en, reply_markup=support_keyboard(lang))
     except Exception as e:
@@ -864,7 +874,9 @@ def _record_submitted_trading_id(chat_id: int, text_value: str, context: Context
 
 
 def _touch_user_activity(chat_id: int, lang: str | None = None):
-    """Registra/actualiza actividad reciente en una tabla independiente."""
+    """Registra/actualiza actividad reciente solo para usuarios privados."""
+    if not _is_private_user_id(chat_id):
+        return
     try:
         resolved_lang = lang if lang in ("es", "en") else get_user_lang(chat_id)
         now = utcnow_naive()
@@ -885,7 +897,9 @@ def _touch_user_activity(chat_id: int, lang: str | None = None):
 
 
 def _log_event(chat_id: int, event_type: str, detail: str = ""):
-    """Registra un evento para el reporte diario; nunca interrumpe el bot si falla."""
+    """Registra eventos solo de usuarios privados; nunca interrumpe el bot si falla."""
+    if not _is_private_user_id(chat_id):
+        return
     try:
         with Session() as session:
             session.add(BotEvent(
@@ -919,7 +933,11 @@ def _event_user_ids(event_type: str, start_utc: datetime, end_utc: datetime):
                 .distinct()
                 .all()
             )
-        return {str(r[0]) for r in rows if r and r[0]}
+        valid_ids = set()
+        for row in rows:
+            if row and row[0] and _is_private_user_id(row[0]):
+                valid_ids.add(str(row[0]))
+        return valid_ids
     except Exception as e:
         logging.warning("No pude consultar eventos %s: %s", event_type, e)
         return set()
@@ -1144,7 +1162,10 @@ def _cancel_jobs_prefix(context: ContextTypes.DEFAULT_TYPE, prefix: str, chat_id
 
 
 def _create_persistent_campaign_series(chat_id: int, series: str, lang: str, started_at=None):
-    """Crea los cuatro vencimientos absolutos; devuelve registros para JobQueue."""
+    """Crea los cuatro vencimientos absolutos solo para usuarios privados."""
+    if not _is_private_user_id(chat_id):
+        logging.warning("🛡️ Campaña %s bloqueada para chat no privado %s", series, chat_id)
+        return []
     started_at = started_at or utcnow_naive()
     lang = lang if lang in ("es", "en") else "es"
     records = []
@@ -1211,6 +1232,19 @@ async def persistent_campaign_job(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("No pude leer campaign_job %s: %s", job_id, e)
         return
 
+    # Protección absoluta: una campaña jamás puede enviarse a grupos/canales/temas.
+    if not _is_private_user_id(chat_id):
+        try:
+            with Session() as session:
+                stale = session.get(CampaignJob, int(job_id))
+                if stale:
+                    session.delete(stale)
+                    session.commit()
+        except Exception:
+            pass
+        logging.warning("🛡️ CampaignJob no privado descartado: %s", chat_id)
+        return
+
     # Protección adicional por etapa, incluso si un cancel llegó durante un redeploy.
     stage, _ = _repair_inconsistent_stage(chat_id)
     if (series == "A" and stage != STAGE_PRE) or (series == "B" and stage != STAGE_POST):
@@ -1258,7 +1292,7 @@ async def persistent_campaign_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 def schedule_series_a(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE):
-    if not context.job_queue:
+    if not context.job_queue or not _is_private_user_id(chat_id):
         return
     _cancel_jobs_prefix(context, "A", chat_id)
     records = _create_persistent_campaign_series(chat_id, "A", lang)
@@ -1270,6 +1304,8 @@ def schedule_series_a(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYP
 async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str, text_en: str):
     """Compatibilidad con jobs antiguos dentro del proceso actual."""
     chat_id, lang = context.job.data
+    if not _is_private_user_id(chat_id):
+        return
     try:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -1297,7 +1333,7 @@ async def mensaje_B_48h(context: ContextTypes.DEFAULT_TYPE):
 
 
 def schedule_series_b(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    if not context.job_queue:
+    if not context.job_queue or not _is_private_user_id(chat_id):
         return
     lang = get_user_lang(chat_id)
     _cancel_jobs_prefix(context, "B", chat_id)
@@ -1417,6 +1453,8 @@ async def recover_pending_campaign_jobs(application):
 
         for telegram_id in active_post_ids:
             chat_id = int(telegram_id)
+            if not _is_private_user_id(chat_id):
+                continue
             stage, repaired = _repair_inconsistent_stage(chat_id)
             if repaired and stage == STAGE_PRE:
                 repaired_users += 1
@@ -1462,6 +1500,9 @@ async def recover_pending_campaign_jobs(application):
             ]
 
         for record in snapshot:
+            if not _is_private_user_id(record["chat_id"]):
+                stale_ids.append(record["id"])
+                continue
             stage, _ = _repair_inconsistent_stage(record["chat_id"])
             valid = (record["series"] == "A" and stage == STAGE_PRE) or (record["series"] == "B" and stage == STAGE_POST)
             if not valid:
@@ -1997,9 +2038,15 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
             or update.message.reply_to_message.caption
             or ""
         )
-        chat_id_match = re.search(r'ID(?:\s+del\s+usuario)?[^0-9]{0,40}(\d+)', base_text, re.IGNORECASE)
+        chat_id_match = re.search(r'ID(?:\s+del\s+usuario)?[^0-9-]{0,40}(-?\d+)', base_text, re.IGNORECASE)
         if chat_id_match:
             destinatario_id = int(chat_id_match.group(1))
+            if not _is_private_user_id(destinatario_id):
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="🛡️ Envío bloqueado: ese registro pertenece a un grupo/canal/tema, no a un usuario privado.",
+                )
+                return
             pending_before = _get_pending_ai(destinatario_id)
             original_question = (pending_before or {}).get("text") or _extract_question_from_admin_message(base_text)
             try:
@@ -2145,6 +2192,10 @@ async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id = int(message_id_str)
             except ValueError:
                 await query.edit_message_text("❌ Error: ID inválido.")
+                return
+
+            if not _is_private_user_id(chat_id):
+                await query.edit_message_text("🛡️ Respuesta bloqueada: ese destino no es un usuario privado.")
                 return
 
             usuarios_objetivo[query.from_user.id] = chat_id
@@ -3473,6 +3524,13 @@ async def _send_scheduled_ai_admin_log(context: ContextTypes.DEFAULT_TYPE, chat_
 async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data or {}
     chat_id = int(data.get("chat_id"))
+
+    # Cinturón de seguridad final: jamás enviar IA a grupo/canal/tema.
+    if not _is_private_user_id(chat_id):
+        _clear_pending_ai_db(chat_id)
+        logging.warning("🛡️ IA diferida no privada descartada: %s", chat_id)
+        return
+
     expected_message_id = str(data.get("message_id") or "")
     pending = _get_pending_ai(chat_id)
     if not pending:
@@ -3532,7 +3590,11 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
 def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_value: str, answered_topics=None):
     if not text_value or not text_value.strip():
         return
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
     chat_id = update.effective_chat.id
+    if not _is_private_user_id(chat_id):
+        return
     message_id = update.effective_message.message_id
     _cancel_ai_job(context, chat_id)
     _set_pending_ai(chat_id, text_value, message_id, answered_topics=answered_topics or [])
@@ -3546,11 +3608,12 @@ def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_v
 
 
 async def recover_pending_ai_jobs(application):
-    """Recupera respuestas pendientes si Railway reinicia el servicio durante la espera."""
+    """Recupera únicamente IA pendiente de chats privados; limpia residuos de grupos/canales."""
     if not application.job_queue:
         return
     now = utcnow_naive()
     recovered = 0
+    discarded_non_private = 0
     try:
         with Session() as session:
             users = (
@@ -3563,18 +3626,33 @@ async def recover_pending_ai_jobs(application):
                 .filter(Usuario.ai_pending_due_at.isnot(None))
                 .all()
             )
-            for telegram_id, due_at, pending_text, pending_message_id in users:
-                if not pending_text:
-                    continue
-                delay = max(2, int((due_at - now).total_seconds()))
-                application.job_queue.run_once(
-                    delayed_ai_reply,
-                    when=delay,
-                    data={"chat_id": int(telegram_id), "message_id": str(pending_message_id or "")},
-                    name=f"AI_REPLY_{telegram_id}",
-                )
-                recovered += 1
+
+        for telegram_id, due_at, pending_text, pending_message_id in users:
+            if not pending_text:
+                continue
+
+            try:
+                chat_id = int(telegram_id)
+            except Exception:
+                continue
+
+            if not _is_private_user_id(chat_id):
+                _clear_pending_ai_db(chat_id)
+                discarded_non_private += 1
+                continue
+
+            delay = max(2, int((due_at - now).total_seconds()))
+            application.job_queue.run_once(
+                delayed_ai_reply,
+                when=delay,
+                data={"chat_id": chat_id, "message_id": str(pending_message_id or "")},
+                name=f"AI_REPLY_{chat_id}",
+            )
+            recovered += 1
+
         logging.info("✅ IA pendientes recuperadas: %s", recovered)
+        if discarded_non_private:
+            logging.info("🧹 IA antiguas de grupos/canales eliminadas: %s", discarded_non_private)
     except Exception as e:
         logging.warning("No se pudieron recuperar respuestas IA pendientes: %s", e)
 
@@ -3902,6 +3980,13 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
             chat_id = int(partes[1])
             mensaje = partes[2]
 
+        if not _is_private_user_id(chat_id):
+            await update.message.reply_text(
+                "🛡️ Envío bloqueado: /enviar solo permite IDs de usuarios privados. "
+                "Los avisos al VIP se envían únicamente mediante el flujo LIVE."
+            )
+            return
+
         # Enviar imagen como PHOTO
         if update.message.photo:
             await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
@@ -4015,6 +4100,8 @@ def _active_recipients(days: int, include_deposited: bool):
             try:
                 cid = int(telegram_id)
             except Exception:
+                continue
+            if not _is_private_user_id(cid):
                 continue
             if cid == ADMIN_ID or cid in seen:
                 continue
@@ -4591,8 +4678,53 @@ async def ignore_non_private_callback(update: Update, context: ContextTypes.DEFA
         raise ApplicationHandlerStop
 
 
+def _cleanup_non_private_artifacts():
+    """Limpia residuos creados antes del bloqueo global sin tocar usuarios privados."""
+    cleared_ai = 0
+    removed_activity = 0
+    removed_campaigns = 0
+    try:
+        with Session() as session:
+            users = session.query(Usuario).all()
+            for user in users:
+                if _is_private_user_id(user.telegram_id):
+                    continue
+                if user.ai_pending_text or user.ai_pending_due_at or user.ai_pending_message_id:
+                    user.ai_pending_text = None
+                    user.ai_pending_due_at = None
+                    user.ai_pending_message_id = None
+                    cleared_ai += 1
+
+            activities = session.query(UserActivity).all()
+            for row in activities:
+                if not _is_private_user_id(row.telegram_id):
+                    session.delete(row)
+                    removed_activity += 1
+
+            campaign_rows = (
+                session.query(CampaignJob)
+                .filter(CampaignJob.sent_at.is_(None))
+                .all()
+            )
+            for row in campaign_rows:
+                if not _is_private_user_id(row.telegram_id):
+                    session.delete(row)
+                    removed_campaigns += 1
+
+            session.commit()
+
+        if cleared_ai or removed_activity or removed_campaigns:
+            logging.info(
+                "🧹 Limpieza no privada: IA=%s | actividad=%s | campañas=%s",
+                cleared_ai, removed_activity, removed_campaigns,
+            )
+    except Exception as e:
+        logging.warning("No pude limpiar residuos no privados: %s", e)
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
+    _cleanup_non_private_artifacts()
     await recover_pending_ai_jobs(application)
     await recover_pending_campaign_jobs(application)
     schedule_daily_report(application)
