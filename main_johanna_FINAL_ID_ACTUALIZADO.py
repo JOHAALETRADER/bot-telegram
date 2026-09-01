@@ -38,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.2-20260831-LIVE-MARKETING-REPORT-FIX"
+BOT_VERSION = "v7.3-20260831-LIVE-VIP-NODUP-FIX"
 
 
 async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, respuesta: str):
@@ -2114,7 +2114,11 @@ def detect_all_intents(texto: str):
 
     if any(k in t for k in [
         "como me registro", "cómo me registro", "como registrarme", "cómo registrarme", "quiero registrarme",
+        "como hago para registrarme", "cómo hago para registrarme", "que hago para registrarme", "qué hago para registrarme",
+        "como hago el registro", "cómo hago el registro", "como hago para hacer el registro", "cómo hago para hacer el registro",
+        "quiero hacer el registro", "quiero hacer mi registro", "donde me registro", "dónde me registro",
         "enlace de registro", "link de registro", "registration link", "how do i register", "how can i register",
+        "how do i sign up", "how can i sign up",
     ]):
         _add_intent(found, "REGISTRO")
 
@@ -2466,7 +2470,9 @@ REGLA CRÍTICA PARA MENSAJES CON VARIAS DUDAS
 - Si contiene 2, 3, 4 o más preguntas/dudas, responde TODAS, una por una, sin omitir ninguna.
 - El usuario puede escribir varias dudas sin signos de interrogación; detecta también listas, frases unidas por "y", comas o saltos de línea.
 - Temas que el bot ya respondió automáticamente antes de llamarte: {answered_note}.
-- NO repitas esos temas salvo que sea imprescindible para entender la respuesta. Concéntrate en las dudas restantes.
+- RESPONDE ÚNICAMENTE a lo que aparezca en “MENSAJE(S) PENDIENTE(S) DEL USUARIO”.
+- NO vuelvas a contestar preguntas del historial que ya tengan respuesta.
+- NO repitas los temas ya respondidos salvo una referencia mínima imprescindible para entender la duda restante.
 
 ESTILO DE JOHANNA
 - Cercano, muy positivo, directo, comercial y útil, sin exageraciones engañosas.
@@ -2749,7 +2755,34 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
         await send_admin_auto_log(context, update, "MULTI_" + "+".join(effective_intents), combined)
 
     if unknown_parts or needs_ai_topics or not blocks:
-        schedule_ai_reply(update, context, texto, answered_topics=handled)
+        # La IA solo recibe las partes que quedaron SIN responder.
+        # Esto evita que, después de una respuesta automática multi-pregunta,
+        # vuelva a repetir niveles/bonos/registro a los 8 minutos.
+        ai_parts = []
+        for part in _split_question_parts(texto):
+            p_intents = [i for i in detect_all_intents(part) if i != "GREETING"]
+            if not p_intents:
+                ai_parts.append(part)
+                continue
+
+            for p_intent in p_intents:
+                if p_intent in needs_ai_topics:
+                    ai_parts.append(part)
+                    break
+                if p_intent == "BONO" and "BONO_DETALLE" in needs_ai_topics:
+                    ai_parts.append(part)
+                    break
+
+        # Conserva orden y elimina duplicados.
+        ai_parts = list(dict.fromkeys(x.strip() for x in ai_parts if x and x.strip()))
+        ai_text = "\n".join(ai_parts).strip()
+
+        # Si no hubo bloques automáticos, la IA sí debe recibir el mensaje completo.
+        if not ai_text and not blocks:
+            ai_text = texto.strip()
+
+        if ai_text:
+            schedule_ai_reply(update, context, ai_text, answered_topics=handled)
     return True
 
 
@@ -3287,13 +3320,31 @@ async def _send_live_to_channels(context: ContextTypes.DEFAULT_TYPE, photo_file_
         logging.warning("No pude publicar LIVE en canal informativo: %s", e)
 
     try:
-        kwargs = {"chat_id": VIP_CHAT_ID, "message_thread_id": VIP_TOPIC_ID, "reply_markup": channel_kb, "parse_mode": ParseMode.MARKDOWN}
+        # En Telegram el tema General tiene ID=1 y debe recibir mensajes como un
+        # supergrupo normal, SIN message_thread_id. Para otros temas sí usamos
+        # message_thread_id.
+        kwargs = {
+            "chat_id": VIP_CHAT_ID,
+            "reply_markup": channel_kb,
+            "parse_mode": ParseMode.MARKDOWN,
+        }
+        if VIP_TOPIC_ID and VIP_TOPIC_ID != 1:
+            kwargs["message_thread_id"] = VIP_TOPIC_ID
+
         if photo_file_id:
-            await context.bot.send_photo(photo=photo_file_id, caption=LIVE_BROADCAST_MESSAGE_ES, **kwargs)
+            await context.bot.send_photo(
+                photo=photo_file_id,
+                caption=LIVE_BROADCAST_MESSAGE_ES,
+                **kwargs,
+            )
         else:
-            await context.bot.send_message(text=LIVE_BROADCAST_MESSAGE_ES, **kwargs)
+            await context.bot.send_message(
+                text=LIVE_BROADCAST_MESSAGE_ES,
+                **kwargs,
+            )
         results["vip"] = True
     except Exception as e:
+        results["vip_error"] = str(e)[:500]
         logging.warning("No pude publicar LIVE en VIP/tema: %s", e)
     return results
 
@@ -3381,9 +3432,28 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
         await asyncio.sleep(0.06)
 
     channel_results = await _send_live_to_channels(context, photo_file_id=photo_file_id)
+
+    # Johanna recibe en su propio bot una copia EXACTA del aviso entregado a los
+    # usuarios, con los mismos botones, para poder revisar cómo salió publicado.
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="📬 COPIA DEL AVISO LIVE ENVIADO\n\n" + LIVE_BROADCAST_MESSAGE_ES,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=live_broadcast_keyboard(user_chat=False),
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logging.warning("No pude enviar copia LIVE al admin: %s", e)
+
     context.user_data.pop("live_draft", None)
     if context.user_data.get("admin_broadcast_flow") == "live":
         context.user_data.pop("admin_broadcast_flow", None)
+
+    vip_line = f"👑 VIP: {'✅' if channel_results.get('vip') else '❌'}"
+    if not channel_results.get("vip") and channel_results.get("vip_error"):
+        vip_line += f"\n⚠️ Error VIP: {channel_results['vip_error']}"
+
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
@@ -3391,8 +3461,8 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
             f"👥 Usuarios enviados: {sent}\n"
             f"🚫 No entregados: {failed}\n"
             f"📅 Ventana usada: últimos {LIVE_BROADCAST_DAYS} días\n"
-            f"📢 Informativo: {'✅' if channel_results['info'] else '❌'}\n"
-            f"👑 VIP: {'✅' if channel_results['vip'] else '❌'}"
+            f"📢 Informativo: {'✅' if channel_results.get('info') else '❌'}\n"
+            + vip_line
         ),
     )
 
