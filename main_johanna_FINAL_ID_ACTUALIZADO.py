@@ -24,8 +24,7 @@ from telegram.ext import (
     filters,
 )
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, text, or_
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 import os
 
 import unicodedata
@@ -39,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9.1-20260901-STAGE-CAMPAIGN-LINKS-FIX"
+BOT_VERSION = "v7.9.2-20260901-STRICT-ID-STAGE-PERSISTENCE"
 
 
 def utcnow_naive():
@@ -651,6 +650,187 @@ def set_user_stage(chat_id: int, stage: str):
             session.commit()
 
 
+def _extract_candidate_trading_id(text_value: str) -> str:
+    """Extrae un ID de trading solo si el mensaje realmente parece un envío de ID."""
+    raw = (text_value or "").strip()
+    if not raw:
+        return ""
+
+    # Caso más habitual: el usuario pega únicamente su ID.
+    if re.fullmatch(r"\d{6,12}", raw):
+        return raw
+
+    normalized = _norm(raw)
+    id_context = any(k in normalized for k in (
+        "id", "identificador", "account id", "user id",
+        "stockity id", "binomo id", "mi id", "my id",
+    ))
+    if not id_context:
+        return ""
+
+    m = re.search(r"\b\d{6,12}\b", raw)
+    return m.group(0) if m else ""
+
+
+def _get_saved_trading_id(chat_id: int) -> str:
+    try:
+        with Session() as session:
+            row = session.query(Usuario.binomo_id).filter_by(telegram_id=str(chat_id)).first()
+            return str(row[0]).strip() if row and row[0] else ""
+    except Exception as e:
+        logging.warning("No pude leer ID guardado de %s: %s", chat_id, e)
+        return ""
+
+
+def _clear_saved_trading_id(chat_id: int):
+    try:
+        with Session() as session:
+            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            if u:
+                u.binomo_id = None
+                session.commit()
+    except Exception as e:
+        logging.warning("No pude limpiar ID guardado de %s: %s", chat_id, e)
+
+
+def _latest_event_row(chat_id: int, event_type: str):
+    try:
+        with Session() as session:
+            return (
+                session.query(BotEvent.created_at, BotEvent.detail)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type == event_type,
+                )
+                .order_by(BotEvent.created_at.desc(), BotEvent.id.desc())
+                .first()
+            )
+    except Exception as e:
+        logging.warning("No pude consultar evento %s de %s: %s", event_type, chat_id, e)
+        return None
+
+
+def _has_submitted_id_evidence(chat_id: int, trading_id: str) -> bool:
+    """Confirma que el ID guardado provino realmente de un mensaje de ID del usuario."""
+    trading_id = (trading_id or "").strip()
+    if not trading_id:
+        return False
+    try:
+        with Session() as session:
+            rows = (
+                session.query(BotEvent.created_at, BotEvent.detail)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type == "ID_SUBMITTED",
+                )
+                .order_by(BotEvent.created_at.desc(), BotEvent.id.desc())
+                .limit(20)
+                .all()
+            )
+        for created_at, detail in rows:
+            if _extract_candidate_trading_id(detail or "") == trading_id:
+                return True
+        return False
+    except Exception as e:
+        logging.warning("No pude validar evidencia de ID enviado para %s: %s", chat_id, e)
+        return False
+
+
+def _strict_validated_id_state(chat_id: int) -> bool:
+    """POST es válido solo si el MISMO ID fue enviado y luego validado explícitamente."""
+    trading_id = _get_saved_trading_id(chat_id)
+    if not trading_id:
+        return False
+
+    try:
+        with Session() as session:
+            submitted_rows = (
+                session.query(BotEvent.created_at, BotEvent.detail)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type == "ID_SUBMITTED",
+                )
+                .order_by(BotEvent.created_at.desc(), BotEvent.id.desc())
+                .limit(20)
+                .all()
+            )
+            submitted_at = None
+            for created_at, detail in submitted_rows:
+                if _extract_candidate_trading_id(detail or "") == trading_id:
+                    submitted_at = created_at
+                    break
+
+            if submitted_at is None:
+                return False
+
+            validated = (
+                session.query(BotEvent.created_at, BotEvent.detail)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type == "ID_VALIDATED",
+                )
+                .order_by(BotEvent.created_at.desc(), BotEvent.id.desc())
+                .first()
+            )
+            if not validated:
+                return False
+
+            validated_at, validation_detail = validated
+            # Desde esta versión guardamos siempre el ID validado dentro del evento.
+            if trading_id not in (validation_detail or ""):
+                return False
+
+            return bool(validated_at and validated_at >= submitted_at)
+    except Exception as e:
+        logging.warning("No pude verificar consistencia de validación para %s: %s", chat_id, e)
+        return False
+
+
+def _repair_inconsistent_stage(chat_id: int):
+    """Autocorrige POST imposibles: sin ID enviado+validado vuelve a PRE."""
+    stage = get_user_stage(chat_id)
+    if stage == STAGE_POST and not _strict_validated_id_state(chat_id):
+        set_user_stage(chat_id, STAGE_PRE)
+        logging.warning(
+            "🛡️ Stage inconsistente reparado para %s: POST -> PRE (faltaba evidencia estricta de ID enviado y validado)",
+            chat_id,
+        )
+        return STAGE_PRE, True
+    return stage, False
+
+
+def _record_submitted_trading_id(chat_id: int, text_value: str, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Guarda un ID real y registra la evidencia sin confundir otros números con IDs."""
+    trading_id = _extract_candidate_trading_id(text_value)
+    if not trading_id:
+        return ""
+
+    previous_id = _get_saved_trading_id(chat_id)
+    current_stage, _ = _repair_inconsistent_stage(chat_id)
+
+    try:
+        with Session() as session:
+            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            if u:
+                u.binomo_id = trading_id
+                session.commit()
+    except Exception as e:
+        logging.warning("No pude guardar ID de trading para %s: %s", chat_id, e)
+        return ""
+
+    context.user_data["binomo_id"] = trading_id
+    _log_event(chat_id, "ID_SUBMITTED", trading_id)
+
+    # Si ya estaba POST y envía un ID DISTINTO, ese nuevo ID necesita validación.
+    if current_stage == STAGE_POST and previous_id and previous_id != trading_id:
+        set_user_stage(chat_id, STAGE_PRE)
+        _cancel_jobs_prefix(context, "B", chat_id)
+        schedule_series_a(chat_id, get_user_lang(chat_id), context)
+        logging.info("ℹ️ Nuevo ID recibido para %s: vuelve a PRE hasta validarlo", chat_id)
+
+    return trading_id
+
+
 def _touch_user_activity(chat_id: int, lang: str | None = None):
     """Registra/actualiza actividad reciente en una tabla independiente."""
     try:
@@ -1000,7 +1180,7 @@ async def persistent_campaign_job(context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Protección adicional por etapa, incluso si un cancel llegó durante un redeploy.
-    stage = get_user_stage(chat_id)
+    stage, _ = _repair_inconsistent_stage(chat_id)
     if (series == "A" and stage != STAGE_PRE) or (series == "B" and stage != STAGE_POST):
         try:
             with Session() as session:
@@ -1098,7 +1278,9 @@ def schedule_series_b(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 def _sync_menu_campaign_for_stage(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE):
     """Mantiene la campaña correcta al abrir/cambiar idioma sin reiniciar sus tiempos."""
     lang = lang if lang in ("es", "en") else get_user_lang(chat_id)
-    stage = get_user_stage(chat_id)
+    stage, repaired_stage = _repair_inconsistent_stage(chat_id)
+    if repaired_stage:
+        logging.info("✅ Usuario %s reparado a PRE antes de sincronizar campañas", chat_id)
 
     # PRE: solo Serie A. Si ya existe (pendiente o finalizada), NO reinicia el reloj.
     if stage == STAGE_PRE:
@@ -1183,7 +1365,51 @@ async def recover_pending_campaign_jobs(application):
 
     recovered = 0
     stale_ids = []
+    repaired_users = 0
     try:
+        # Repara estados POST imposibles de usuarios activos recientes.
+        # Esto corrige registros heredados de versiones anteriores sin tocar POST válidos.
+        cutoff = utcnow_naive() - timedelta(days=20)
+        with Session() as session:
+            active_post_ids = [
+                str(r[0]) for r in (
+                    session.query(Usuario.telegram_id)
+                    .join(UserActivity, UserActivity.telegram_id == Usuario.telegram_id)
+                    .filter(
+                        Usuario.stage == STAGE_POST,
+                        UserActivity.last_activity_at >= cutoff,
+                    )
+                    .all()
+                )
+            ]
+
+        for telegram_id in active_post_ids:
+            chat_id = int(telegram_id)
+            stage, repaired = _repair_inconsistent_stage(chat_id)
+            if repaired and stage == STAGE_PRE:
+                repaired_users += 1
+                _delete_persistent_campaign_series("B", chat_id)
+
+                # Si la Serie A fue eliminada por el stage incorrecto anterior,
+                # reconstruimos una sola vez sus 4 pasos desde este momento.
+                with Session() as session:
+                    any_a = (
+                        session.query(CampaignJob.id)
+                        .filter(
+                            CampaignJob.telegram_id == str(chat_id),
+                            CampaignJob.series == "A",
+                        )
+                        .first()
+                    )
+                if not any_a:
+                    _create_persistent_campaign_series(
+                        chat_id,
+                        "A",
+                        get_user_lang(chat_id),
+                        started_at=utcnow_naive(),
+                    )
+                    logging.info("✅ Serie A reconstruida para %s tras reparar POST inválido", chat_id)
+
         with Session() as session:
             rows = (
                 session.query(CampaignJob)
@@ -1204,7 +1430,7 @@ async def recover_pending_campaign_jobs(application):
             ]
 
         for record in snapshot:
-            stage = get_user_stage(record["chat_id"])
+            stage, _ = _repair_inconsistent_stage(record["chat_id"])
             valid = (record["series"] == "A" and stage == STAGE_PRE) or (record["series"] == "B" and stage == STAGE_POST)
             if not valid:
                 stale_ids.append(record["id"])
@@ -1219,6 +1445,8 @@ async def recover_pending_campaign_jobs(application):
 
         if recovered:
             logging.info("♻️ Campañas persistentes recuperadas tras reinicio: %s jobs pendientes", recovered)
+        if repaired_users:
+            logging.info("🛡️ Usuarios POST inconsistentes reparados al iniciar: %s", repaired_users)
     except Exception as e:
         logging.warning("No pude recuperar campañas persistentes: %s", e)
 
@@ -1668,11 +1896,16 @@ async def notificar_interaccion(update: Update, context: ContextTypes.DEFAULT_TY
             text=f"⚠️ Error al notificar interacción: {e}"
         )
 
-def _is_positive_id_validation(text_value: str, original_question: str = "") -> bool:
-    """True solo cuando Johanna confirma de forma positiva que el ID fue validado/correcto."""
+def _is_positive_id_validation(text_value: str, original_question: str = "", saved_id: str = "") -> bool:
+    """True solo si Johanna valida explícitamente el MISMO ID que el usuario envió."""
     t = _norm(text_value or "")
-    original = _norm(original_question or "")
-    if not t:
+    original_raw = (original_question or "").strip()
+    saved_id = (saved_id or "").strip()
+    if not t or not saved_id:
+        return False
+
+    # La respuesta del admin debe estar asociada al mensaje donde aparece ESE ID.
+    if saved_id not in original_raw:
         return False
 
     negatives = (
@@ -1684,18 +1917,7 @@ def _is_positive_id_validation(text_value: str, original_question: str = "") -> 
     if any(n in t for n in negatives):
         return False
 
-    # Si la pregunta original era claramente un ID, también acepta respuestas
-    # manuales cortas como "es correcto" o "validado".
-    original_is_id = bool(re.search(r"\b\d{6,12}\b", original)) or "id" in original
-    short_positive = t in (
-        "correcto", "es correcto", "si correcto", "sí correcto",
-        "esta correcto", "está correcto", "validado", "ya validado",
-        "ya lo valide", "ya lo validé",
-    )
-    if original_is_id and short_positive:
-        return True
-
-    positives = (
+    explicit_positives = (
         "id validado correctamente",
         "id correctamente validado",
         "tu id es correcto",
@@ -1708,13 +1930,20 @@ def _is_positive_id_validation(text_value: str, original_question: str = "") -> 
         "ya validé tu id",
         "ya valide el id",
         "ya validé el id",
-        "ya lo valide",
-        "ya lo validé",
         "id successfully validated",
         "your id is correct",
         "i validated your id",
     )
-    return any(p in t for p in positives)
+    if any(p in t for p in explicit_positives):
+        return True
+
+    # Respuestas cortas siguen siendo válidas SOLO al responder al mensaje
+    # que contiene exactamente el ID guardado; nunca por un número cualquiera.
+    return t in (
+        "correcto", "es correcto", "si correcto", "sí correcto",
+        "esta correcto", "está correcto", "validado", "ya validado",
+        "ya lo valide", "ya lo validé",
+    )
 
 
 # === RESPUESTA DEL ADMIN (texto/audio) ===
@@ -1778,32 +2007,49 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         response_type=response_type,
                     )
 
-                # Detectar mensajes gatillo y cambiar el flujo sin alterar la lógica actual.
+                # Detectar mensajes gatillo con protección estricta del flujo:
+                # PRE -> ID enviado -> Johanna valida ESE ID -> POST -> depósito -> DEPOSITED.
                 try:
                     txt = (learned_reply if response_type == "voice" else (update.message.text or ""))
                     txtn = _norm(txt)
-                    if (
-                        _norm(GATILLO_ID_OK) in txtn
-                        or _norm(GATILLO_ID_OK_EN) in txtn
-                        or _is_positive_id_validation(txt, original_question or "")
-                    ):
-                        set_user_stage(destinatario_id, STAGE_POST)
-                        _log_event(destinatario_id, "ID_VALIDATED", txt)
-                        _cancel_jobs_prefix(context, "A", destinatario_id)
-                        schedule_series_b(destinatario_id, context)
-                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Gatillo OK detectado. Serie B activada para {destinatario_id}")
+                    saved_id = _get_saved_trading_id(destinatario_id)
+
+                    if _is_positive_id_validation(txt, original_question or "", saved_id):
+                        if _has_submitted_id_evidence(destinatario_id, saved_id):
+                            set_user_stage(destinatario_id, STAGE_POST)
+                            _log_event(destinatario_id, "ID_VALIDATED", f"ID={saved_id} | {txt}")
+                            _cancel_jobs_prefix(context, "A", destinatario_id)
+                            schedule_series_b(destinatario_id, context)
+                            await context.bot.send_message(
+                                chat_id=ADMIN_ID,
+                                text=f"✅ ID {saved_id} validado. Serie B activada para {destinatario_id}",
+                            )
+                        else:
+                            await context.bot.send_message(
+                                chat_id=ADMIN_ID,
+                                text=f"⚠️ No cambié a POST a {destinatario_id}: no existe evidencia de que ese ID haya sido enviado por el usuario.",
+                            )
 
                     elif ("confirmo cuenta activa" in txtn) or ("cuenta esta activa" in txtn) or ("cuenta está activa" in txtn) or ("acceso confirmado" in txtn) or ("acceso activado" in txtn):
-                        set_user_stage(destinatario_id, STAGE_DEPOSITED)
-                        _log_event(destinatario_id, "ACCOUNT_ACTIVATED", txt)
-                        _cancel_jobs_prefix(context, "A", destinatario_id)
-                        _cancel_jobs_prefix(context, "B", destinatario_id)
-                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Acceso confirmado. Campañas detenidas para {destinatario_id}")
+                        current_stage, _ = _repair_inconsistent_stage(destinatario_id)
+                        if current_stage == STAGE_POST and _strict_validated_id_state(destinatario_id):
+                            set_user_stage(destinatario_id, STAGE_DEPOSITED)
+                            _log_event(destinatario_id, "ACCOUNT_ACTIVATED", txt)
+                            _cancel_jobs_prefix(context, "A", destinatario_id)
+                            _cancel_jobs_prefix(context, "B", destinatario_id)
+                            await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Acceso confirmado. Campañas detenidas para {destinatario_id}")
+                        else:
+                            await context.bot.send_message(
+                                chat_id=ADMIN_ID,
+                                text=f"⚠️ No marqué DEPOSITED a {destinatario_id}: primero debe existir un ID realmente enviado y validado.",
+                            )
 
                     elif (_norm(GATILLO_ID_ERRADO) in txtn) or ("tu id esta errado" in txtn) or ("tu id está errado" in txtn):
                         set_user_stage(destinatario_id, STAGE_PRE)
+                        _clear_saved_trading_id(destinatario_id)
+                        _cancel_jobs_prefix(context, "B", destinatario_id)
                         schedule_series_a(destinatario_id, get_user_lang(destinatario_id), context)
-                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"ℹ️ Gatillo ERRADO detectado. Serie A continúa para {destinatario_id}")
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"ℹ️ ID rechazado. Usuario {destinatario_id} vuelve a PRE y Serie A continúa.")
                 except Exception as _e:
                     logging.info("No pude procesar gatillo de respuesta manual: %s", _e)
 
@@ -2552,8 +2798,9 @@ def detect_all_intents(texto: str):
     t = _norm(texto)
     found = []
 
-    # ID numérico: prioridad operativa, pero no impide detectar otras preguntas.
-    if re.search(r"\b\d{6,12}\b", t):
+    # ID numérico: solo si el mensaje realmente parece un envío de ID.
+    # Evita confundir capitales, montos, fechas u otros números con un ID de trading.
+    if _extract_candidate_trading_id(texto):
         _add_intent(found, "ID_SUBMIT")
 
     if any(k in t for k in [
@@ -3328,18 +3575,7 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
     for intent in effective_intents:
         # Side effects de flujos operativos.
         if intent == "ID_SUBMIT":
-            _log_event(chat_id, "ID_SUBMITTED", texto)
-            m = re.search(r"\b\d{6,12}\b", texto)
-            if m:
-                context.user_data["binomo_id"] = m.group(0)
-                try:
-                    with Session() as session:
-                        u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-                        if u:
-                            u.binomo_id = m.group(0)
-                            session.commit()
-                except Exception as e:
-                    logging.warning("No pude guardar ID en multi-pregunta: %s", e)
+            _record_submitted_trading_id(chat_id, texto, context)
             block = (
                 "✅ ID recibido. Lo dejo en validación y te confirmaré cuando esté correcto."
                 if lang == "es" else
@@ -3553,18 +3789,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "ID_SUBMIT":
-        _log_event(chat_id, "ID_SUBMITTED", texto)
-        m = re.search(r"\b\d{6,12}\b", texto)
-        if m:
-            context.user_data["binomo_id"] = m.group(0)
-            try:
-                with Session() as session:
-                    u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-                    if u:
-                        u.binomo_id = m.group(0)
-                        session.commit()
-            except Exception as e:
-                logging.warning("No pude guardar ID: %s", e)
+        _record_submitted_trading_id(chat_id, texto, context)
         msg = (
             "✅ Recibido. Ya tengo tu ID y lo dejo en validación. En breve te confirmo si está correcto."
             if lang == "es" else
