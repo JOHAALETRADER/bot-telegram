@@ -39,7 +39,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9-20260901-PERSISTENT-CAMPAIGNS-CONCISE-AI"
+BOT_VERSION = "v7.9.1-20260901-STAGE-CAMPAIGN-LINKS-FIX"
 
 
 def utcnow_naive():
@@ -1095,6 +1095,87 @@ def schedule_series_b(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     logging.info("✅ Serie B PERSISTENTE post-validación programada para chat_id %s (lang=%s): 1h, 3h, 24h, 48h", chat_id, lang)
 
 
+def _sync_menu_campaign_for_stage(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE):
+    """Mantiene la campaña correcta al abrir/cambiar idioma sin reiniciar sus tiempos."""
+    lang = lang if lang in ("es", "en") else get_user_lang(chat_id)
+    stage = get_user_stage(chat_id)
+
+    # PRE: solo Serie A. Si ya existe (pendiente o finalizada), NO reinicia el reloj.
+    if stage == STAGE_PRE:
+        _cancel_jobs_prefix(context, "B", chat_id)
+        try:
+            with Session() as session:
+                rows = (
+                    session.query(CampaignJob)
+                    .filter(
+                        CampaignJob.telegram_id == str(chat_id),
+                        CampaignJob.series == "A",
+                    )
+                    .all()
+                )
+                pending = [row for row in rows if row.sent_at is None]
+                for row in pending:
+                    row.lang = lang
+                if pending:
+                    session.commit()
+        except Exception as e:
+            logging.warning("No pude sincronizar Serie A para %s: %s", chat_id, e)
+            rows, pending = [], []
+
+        if not rows:
+            schedule_series_a(chat_id, lang, context)
+        elif pending:
+            logging.info(
+                "✅ Serie A conservada para chat_id %s (lang=%s): tiempos originales intactos",
+                chat_id, lang,
+            )
+        else:
+            logging.info("ℹ️ Serie A ya finalizada para chat_id %s; no se reinicia", chat_id)
+        return
+
+    # POST: nunca debe volver a Serie A. La Serie B nace al validar el ID;
+    # si ya existe, solo actualiza idioma y mantiene sus vencimientos originales.
+    if stage == STAGE_POST:
+        _cancel_jobs_prefix(context, "A", chat_id)
+        try:
+            with Session() as session:
+                rows = (
+                    session.query(CampaignJob)
+                    .filter(
+                        CampaignJob.telegram_id == str(chat_id),
+                        CampaignJob.series == "B",
+                    )
+                    .all()
+                )
+                pending = [row for row in rows if row.sent_at is None]
+                for row in pending:
+                    row.lang = lang
+                if pending:
+                    session.commit()
+        except Exception as e:
+            logging.warning("No pude sincronizar Serie B para %s: %s", chat_id, e)
+            rows, pending = [], []
+
+        if pending:
+            logging.info(
+                "✅ Serie B conservada para chat_id %s (lang=%s): tiempos originales intactos",
+                chat_id, lang,
+            )
+        elif rows:
+            logging.info("ℹ️ Serie B ya finalizada para chat_id %s; no se reinicia", chat_id)
+        else:
+            logging.info(
+                "ℹ️ Usuario POST %s sin Serie B pendiente; no se crea desde /start para no alterar el tiempo de validación",
+                chat_id,
+            )
+        return
+
+    # DEPOSITED: no debe recibir remarketing A ni B.
+    _cancel_jobs_prefix(context, "A", chat_id)
+    _cancel_jobs_prefix(context, "B", chat_id)
+    logging.info("✅ Usuario DEPOSITED %s: sin campañas A/B", chat_id)
+
+
 async def recover_pending_campaign_jobs(application):
     """Recupera campañas A/B pendientes sin reiniciar sus relojes tras un redeploy."""
     if not application.job_queue:
@@ -1224,8 +1305,8 @@ async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.D
         reply_markup=build_main_menu(lang)
     )
 
-    # Programar mensajes diferidos con lang (Serie A) — con nombres para evitar duplicados
-    schedule_series_a(chat_id, lang, context)
+    # Mantener la campaña correcta según la etapa SIN reiniciar relojes existentes.
+    _sync_menu_campaign_for_stage(chat_id, lang, context)
 
 # === BOTONES / CALLBACKS ===
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2914,6 +2995,71 @@ async def _translate_to_english(text_value: str) -> str:
         return ""
 
 
+def _organize_ai_registration_links(answer: str, lang: str) -> str:
+    """Presenta Stockity/Binomo en bloques separados y evita Markdown literal en Telegram."""
+    value = (answer or "").strip()
+    if not value:
+        return value
+
+    has_stockity = ENLACE_REFERIDO_STOCKITY in value
+    has_binomo = ENLACE_REFERIDO in value
+    if not (has_stockity or has_binomo):
+        return value
+
+    # Convierte cualquier [texto](URL) generado por IA a URL normal.
+    if has_stockity:
+        value = re.sub(
+            r"\[[^\]\n]{1,140}\]\(\s*" + re.escape(ENLACE_REFERIDO_STOCKITY) + r"\s*\)",
+            ENLACE_REFERIDO_STOCKITY,
+            value,
+        )
+    if has_binomo:
+        value = re.sub(
+            r"\[[^\]\n]{1,140}\]\(\s*" + re.escape(ENLACE_REFERIDO) + r"\s*\)",
+            ENLACE_REFERIDO,
+            value,
+        )
+
+    # Retira las líneas viejas que contienen esos links para reconstruirlas con aire.
+    clean_lines = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        normalized = _norm(stripped)
+
+        if has_stockity and ENLACE_REFERIDO_STOCKITY in line:
+            continue
+        if has_binomo and ENLACE_REFERIDO in line:
+            continue
+
+        # Limpia etiquetas cortas tipo "- Stockity: Registro..." que quedarían solas.
+        if len(stripped) <= 110:
+            if has_stockity and "stockity" in normalized and (
+                ":" in stripped or stripped.startswith(("-", "•", "🔗"))
+                or "registro" in normalized or "register" in normalized
+            ):
+                continue
+            if has_binomo and "binomo" in normalized and (
+                ":" in stripped or stripped.startswith(("-", "•", "🔗"))
+                or "registro" in normalized or "register" in normalized
+            ):
+                continue
+
+        clean_lines.append(line)
+
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(clean_lines)).strip()
+
+    blocks = []
+    if has_stockity:
+        label = "🔗 Stockity — primary option:" if lang == "en" else "🔗 Stockity — opción principal:"
+        blocks.append(f"{label}\n{ENLACE_REFERIDO_STOCKITY}")
+    if has_binomo:
+        label = "🔗 Binomo — secondary option:" if lang == "en" else "🔗 Binomo — opción secundaria:"
+        blocks.append(f"{label}\n{ENLACE_REFERIDO}")
+
+    links_block = "\n\n".join(blocks)
+    return f"{body}\n\n{links_block}".strip() if body else links_block
+
+
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
@@ -2961,6 +3107,7 @@ ESTILO DE JOHANNA
 - Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer CTA comercial.
 - Si preguntan por niveles/planes/inversión mínima, comienza aclarando que mi comunidad es GRATIS y que el dinero se deposita directamente en la PROPIA cuenta de trading. Muestra Básico/Premium/Prestige con emojis, SIN asteriscos alrededor de los nombres y SIN mencionar Forex automatizado. Incluye Stockity primero y Binomo segundo y recalca que ANTES de depositar deben enviarme el ID para validarlo conmigo.
 - Si preguntan cuánto recomiendo para empezar: se puede iniciar desde 50 USD, pero la recomendación habitual es 200 USD o más si está dentro de sus posibilidades. Explica que un capital mayor ofrece más margen operativo y flexibilidad para gestionar riesgo y distribuir entradas, por lo que puede ayudar a aprovechar mejor las herramientas. NUNCA lo presentes como garantía de mejores resultados o ganancias.
+- FORMATO DE ENLACES: nunca uses Markdown tipo [texto](URL). Si incluyes Stockity/Binomo, escribe cada plataforma en su propio bloque, con la URL en la línea siguiente y una línea en blanco entre ambas. Stockity siempre primero y Binomo después.
 - Los ejemplos reales de Johanna sirven para aprender vocabulario, ritmo y conocimiento. No generalices una excepción claramente individual.
 
 LÍMITES IMPORTANTES
@@ -3010,6 +3157,9 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             translated = await _translate_to_english(answer)
             if translated:
                 answer = translated
+
+        # Presentación estable de links para Telegram: sin Markdown literal y con separación.
+        answer = _organize_ai_registration_links(answer, lang)
         return answer
     except Exception as e:
         logging.warning("Error generando respuesta IA: %s", e)
