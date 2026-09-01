@@ -38,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9.2-20260901-STRICT-ID-STAGE-PERSISTENCE"
+BOT_VERSION = "v7.9.4-20260901-VIP-INBOUND-BLOCK-COMPLETE"
 
 
 def utcnow_naive():
@@ -480,16 +480,24 @@ Registra tu cuenta con uno de mis enlaces y envíame tu ID antes de depositar pa
 ✨ Desde el nivel Básico puedes comenzar con 50 USD y acceder a formación y herramientas según tu nivel.
 
 👉 Da el paso ahora:
-Stockity: {ENLACE_REFERIDO_STOCKITY}
-Binomo: {ENLACE_REFERIDO}"""
+
+🔗 Stockity — opción principal:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — opción secundaria:
+{ENLACE_REFERIDO}"""
 
 MENSAJE_3H_ES = f"""📈 No necesitas aprender trading sin dirección. La idea de la comunidad es que tengas una ruta, formación, señales y herramientas que te ayuden a desarrollar tu operativa con estructura.
 
 Tu siguiente acción es simple: crea tu cuenta con mi enlace y envíame tu ID para validarlo antes del depósito.
 
 ✅ Empieza hoy y deja listo tu acceso:
-Stockity: {ENLACE_REFERIDO_STOCKITY}
-Binomo: {ENLACE_REFERIDO}"""
+
+🔗 Stockity — opción principal:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — opción secundaria:
+{ENLACE_REFERIDO}"""
 
 MENSAJE_24H_ES = f"""✨ Si estabas esperando el momento para comenzar, conviértelo en una acción concreta.
 
@@ -498,16 +506,24 @@ Puedes elegir el nivel que mejor se ajuste a tu capital y avanzar paso a paso co
 🔥 Regístrate ahora, envíame tu ID y yo te indico el siguiente paso para activar correctamente tu acceso.
 
 📊 Resultados de la comunidad: {CANAL_RESULTADOS}
-🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
-🔗 Binomo: {ENLACE_REFERIDO}"""
+
+🔗 Stockity — opción principal:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — opción secundaria:
+{ENLACE_REFERIDO}"""
 
 MENSAJE_48H_ES = f"""🎯 La diferencia entre seguir pensando en empezar y realmente avanzar es completar el primer paso.
 
 Haz tu registro con mi enlace, envíame tu ID antes de depositar y déjame validar tu cuenta. A partir de ahí podrás elegir tu nivel y continuar con la activación.
 
 🚀 Empieza ahora:
-Stockity: {ENLACE_REFERIDO_STOCKITY}
-Binomo: {ENLACE_REFERIDO}
+
+🔗 Stockity — opción principal:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — opción secundaria:
+{ENLACE_REFERIDO}
 
 Cuando termines, envíame tu ID y continuamos."""
 
@@ -519,16 +535,24 @@ Create your account using one of my links and send me your ID before depositing 
 ✨ You can start at the Basic level from 50 USD and access education and tools according to your level.
 
 👉 Take the first step now:
-Stockity: {ENLACE_REFERIDO_STOCKITY}
-Binomo: {ENLACE_REFERIDO}"""
+
+🔗 Stockity — primary option:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — secondary option:
+{ENLACE_REFERIDO}"""
 
 MENSAJE_3H_EN = f"""📈 You do not have to learn trading without direction. The community gives you a structured path with education, signals and tools to develop your trading process.
 
 Your next action is simple: create your account with my link and send me your ID for validation before depositing.
 
 ✅ Start today:
-Stockity: {ENLACE_REFERIDO_STOCKITY}
-Binomo: {ENLACE_REFERIDO}"""
+
+🔗 Stockity — primary option:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — secondary option:
+{ENLACE_REFERIDO}"""
 
 MENSAJE_24H_EN = f"""✨ If you were waiting for the right moment to begin, turn that intention into a concrete action.
 
@@ -537,16 +561,24 @@ Choose the level that fits your capital and move forward step by step with educa
 🔥 Register now, send me your ID and I will guide you through the next activation step.
 
 📊 Community results: {CANAL_RESULTADOS}
-🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
-🔗 Binomo: {ENLACE_REFERIDO}"""
+
+🔗 Stockity — primary option:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — secondary option:
+{ENLACE_REFERIDO}"""
 
 MENSAJE_48H_EN = f"""🎯 The difference between thinking about starting and actually moving forward is completing the first step.
 
 Register with my link, send me your ID before depositing, and let me validate your account. Then you can choose your level and continue with activation.
 
 🚀 Start now:
-Stockity: {ENLACE_REFERIDO_STOCKITY}
-Binomo: {ENLACE_REFERIDO}
+
+🔗 Stockity — primary option:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — secondary option:
+{ENLACE_REFERIDO}
 
 When you finish, send me your ID and we will continue."""
 
@@ -1489,6 +1521,8 @@ def build_lang_picker() -> InlineKeyboardMarkup:
 
 # === /start: primero elige idioma, luego bienvenida + menú por idioma; agenda jobs con lang ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
     chat_id = update.effective_chat.id
     nombre = update.effective_user.full_name
 
@@ -1538,8 +1572,15 @@ async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.D
 
 # === BOTONES / CALLBACKS ===
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
     q = update.callback_query
+    if not update.effective_chat or update.effective_chat.type != "private":
+        if q:
+            try:
+                await q.answer()
+            except Exception:
+                pass
+        return
+    chat_id = update.effective_chat.id
     await q.answer()
     _touch_user_activity(chat_id)
 
@@ -3509,6 +3550,7 @@ async def recover_pending_ai_jobs(application):
     if not application.job_queue:
         return
     now = utcnow_naive()
+    recovered = 0
     try:
         with Session() as session:
             users = (
@@ -3531,7 +3573,8 @@ async def recover_pending_ai_jobs(application):
                     data={"chat_id": int(telegram_id), "message_id": str(pending_message_id or "")},
                     name=f"AI_REPLY_{telegram_id}",
                 )
-        logging.info("✅ Respuestas IA pendientes recuperadas al iniciar el bot")
+                recovered += 1
+        logging.info("✅ IA pendientes recuperadas: %s", recovered)
     except Exception as e:
         logging.warning("No se pudieron recuperar respuestas IA pendientes: %s", e)
 
@@ -4529,6 +4572,25 @@ async def admin_control_router(update: Update, context: ContextTypes.DEFAULT_TYP
         raise ApplicationHandlerStop
 
 
+async def ignore_non_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ignora por completo mensajes/commands recibidos desde grupos, supergrupos, temas o canales."""
+    from telegram.ext import ApplicationHandlerStop
+    raise ApplicationHandlerStop
+
+
+async def ignore_non_private_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bloquea botones viejos que todavía existan dentro de grupos/temas VIP."""
+    chat = update.effective_chat
+    if chat and chat.type != "private":
+        if update.callback_query:
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+        from telegram.ext import ApplicationHandlerStop
+        raise ApplicationHandlerStop
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
     await recover_pending_ai_jobs(application)
@@ -4547,6 +4609,17 @@ async def post_init_app(application):
 # === EJECUCIÓN ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).post_init(post_init_app).build()
+
+    # BLOQUEO GLOBAL: el VIP/grupos/temas/canales son solo destinos de salida.
+    # Nada recibido allí puede activar menús, IA, campañas, reportes ni flujos del bot.
+    app.add_handler(
+        MessageHandler(~filters.ChatType.PRIVATE, ignore_non_private_message),
+        group=-100,
+    )
+    app.add_handler(
+        CallbackQueryHandler(ignore_non_private_callback),
+        group=-100,
+    )
 
     # Botón persistente privado del ADMIN. Tiene prioridad absoluta.
     app.add_handler(
@@ -4612,8 +4685,16 @@ if __name__ == "__main__":
     # Mensajes del admin (responder a usuarios con texto o audio deslizando)
     app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & filters.User(ADMIN_ID), responder_a_usuario))
 
-    # Mensajes normales de los usuarios (texto o media)
-    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE) & ~filters.COMMAND & ~filters.User(ADMIN_ID), manejar_mensaje))
+    # Mensajes normales de los usuarios (texto o media) — SOLO CHAT PRIVADO.
+    # Excluye grupos, supergrupos, temas del VIP y canales para que nunca entren
+    # al flujo de prospectos, notificaciones, reportes ni respuestas IA.
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE
+        & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE)
+        & ~filters.COMMAND
+        & ~filters.User(ADMIN_ID),
+        manejar_mensaje,
+    ))
 
     logging.info("Bot corriendo…")
     app.run_polling()
