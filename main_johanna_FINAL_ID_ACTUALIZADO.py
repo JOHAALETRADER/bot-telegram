@@ -99,8 +99,6 @@ class Usuario(Base):
     ai_pending_text        = Column(Text)
     ai_pending_message_id  = Column(String)
     ai_pending_due_at      = Column(DateTime)
-    # Última interacción conocida; sirve para avisos LIVE a usuarios recientes.
-    last_activity_at       = Column(DateTime, default=datetime.utcnow)
 
 
 class JohannaExample(Base):
@@ -118,6 +116,19 @@ class JohannaExample(Base):
     response_type  = Column(String, default="text")
     lang           = Column(String, default="es")
     created_at     = Column(DateTime, default=datetime.utcnow)
+
+
+class UserActivity(Base):
+    """Actividad reciente separada de la tabla histórica de usuarios.
+
+    Usar una tabla independiente evita alterar la tabla `usuarios` que ya existe
+    en Railway y elimina el riesgo de romper consultas antiguas por una columna
+    nueva que aún no haya sido migrada.
+    """
+    __tablename__ = "user_activity"
+    telegram_id      = Column(String, primary_key=True)
+    lang             = Column(String, default="es")
+    last_activity_at = Column(DateTime, default=datetime.utcnow)
 
 
 engine = create_engine(DATABASE_URL, echo=False)
@@ -200,22 +211,8 @@ try:
 except Exception as e:
     logging.warning("No se pudieron verificar/crear columnas IA: %s", e)
 
-# --- Migración de última actividad para avisos LIVE ---
-try:
-    backend = engine.url.get_backend_name()
-    if backend.startswith("postgres"):
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP"))
-            conn.execute(text("UPDATE usuarios SET last_activity_at = COALESCE(last_activity_at, fecha_registro)"))
-    elif backend == "sqlite":
-        with engine.begin() as conn:
-            cols = conn.execute(text("PRAGMA table_info(usuarios)")).fetchall()
-            names = {c[1] for c in cols}
-            if "last_activity_at" not in names:
-                conn.execute(text("ALTER TABLE usuarios ADD COLUMN last_activity_at DATETIME"))
-            conn.execute(text("UPDATE usuarios SET last_activity_at = COALESCE(last_activity_at, fecha_registro)"))
-except Exception as e:
-    logging.warning("No se pudo verificar/crear last_activity_at: %s", e)
+# La actividad reciente se guarda en la tabla independiente `user_activity`.
+# Base.metadata.create_all() la crea automáticamente sin modificar `usuarios`.
 
 # --- fin migración ---
 
@@ -510,9 +507,19 @@ async def mensaje_48h(context: ContextTypes.DEFAULT_TYPE):
 
 # === UTIL: obtener/guardar idioma ===
 def get_user_lang(chat_id: int) -> str:
-    with Session() as session:
-        u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-        return (u.lang if u and u.lang in ("es","en") else "es")
+    """Obtiene idioma sin cargar todas las columnas de Usuario.
+
+    Así una columna auxiliar nunca puede impedir que Johanna reciba la
+    notificación de un mensaje.
+    """
+    try:
+        with Session() as session:
+            row = session.query(Usuario.lang).filter_by(telegram_id=str(chat_id)).first()
+            value = row[0] if row else None
+            return value if value in ("es", "en") else "es"
+    except Exception as e:
+        logging.info("No pude leer idioma de %s; uso español: %s", chat_id, e)
+        return "es"
 
 def set_user_lang(chat_id: int, name: str, lang: str):
     with Session() as session:
@@ -523,6 +530,7 @@ def set_user_lang(chat_id: int, name: str, lang: str):
         else:
             u.lang = lang
         session.commit()
+    _touch_user_activity(chat_id, lang)
 
 
 # === UTIL: obtener/guardar etapa (stage) ===
@@ -531,10 +539,14 @@ STAGE_POST = "POST"
 STAGE_DEPOSITED = "DEPOSITED"
 
 def get_user_stage(chat_id: int) -> str:
-    with Session() as session:
-        u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-        s = (u.stage if u and u.stage else STAGE_PRE)
-        return s if s in (STAGE_PRE, STAGE_POST, STAGE_DEPOSITED) else STAGE_PRE
+    try:
+        with Session() as session:
+            row = session.query(Usuario.stage).filter_by(telegram_id=str(chat_id)).first()
+            s = row[0] if row and row[0] else STAGE_PRE
+            return s if s in (STAGE_PRE, STAGE_POST, STAGE_DEPOSITED) else STAGE_PRE
+    except Exception as e:
+        logging.info("No pude leer etapa de %s; uso PRE: %s", chat_id, e)
+        return STAGE_PRE
 
 def set_user_stage(chat_id: int, stage: str):
     if stage not in (STAGE_PRE, STAGE_POST, STAGE_DEPOSITED):
@@ -546,16 +558,25 @@ def set_user_stage(chat_id: int, stage: str):
             session.commit()
 
 
-def _touch_user_activity(chat_id: int):
-    """Actualiza la fecha de actividad sin alterar el resto del usuario."""
+def _touch_user_activity(chat_id: int, lang: str | None = None):
+    """Registra/actualiza actividad reciente en una tabla independiente."""
     try:
+        resolved_lang = lang if lang in ("es", "en") else get_user_lang(chat_id)
+        now = datetime.utcnow()
         with Session() as session:
-            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-            if u:
-                u.last_activity_at = datetime.utcnow()
-                session.commit()
+            row = session.get(UserActivity, str(chat_id))
+            if row:
+                row.last_activity_at = now
+                row.lang = resolved_lang
+            else:
+                session.add(UserActivity(
+                    telegram_id=str(chat_id),
+                    lang=resolved_lang,
+                    last_activity_at=now,
+                ))
+            session.commit()
     except Exception as e:
-        logging.info("No pude actualizar última actividad de %s: %s", chat_id, e)
+        logging.warning("No pude actualizar actividad de %s: %s", chat_id, e)
 
 
 # === Teclado de soporte (solo para el flujo nuevo / redirecciones) ===
@@ -677,14 +698,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 fecha_registro=datetime.utcnow(),
                 lang="es",
                 stage="PRE",
-                last_activity_at=datetime.utcnow(),
             )
             session.add(nuevo_usuario)
         else:
             user.nombre = nombre
-            user.last_activity_at = datetime.utcnow()
         session.commit()
 
+    _touch_user_activity(chat_id, get_user_lang(chat_id))
     await update.message.reply_text("Elige tu idioma / Choose your language:", reply_markup=build_lang_picker())
 
     # Notificar admin
@@ -887,25 +907,50 @@ https://t.me/JohaaleTraderTeams""")
 
 # === PERSISTENCIA MENSAJE DEL USUARIO ===
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Guarda el último mensaje sin permitir que un fallo de BD corte el bot."""
     chat_id = update.effective_chat.id
-
-    stage = get_user_stage(chat_id)
     texto = update.message.text or update.message.caption or ""
+    nombre = update.effective_user.full_name
+    lang = get_user_lang(chat_id)
 
-    with Session() as session:
-        user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-        if user:
-            user.mensaje = texto
-            user.last_activity_at = datetime.utcnow()
-        else:
-            session.add(Usuario(
-                telegram_id=str(chat_id),
-                nombre=update.effective_user.full_name,
-                mensaje=texto,
-                fecha_registro=datetime.utcnow(),
-                last_activity_at=datetime.utcnow(),
-            ))
-        session.commit()
+    try:
+        with Session() as session:
+            result = session.execute(
+                text("""
+                    UPDATE usuarios
+                    SET mensaje = :mensaje, nombre = :nombre
+                    WHERE telegram_id = :telegram_id
+                """),
+                {
+                    "mensaje": texto,
+                    "nombre": nombre,
+                    "telegram_id": str(chat_id),
+                },
+            )
+            if result.rowcount == 0:
+                session.execute(
+                    text("""
+                        INSERT INTO usuarios
+                            (telegram_id, nombre, mensaje, fecha_registro, lang, stage)
+                        VALUES
+                            (:telegram_id, :nombre, :mensaje, :fecha_registro, :lang, :stage)
+                    """),
+                    {
+                        "telegram_id": str(chat_id),
+                        "nombre": nombre,
+                        "mensaje": texto,
+                        "fecha_registro": datetime.utcnow(),
+                        "lang": lang,
+                        "stage": STAGE_PRE,
+                    },
+                )
+            session.commit()
+    except Exception as e:
+        logging.warning("No pude guardar mensaje de %s, pero el bot continuará: %s", chat_id, e)
+
+    # Actividad para LIVE se guarda aparte; un fallo aquí tampoco bloquea respuestas.
+    _touch_user_activity(chat_id, lang)
+
 
 # === NOTIFICACIONES AL ADMIN ===
 async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1165,11 +1210,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 # Modelo recomendado para transcribir respuestas de voz de Johanna.
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
-# 12 minutos: punto medio entre 10 y 15. Puede cambiarse en Railway con AI_WAIT_MINUTES.
+# 8 minutos de prioridad para Johanna. Puede cambiarse en Railway con AI_WAIT_MINUTES.
 try:
-    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "12")))
+    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "8")))
 except Exception:
-    AI_WAIT_MINUTES = 12
+    AI_WAIT_MINUTES = 8
 AI_WAIT_SECONDS = AI_WAIT_MINUTES * 60
 AI_HISTORY_MAX_MESSAGES = 16
 
@@ -2035,16 +2080,25 @@ async def recover_pending_ai_jobs(application):
     now = datetime.utcnow()
     try:
         with Session() as session:
-            users = session.query(Usuario).filter(Usuario.ai_pending_due_at.isnot(None)).all()
-            for u in users:
-                if not u.ai_pending_text:
+            users = (
+                session.query(
+                    Usuario.telegram_id,
+                    Usuario.ai_pending_due_at,
+                    Usuario.ai_pending_text,
+                    Usuario.ai_pending_message_id,
+                )
+                .filter(Usuario.ai_pending_due_at.isnot(None))
+                .all()
+            )
+            for telegram_id, due_at, pending_text, pending_message_id in users:
+                if not pending_text:
                     continue
-                delay = max(2, int((u.ai_pending_due_at - now).total_seconds()))
+                delay = max(2, int((due_at - now).total_seconds()))
                 application.job_queue.run_once(
                     delayed_ai_reply,
                     when=delay,
-                    data={"chat_id": int(u.telegram_id), "message_id": str(u.ai_pending_message_id or "")},
-                    name=f"AI_REPLY_{u.telegram_id}",
+                    data={"chat_id": int(telegram_id), "message_id": str(pending_message_id or "")},
+                    name=f"AI_REPLY_{telegram_id}",
                 )
         logging.info("✅ Respuestas IA pendientes recuperadas al iniciar el bot")
     except Exception as e:
@@ -2053,9 +2107,17 @@ async def recover_pending_ai_jobs(application):
 
 # Nueva función para manejar mensajes de usuarios (texto o media)
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Guardar y notificar al admin primero: Johanna siempre ve el mensaje antes de cualquier IA diferida.
-    await guardar_mensaje(update, context)
-    await notificar_admin(update, context)
+    # PRIORIDAD ABSOLUTA: Johanna recibe el mensaje inmediatamente.
+    # La notificación se intenta ANTES de cualquier escritura de base de datos.
+    try:
+        await notificar_admin(update, context)
+    except Exception as e:
+        logging.warning("No pude notificar al admin, continúo procesando: %s", e)
+
+    try:
+        await guardar_mensaje(update, context)
+    except Exception as e:
+        logging.warning("No pude persistir el mensaje, continúo procesando: %s", e)
 
     chat_id = update.effective_chat.id
     lang = get_user_lang(chat_id)
@@ -2090,14 +2152,11 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intent = detect_intent_es(texto)
     bonus_needs_guide = intent == "BONO" and bono_requiere_guia(texto)
 
-    # Si había una respuesta IA pendiente y el nuevo mensaje cae en un flujo inmediato,
-    # se cancela la respuesta anterior para no contestar algo viejo minutos después.
-    immediate_intents = {
-        "GREETING", "YA_REGISTRE", "DEP_LATER", "MIN_50", "DEPOSITO",
-        "ID_SUBMIT", "VPN", "PAIS", "NEXT_STEP", "WHERE_SEND_ID", "LIVE", "ID", "NIVELES", "GESTION_CAPITAL",
-    }
-    if intent in immediate_intents or (intent == "BONO" and not bonus_needs_guide):
-        _cancel_pending_ai(context, chat_id)
+    # IMPORTANTE: una respuesta inmediata NO borra otra pregunta pendiente.
+    # Ejemplo: si el usuario pregunta algo abierto y luego pregunta por bonos,
+    # el bono se responde al instante y la consulta abierta sigue esperando a la IA.
+    # Si envía varias consultas abiertas consecutivas, schedule_ai_reply las agrupa
+    # y reinicia el reloj solo para esas consultas pendientes.
 
     # Saludo simple: respuesta inmediata.
     if intent == "GREETING":
@@ -2345,20 +2404,19 @@ def live_broadcast_keyboard() -> InlineKeyboardMarkup:
 
 
 def _recent_live_recipients(days: int = LIVE_BROADCAST_DAYS):
-    """Obtiene usuarios recientes.
+    """Obtiene usuarios que realmente interactuaron durante la ventana indicada.
 
-    Para usuarios antiguos creados antes de que existiera last_activity_at no es
-    posible reconstruir la fecha exacta de sus mensajes históricos. Si no hay
-    ningún usuario reciente detectable, usa como recuperación a usuarios que
-    tienen un mensaje guardado en la base para no perder los contactos previos.
+    La fecha se toma de `user_activity`, una tabla separada que se actualiza con
+    cada mensaje nuevo. Para contactos históricos previos a esta versión se usa
+    el último mensaje guardado solo como recuperación si todavía no hay actividad
+    nueva registrada.
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
     try:
         with Session() as session:
             recent_rows = (
-                session.query(Usuario.telegram_id, Usuario.lang)
-                .filter(Usuario.last_activity_at.isnot(None))
-                .filter(Usuario.last_activity_at >= cutoff)
+                session.query(UserActivity.telegram_id, UserActivity.lang)
+                .filter(UserActivity.last_activity_at >= cutoff)
                 .all()
             )
 
