@@ -39,7 +39,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.8-20260901-EN-AI-MARKETING-FIX"
+BOT_VERSION = "v7.9-20260901-PERSISTENT-CAMPAIGNS-CONCISE-AI"
 
 
 def utcnow_naive():
@@ -193,6 +193,19 @@ class BotEvent(Base):
     event_type  = Column(String, index=True)
     detail      = Column(Text)
     created_at  = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CampaignJob(Base):
+    """Tareas persistentes de remarketing A/B para sobrevivir reinicios de Railway."""
+    __tablename__ = "campaign_jobs"
+    id          = Column(Integer, primary_key=True)
+    telegram_id = Column(String, index=True)
+    series      = Column(String, index=True)
+    step        = Column(String)
+    lang        = Column(String, default="es")
+    due_at      = Column(DateTime, index=True)
+    sent_at     = Column(DateTime, nullable=True, index=True)
+    created_at  = Column(DateTime, default=utcnow_naive)
 
 
 engine = create_engine(DATABASE_URL, echo=False)
@@ -864,28 +877,186 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
 
+CAMPAIGN_OFFSETS = {
+    "1h": 3600,
+    "3h": 10800,
+    "24h": 86400,
+    "48h": 172800,
+}
+
+
+def _campaign_text_pair(series: str, step: str):
+    """Devuelve (ES, EN) para un paso persistente de campaña."""
+    if series == "B":
+        mapping = {
+            "1h": (MENSAJE_B_1H_ES, MENSAJE_B_1H_EN),
+            "3h": (MENSAJE_B_3H_ES, MENSAJE_B_3H_EN),
+            "24h": (MENSAJE_B_24H_ES, MENSAJE_B_24H_EN),
+            "48h": (MENSAJE_B_48H_ES, MENSAJE_B_48H_EN),
+        }
+    else:
+        mapping = {
+            "1h": (MENSAJE_1H_ES, MENSAJE_1H_EN),
+            "3h": (MENSAJE_3H_ES, MENSAJE_3H_EN),
+            "24h": (MENSAJE_24H_ES, MENSAJE_24H_EN),
+            "48h": (MENSAJE_48H_ES, MENSAJE_48H_EN),
+        }
+    return mapping.get(step, ("", ""))
+
+
+def _delete_persistent_campaign_series(prefix: str, chat_id: int):
+    """Elimina tareas A/B pendientes del usuario en PostgreSQL."""
+    try:
+        with Session() as session:
+            session.query(CampaignJob).filter(
+                CampaignJob.telegram_id == str(chat_id),
+                CampaignJob.series == str(prefix),
+                CampaignJob.sent_at.is_(None),
+            ).delete(synchronize_session=False)
+            session.commit()
+    except Exception as e:
+        logging.warning("No pude cancelar campaña persistente %s para %s: %s", prefix, chat_id, e)
+
+
 def _cancel_jobs_prefix(context: ContextTypes.DEFAULT_TYPE, prefix: str, chat_id: int):
-    if not context.job_queue:
+    """Cancela tanto los jobs en memoria como los pendientes persistidos."""
+    if context.job_queue:
+        for suf in ("1h", "3h", "24h", "48h"):
+            name = f"{prefix}_{suf}_{chat_id}"
+            try:
+                for j in context.job_queue.get_jobs_by_name(name):
+                    j.schedule_removal()
+            except Exception:
+                pass
+    _delete_persistent_campaign_series(prefix, chat_id)
+
+
+def _create_persistent_campaign_series(chat_id: int, series: str, lang: str, started_at=None):
+    """Crea los cuatro vencimientos absolutos; devuelve registros para JobQueue."""
+    started_at = started_at or utcnow_naive()
+    lang = lang if lang in ("es", "en") else "es"
+    records = []
+    try:
+        with Session() as session:
+            # Limpieza defensiva: nunca debe quedar más de una serie pendiente del mismo tipo.
+            session.query(CampaignJob).filter(
+                CampaignJob.telegram_id == str(chat_id),
+                CampaignJob.series == str(series),
+                CampaignJob.sent_at.is_(None),
+            ).delete(synchronize_session=False)
+
+            for step, seconds in CAMPAIGN_OFFSETS.items():
+                row = CampaignJob(
+                    telegram_id=str(chat_id),
+                    series=series,
+                    step=step,
+                    lang=lang,
+                    due_at=started_at + timedelta(seconds=seconds),
+                    sent_at=None,
+                    created_at=utcnow_naive(),
+                )
+                session.add(row)
+                session.flush()
+                records.append({"id": row.id, "chat_id": chat_id, "series": series, "step": step, "lang": lang, "due_at": row.due_at})
+            session.commit()
+        return records
+    except Exception as e:
+        logging.warning("No pude persistir Serie %s para %s: %s", series, chat_id, e)
+        return []
+
+
+def _schedule_persistent_campaign_record(job_queue, record):
+    if not job_queue or not record:
         return
-    for suf in ("1h","3h","24h","48h"):
-        name = f"{prefix}_{suf}_{chat_id}"
+    due_at = record.get("due_at")
+    delay = max(2, int((due_at - utcnow_naive()).total_seconds())) if due_at else 2
+    job_queue.run_once(
+        persistent_campaign_job,
+        when=delay,
+        data={"campaign_job_id": int(record["id"])},
+        name=f'{record["series"]}_{record["step"]}_{record["chat_id"]}',
+    )
+
+
+async def persistent_campaign_job(context: ContextTypes.DEFAULT_TYPE):
+    """Envía un recordatorio A/B y marca el paso como enviado en BD."""
+    data = context.job.data or {}
+    job_id = data.get("campaign_job_id")
+    if not job_id:
+        return
+
+    try:
+        with Session() as session:
+            row = session.get(CampaignJob, int(job_id))
+            if not row or row.sent_at is not None:
+                return
+            chat_id = int(row.telegram_id)
+            series = row.series or "A"
+            step = row.step or ""
+            lang = row.lang if row.lang in ("es", "en") else get_user_lang(chat_id)
+            due_at = row.due_at
+    except Exception as e:
+        logging.warning("No pude leer campaign_job %s: %s", job_id, e)
+        return
+
+    # Protección adicional por etapa, incluso si un cancel llegó durante un redeploy.
+    stage = get_user_stage(chat_id)
+    if (series == "A" and stage != STAGE_PRE) or (series == "B" and stage != STAGE_POST):
         try:
-            for j in context.job_queue.get_jobs_by_name(name):
-                j.schedule_removal()
+            with Session() as session:
+                stale = session.get(CampaignJob, int(job_id))
+                if stale:
+                    session.delete(stale)
+                    session.commit()
         except Exception:
             pass
+        return
+
+    # Si el job despertó antes de su vencimiento, conserva el vencimiento original.
+    now = utcnow_naive()
+    if due_at and due_at > now + timedelta(seconds=1):
+        _schedule_persistent_campaign_record(
+            context.job_queue,
+            {"id": int(job_id), "chat_id": chat_id, "series": series, "step": step, "lang": lang, "due_at": due_at},
+        )
+        return
+
+    text_es, text_en = _campaign_text_pair(series, step)
+    outbound = text_es if lang == "es" else text_en
+    if not outbound:
+        logging.warning("No existe texto de campaña %s %s para %s", series, step, chat_id)
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=outbound,
+            reply_markup=support_keyboard(lang),
+            disable_web_page_preview=True,
+        )
+        with Session() as session:
+            sent_row = session.get(CampaignJob, int(job_id))
+            if sent_row and sent_row.sent_at is None:
+                sent_row.sent_at = utcnow_naive()
+                session.commit()
+        logging.info("✅ Campaña %s %s enviada a chat_id %s (lang=%s)", series, step, chat_id, lang)
+    except Exception as e:
+        # No marcamos como enviado: un reinicio podrá recuperarlo.
+        logging.warning("Job campaña %s %s falló para %s: %s", series, step, chat_id, e)
+
 
 def schedule_series_a(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE):
     if not context.job_queue:
         return
     _cancel_jobs_prefix(context, "A", chat_id)
-    context.job_queue.run_once(mensaje_1h, when=3600,  data=(chat_id, lang), name=f"A_1h_{chat_id}")
-    context.job_queue.run_once(mensaje_3h, when=10800, data=(chat_id, lang), name=f"A_3h_{chat_id}")
-    context.job_queue.run_once(mensaje_24h, when=86400, data=(chat_id, lang), name=f"A_24h_{chat_id}")
-    context.job_queue.run_once(mensaje_48h, when=172800, data=(chat_id, lang), name=f"A_48h_{chat_id}")
-    logging.info("✅ Serie A programada para chat_id %s (lang=%s)", chat_id, lang)
+    records = _create_persistent_campaign_series(chat_id, "A", lang)
+    for record in records:
+        _schedule_persistent_campaign_record(context.job_queue, record)
+    logging.info("✅ Serie A PERSISTENTE programada para chat_id %s (lang=%s): 1h, 3h, 24h, 48h", chat_id, lang)
+
 
 async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str, text_en: str):
+    """Compatibilidad con jobs antiguos dentro del proceso actual."""
     chat_id, lang = context.job.data
     try:
         await context.bot.send_message(
@@ -896,28 +1067,79 @@ async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str, 
     except Exception as e:
         logging.warning("Job B send failed to %s: %s", chat_id, e)
 
+
 async def mensaje_B_1h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message_B(context, MENSAJE_B_1H_ES, MENSAJE_B_1H_EN)
+
 
 async def mensaje_B_3h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message_B(context, MENSAJE_B_3H_ES, MENSAJE_B_3H_EN)
 
+
 async def mensaje_B_24h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message_B(context, MENSAJE_B_24H_ES, MENSAJE_B_24H_EN)
 
+
 async def mensaje_B_48h(context: ContextTypes.DEFAULT_TYPE):
     await _send_job_message_B(context, MENSAJE_B_48H_ES, MENSAJE_B_48H_EN)
+
 
 def schedule_series_b(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     if not context.job_queue:
         return
     lang = get_user_lang(chat_id)
     _cancel_jobs_prefix(context, "B", chat_id)
-    context.job_queue.run_once(mensaje_B_1h, when=3600,  data=(chat_id, lang), name=f"B_1h_{chat_id}")
-    context.job_queue.run_once(mensaje_B_3h, when=10800, data=(chat_id, lang), name=f"B_3h_{chat_id}")
-    context.job_queue.run_once(mensaje_B_24h, when=86400, data=(chat_id, lang), name=f"B_24h_{chat_id}")
-    context.job_queue.run_once(mensaje_B_48h, when=172800, data=(chat_id, lang), name=f"B_48h_{chat_id}")
-    logging.info("✅ Serie B post-validación programada para chat_id %s (lang=%s)", chat_id, lang)
+    records = _create_persistent_campaign_series(chat_id, "B", lang)
+    for record in records:
+        _schedule_persistent_campaign_record(context.job_queue, record)
+    logging.info("✅ Serie B PERSISTENTE post-validación programada para chat_id %s (lang=%s): 1h, 3h, 24h, 48h", chat_id, lang)
+
+
+async def recover_pending_campaign_jobs(application):
+    """Recupera campañas A/B pendientes sin reiniciar sus relojes tras un redeploy."""
+    if not application.job_queue:
+        return
+
+    recovered = 0
+    stale_ids = []
+    try:
+        with Session() as session:
+            rows = (
+                session.query(CampaignJob)
+                .filter(CampaignJob.sent_at.is_(None))
+                .order_by(CampaignJob.due_at.asc())
+                .all()
+            )
+            snapshot = [
+                {
+                    "id": row.id,
+                    "chat_id": int(row.telegram_id),
+                    "series": row.series,
+                    "step": row.step,
+                    "lang": row.lang if row.lang in ("es", "en") else "es",
+                    "due_at": row.due_at,
+                }
+                for row in rows
+            ]
+
+        for record in snapshot:
+            stage = get_user_stage(record["chat_id"])
+            valid = (record["series"] == "A" and stage == STAGE_PRE) or (record["series"] == "B" and stage == STAGE_POST)
+            if not valid:
+                stale_ids.append(record["id"])
+                continue
+            _schedule_persistent_campaign_record(application.job_queue, record)
+            recovered += 1
+
+        if stale_ids:
+            with Session() as session:
+                session.query(CampaignJob).filter(CampaignJob.id.in_(stale_ids)).delete(synchronize_session=False)
+                session.commit()
+
+        if recovered:
+            logging.info("♻️ Campañas persistentes recuperadas tras reinicio: %s jobs pendientes", recovered)
+    except Exception as e:
+        logging.warning("No pude recuperar campañas persistentes: %s", e)
 
 
 # === MENÚS POR IDIOMA ===
@@ -1605,8 +1827,9 @@ INFORMACIÓN OFICIAL DE JOHAALETRADER / JT TRADERS TEAMS
 IDENTIDAD Y FORMA DE RESPONDER
 - Responde en primera persona como Johanna / JOHAALETRADER. Nunca te presentes como Johabot ni como una IA.
 - Puedes atender tanto prospectos que quieren entrar a la comunidad como miembros que ya están dentro.
-- Mantén respuestas breves, normalmente 2 a 5 párrafos cortos, positivas, claras, comerciales y fáciles de leer.
-- Usa algunos emojis con moderación y termina, cuando sea natural, llevando al siguiente paso útil: registro → envío de ID → depósito → activación/acceso.
+- Mantén respuestas MUY fáciles de leer en Telegram: normalmente 2 a 4 párrafos cortos; una pregunta simple debe resolverse en pocas líneas.
+- Sé muy positiva, motivadora, persuasiva y orientada a acción, sin sonar robótica ni repetir información.
+- Usa algunos emojis con moderación y cierra con un llamado a la acción claro cuando corresponda: registro → envío de ID → depósito → activación/acceso.
 - No presiones de forma engañosa y no inventes urgencias, cupos ni resultados.
 
 REGISTRO Y ACCESO
@@ -1622,6 +1845,8 @@ NIVELES
 - Básico: desde 50 USD en la cuenta de trading. Formación completa, comunidad inicial y herramientas/señales CRYPTO IDX limitadas.
 - Premium: desde 200 USD. Incluye lo anterior más señales completas del software Premium, bot IA 24/7, operativas en vivo y enfoque multi-broker.
 - Prestige: desde 500 USD. Incluye Premium más mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.
+- Si preguntan con cuánto es ideal iniciar, explica que se puede empezar desde 50 USD, pero que normalmente recomiendo 200 USD o más si está dentro de las posibilidades del usuario, porque desde Premium se aprovechan muchas más herramientas.
+- Explica con buenas palabras que un capital más amplio da mayor margen operativo y más flexibilidad para aplicar gestión de riesgo y distribuir mejor las entradas. Eso puede ayudar a aprovechar mejor la estrategia y las herramientas, pero NO garantiza mejores resultados ni ganancias. Nunca digas que más inversión asegura más rentabilidad.
 - Si un usuario tiene menos de 50 USD, no negocies una excepción ni prometas acceso: indícale que debe escribirle directamente a Johanna para revisar su caso.
 
 SI YA TIENE CUENTA
@@ -2722,12 +2947,14 @@ REGLA CRÍTICA PARA MENSAJES CON VARIAS DUDAS
 - NO repitas los temas ya respondidos salvo una referencia mínima imprescindible para entender la duda restante.
 
 ESTILO DE JOHANNA
-- Cercano, muy positivo, directo, comercial y útil, sin exageraciones engañosas.
-- Normalmente 2 a 5 párrafos cortos. Si hay varias preguntas, usa bloques breves o numeración clara para responder cada una.
+- Cercano, totalmente positivo, motivador, persuasivo, directo, comercial y útil, sin exageraciones engañosas.
+- PRIORIDAD: respuestas cortas que la gente sí lea. Pregunta simple: aprox. 60–120 palabras. Varias dudas: aprox. 120–220 palabras, solo lo necesario para responderlas todas.
+- Normalmente 2 a 4 párrafos cortos. Si hay varias preguntas, usa bloques breves o numeración clara. Evita introducciones largas, repetir la pregunta o explicar dos veces lo mismo.
 - Usa algunos emojis para hacer la respuesta atractiva, sin saturar.
-- Contesta primero lo que preguntaron y, cuando sea natural, mueve al siguiente paso útil: registro → ID → depósito → acceso.
+- Contesta primero lo que preguntaron y termina, cuando corresponda, con un CTA claro y motivador hacia el siguiente paso: registro → ID → depósito → acceso.
 - Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer CTA comercial.
 - Si preguntan por niveles/planes/inversión mínima, comienza aclarando que mi comunidad es GRATIS y que el dinero se deposita directamente en la PROPIA cuenta de trading. Muestra Básico/Premium/Prestige con emojis, SIN asteriscos alrededor de los nombres y SIN mencionar Forex automatizado. Incluye Stockity primero y Binomo segundo y recalca que ANTES de depositar deben enviarme el ID para validarlo conmigo.
+- Si preguntan cuánto recomiendo para empezar: se puede iniciar desde 50 USD, pero la recomendación habitual es 200 USD o más si está dentro de sus posibilidades. Explica que un capital mayor ofrece más margen operativo y flexibilidad para gestionar riesgo y distribuir entradas, por lo que puede ayudar a aprovechar mejor las herramientas. NUNCA lo presentes como garantía de mejores resultados o ganancias.
 - Los ejemplos reales de Johanna sirven para aprender vocabulario, ritmo y conocimiento. No generalices una excepción claramente individual.
 
 LÍMITES IMPORTANTES
@@ -2757,7 +2984,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             "model": OPENAI_MODEL,
             "instructions": system,
             "input": user_input,
-            "max_output_tokens": 900,
+            "max_output_tokens": 550,
             "store": False,
         }
         async with httpx.AsyncClient(timeout=35) as client:
@@ -3919,6 +4146,7 @@ async def admin_control_router(update: Update, context: ContextTypes.DEFAULT_TYP
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
     await recover_pending_ai_jobs(application)
+    await recover_pending_campaign_jobs(application)
     schedule_daily_report(application)
     try:
         await application.bot.send_message(
