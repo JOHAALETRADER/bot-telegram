@@ -83,6 +83,10 @@ usuarios_objetivo = {}
 
 # === CONFIGURACIÓN ===
 logging.basicConfig(level=logging.INFO)
+# Evita que httpx/httpcore impriman URLs completas de Telegram en Railway,
+# donde la URL incluye el BOT_TOKEN. Se conservan warnings y errores reales.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
