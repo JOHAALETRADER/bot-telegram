@@ -39,7 +39,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.7-20260901-MULTI-COMPLETE-ANSWER"
+BOT_VERSION = "v7.8-20260901-EN-AI-MARKETING-FIX"
 
 
 def utcnow_naive():
@@ -1694,13 +1694,20 @@ def _memory_keywords(question: str):
     return out
 
 
-def _johanna_examples_as_text(question: str = "", limit: int = 28) -> str:
-    """Recupera memoria relevante + ejemplos recientes de cómo responde Johanna."""
+def _johanna_examples_as_text(question: str = "", limit: int = 28, lang: str | None = None) -> str:
+    """Recupera memoria relevante + ejemplos recientes de cómo responde Johanna.
+
+    Si conocemos el idioma del usuario, priorizamos ejemplos guardados en ese mismo
+    idioma para evitar que ejemplos españoles arrastren una respuesta EN hacia ES.
+    """
     try:
         limit = max(4, min(limit, 40))
         with Session() as session:
+            recent_query = session.query(JohannaExample)
+            if lang in ("es", "en"):
+                recent_query = recent_query.filter(JohannaExample.lang == lang)
             recent = (
-                session.query(JohannaExample)
+                recent_query
                 .order_by(JohannaExample.created_at.desc())
                 .limit(max(8, limit // 2))
                 .all()
@@ -1713,9 +1720,11 @@ def _johanna_examples_as_text(question: str = "", limit: int = 28) -> str:
                 for kw in keywords:
                     conditions.append(JohannaExample.user_text.ilike(f"%{kw}%"))
                     conditions.append(JohannaExample.response_text.ilike(f"%{kw}%"))
+                relevant_query = session.query(JohannaExample).filter(or_(*conditions))
+                if lang in ("es", "en"):
+                    relevant_query = relevant_query.filter(JohannaExample.lang == lang)
                 relevant = (
-                    session.query(JohannaExample)
-                    .filter(or_(*conditions))
+                    relevant_query
                     .order_by(JohannaExample.created_at.desc())
                     .limit(limit)
                     .all()
@@ -2571,19 +2580,90 @@ async def binomo_helpcenter_snippets(query: str, max_results: int = 3) -> str:
     return ""
 
 
+def _responses_api_text(payload_json: dict) -> str:
+    """Extrae texto de una respuesta de /v1/responses sin alterar el formato."""
+    texts = []
+    for item in (payload_json or {}).get("output", []):
+        for c in item.get("content", []):
+            if c.get("type") == "output_text":
+                texts.append(c.get("text", ""))
+    return "\n".join(t for t in texts if t).strip()
+
+
+def _looks_spanish_for_english_user(text_value: str) -> bool:
+    """Detecta una salida claramente española cuando el usuario eligió English."""
+    t = " " + _norm(text_value or "") + " "
+    markers = (
+        " hola ", " vamos ", " puedes ", " desde ", " comunidad ", " inversion ",
+        " cuenta ", " formacion ", " herramientas ", " senales ", " bonos ",
+        " recuerda ", " te recomiendo ", " si eres ", " para tu ", " aqui tienes ",
+        " deposito ", " registrarte ", " preguntas ", " dudas ",
+    )
+    score = sum(1 for marker in markers if marker in t)
+    return score >= 3
+
+
+async def _translate_to_english(text_value: str) -> str:
+    """Traduce una sola vez a inglés preservando formato, enlaces, códigos y emojis."""
+    source = (text_value or "").strip()
+    if not source or not (HAS_HTTPX and OPENAI_API_KEY):
+        return ""
+    payload = {
+        "model": OPENAI_MODEL,
+        "instructions": (
+            "Translate the supplied message into natural English. Return ONLY the translated message. "
+            "Preserve meaning, paragraph breaks, emojis, URLs, @usernames, trading platform names, "
+            "amounts, percentages, promo codes and CTA structure exactly. Do not add explanations, "
+            "warnings or new information. If the message is already English, return it unchanged."
+        ),
+        "input": source,
+        "max_output_tokens": 1200,
+        "store": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=35) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": "Bearer " + OPENAI_API_KEY, "Content-Type": "application/json"},
+                json=payload,
+            )
+        if resp.status_code != 200:
+            logging.warning("Traducción EN: OpenAI devolvió %s: %s", resp.status_code, resp.text[:400])
+            return ""
+        return _responses_api_text(resp.json())
+    except Exception as e:
+        logging.warning("No pude traducir texto a inglés: %s", e)
+        return ""
+
+
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
     try:
-        language_instruction = "Responde en español." if lang == "es" else "Reply in English."
-        real_examples = _johanna_examples_as_text(question=question, limit=28)
+        if lang == "en":
+            language_instruction = """
+CRITICAL OUTPUT LANGUAGE RULE — ENGLISH:
+- The user selected ENGLISH in the bot.
+- Write the ENTIRE final answer in natural English only.
+- NEVER answer in Spanish, even if the knowledge base, chat history or learned Johanna examples contain Spanish.
+- Translate any Spanish source information internally before answering.
+- Keep URLs, promo codes, brand names, amounts and percentages unchanged.
+""".strip()
+        else:
+            language_instruction = """
+REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
+- El usuario seleccionó ESPAÑOL en el bot.
+- Escribe TODA la respuesta final en español natural.
+""".strip()
+        real_examples = _johanna_examples_as_text(question=question, limit=28, lang=lang)
         already_answered = already_answered or []
-        answered_note = ", ".join(already_answered) if already_answered else "ninguno"
+        answered_note = ", ".join(already_answered) if already_answered else ("none" if lang == "en" else "ninguno")
         system = f"""
+{language_instruction}
+
 Eres la voz digital de Johanna, conocida como JOHAALETRADER / JT TRADERS TEAMS.
 RESPONDE EN PRIMERA PERSONA COMO SI FUERAS JOHANNA. No digas que eres Johabot, un asistente virtual, una IA o un modelo.
 Tu función es atender prospectos y miembros usando la base oficial, el historial del usuario y ejemplos reales de respuestas de Johanna.
-{language_instruction}
 
 REGLA CRÍTICA PARA MENSAJES CON VARIAS DUDAS
 - Lee el mensaje COMPLETO antes de responder.
@@ -2642,13 +2722,15 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         if resp.status_code != 200:
             logging.warning("OpenAI Responses API devolvió %s: %s", resp.status_code, resp.text[:500])
             return ""
-        out = resp.json()
-        texts = []
-        for item in out.get("output", []):
-            for c in item.get("content", []):
-                if c.get("type") == "output_text":
-                    texts.append(c.get("text", ""))
-        return "\n".join(t for t in texts if t).strip()
+        answer = _responses_api_text(resp.json())
+        # Cinturón de seguridad: si un usuario EN recibe una salida claramente española
+        # por influencia del historial/base de conocimiento, la traducimos una sola vez
+        # antes de enviarla. Normalmente no se ejecuta gracias a la regla estricta arriba.
+        if lang == "en" and _looks_spanish_for_english_user(answer):
+            translated = await _translate_to_english(answer)
+            if translated:
+                answer = translated
+        return answer
     except Exception as e:
         logging.warning("Error generando respuesta IA: %s", e)
         return ""
@@ -3348,7 +3430,8 @@ async def marketing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 Destinatarios actuales: {len(recipients)}\n"
             "🚫 Los usuarios con cuenta ya activa (DEPOSITED) quedan excluidos.\n\n"
             "Envíame ahora un texto o una foto con texto en el caption. "
-            "Si envías la foto sin texto, después te pediré el texto."
+            "Si envías la foto sin texto, después te pediré el texto.\n\n"
+            "🌐 Escríbelo una sola vez: los usuarios EN recibirán automáticamente la versión en inglés."
         )
     except Exception:
         context.user_data.pop("marketing_draft", None)
@@ -3662,19 +3745,44 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     recipients = _recent_marketing_recipients()
     await _safe_edit_callback_message(
         query,
-        f"⏳ Enviando marketing a {len(recipients)} usuarios PRE/POST...",
+        f"⏳ Preparando y enviando marketing a {len(recipients)} usuarios PRE/POST...",
     )
+
+    # Una sola traducción por campaña. Todos los usuarios EN comparten esta versión;
+    # no hacemos una llamada a OpenAI por persona. La imagen, enlaces, códigos y emojis
+    # se conservan; solo cambia el texto.
+    has_english_recipients = any(lang == "en" for _cid, lang, _stage in recipients)
+    marketing_text_en = ""
+    translation_failed = False
+    if marketing_text and has_english_recipients:
+        marketing_text_en = await _translate_to_english(marketing_text)
+        if not marketing_text_en:
+            translation_failed = True
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "⚠️ No pude generar la traducción inglesa del marketing. "
+                    "Los usuarios EN no recibirán texto en español por error; se contarán como no entregados."
+                ),
+            )
 
     sent = 0
     failed = 0
+    sent_es = 0
+    sent_en = 0
     for chat_id, lang, _stage in recipients:
+        outbound_text = marketing_text if lang == "es" else marketing_text_en
+        # Si había texto y falló su traducción, no enviamos accidentalmente español a EN.
+        if lang == "en" and marketing_text and not outbound_text:
+            failed += 1
+            continue
         try:
             if photo_file_id:
-                if marketing_text and len(marketing_text) > 1000:
+                if outbound_text and len(outbound_text) > 1000:
                     await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id)
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=marketing_text,
+                        text=outbound_text,
                         reply_markup=support_keyboard(lang),
                         disable_web_page_preview=True,
                     )
@@ -3682,17 +3790,21 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_photo(
                         chat_id=chat_id,
                         photo=photo_file_id,
-                        caption=marketing_text if marketing_text else None,
+                        caption=outbound_text if outbound_text else None,
                         reply_markup=support_keyboard(lang),
                     )
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=marketing_text,
+                    text=outbound_text,
                     reply_markup=support_keyboard(lang),
                     disable_web_page_preview=True,
                 )
             sent += 1
+            if lang == "en":
+                sent_en += 1
+            else:
+                sent_es += 1
         except Exception as e:
             failed += 1
             logging.info("Marketing no entregado a %s: %s", chat_id, e)
@@ -3706,9 +3818,12 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         text=(
             "✅ Marketing manual finalizado.\n\n"
             f"👥 Enviados: {sent}\n"
+            f"🇪🇸 Español: {sent_es}\n"
+            f"🇺🇸 English: {sent_en}\n"
             f"🚫 No entregados: {failed}\n"
             f"📅 Ventana: últimos {MARKETING_BROADCAST_DAYS} días\n"
-            "🛡 DEPOSITED excluidos automáticamente."
+            + ("⚠️ Traducción EN falló.\n" if translation_failed else "🌐 Traducción EN automática: activa.\n")
+            + "🛡 DEPOSITED excluidos automáticamente."
         ),
     )
 
