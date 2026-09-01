@@ -39,7 +39,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.6-20260901-EN-BUTTONS-IMAGE-FLOW"
+BOT_VERSION = "v7.7-20260901-MULTI-COMPLETE-ANSWER"
 
 
 def utcnow_naive():
@@ -2867,6 +2867,19 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
     if effective_intents == ["GREETING"]:
         blocks.append("¡Hola! 🤍 ¿En qué puedo ayudarte hoy?" if lang == "es" else "Hi! 🤍 How can I help you today?")
         handled.append("GREETING")
+
+    # Si el mensaje mezcla preguntas conocidas con preguntas abiertas/no reconocidas,
+    # evitamos enviar una respuesta parcial (por ejemplo solo BONO) y luego otra
+    # respuesta de IA. En ese caso la IA recibe el mensaje COMPLETO y responde una
+    # sola vez después de la ventana de prioridad de Johanna.
+    #
+    # Excepción: ID_SUBMIT/DEPOSITO mantienen su acuse inmediato por ser flujos
+    # operativos sensibles; cualquier duda adicional sí queda para IA.
+    mixed_needs_ai = bool(unknown_parts or needs_ai_topics)
+    operational_handled = any(i in handled for i in ("ID_SUBMIT", "DEPOSITO"))
+    if mixed_needs_ai and blocks and not operational_handled:
+        schedule_ai_reply(update, context, texto.strip(), answered_topics=[])
+        return True
 
     if blocks:
         combined = "\n\n────────────\n\n".join(blocks)
