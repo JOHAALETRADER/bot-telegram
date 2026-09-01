@@ -469,7 +469,7 @@ BENEFICIOS_ES = """✨ Beneficios Exclusivos que Recibirás ✨
 ✅ Mentorías y operativas en vivo: acompañamiento y clases grabadas.
 ✅ Software Premium anticipado: aproximadamente 200 o más señales de lunes a sábado entre Divisas y CRYPTO IDX, según nivel.
 ✅ Bot de inteligencia artificial con señales 24/7.
-✅ Forex automatizado, preparación para cuentas de fondeo y herramientas MT4/MT5 según nivel.
+✅ Preparación para cuentas de fondeo y herramientas MT4/MT5 según nivel.
 ✅ Bonos y beneficios adicionales según nivel.
 
 ⚡️ El acceso a la comunidad es gratuito; las herramientas disponibles dependen del nivel/inversión elegida. ⚡️
@@ -482,7 +482,7 @@ BENEFICIOS_EN = """✨ Exclusive Benefits You’ll Receive ✨
 ✅ Live mentoring and trading sessions, plus recorded classes.
 ✅ Premium advance signal software: approximately 200 or more signals from Monday to Saturday across currency pairs and CRYPTO IDX, depending on level.
 ✅ AI signal bot available 24/7.
-✅ Automated Forex, funded-account preparation and MT4/MT5 tools depending on level.
+✅ Funded-account preparation and MT4/MT5 tools depending on level.
 ✅ Additional bonuses and benefits according to level.
 
 ⚡️ Community access is free; available tools depend on the selected level/investment. ⚡️
@@ -724,45 +724,18 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Niveles y Planes (informativo) ---
     if q.data == "niveles_planes":
-        texto = (
-            "📊 NIVELES JT TRADERS\n\n"
-            "🟢 Básico — desde $50 USD en tu propia cuenta de trading.\n"
-            "Formación + herramientas y señales CRYPTO IDX limitadas.\n\n"
-            "🔵 Premium — desde $200 USD en tu propia cuenta de trading.\n"
-            "Señales completas, bot IA 24/7, operativas en vivo y enfoque multi-broker.\n\n"
-            "🟣 Prestige — desde $500 USD en tu propia cuenta de trading.\n"
-            "Todo Premium + mentorías privadas, Forex automatizado y preparación para cuentas de fondeo.\n\n"
-            "✅ Mi comunidad es totalmente GRATIS: estos valores NO son un pago para mí, son capital que depositas directamente en TU cuenta de trading.\n\n"
-            f"⭐ Stockity (opción principal): {ENLACE_REFERIDO_STOCKITY}\n"
-            f"🔹 Binomo (opción secundaria): {ENLACE_REFERIDO}\n\n"
-            "⚠️ MUY IMPORTANTE: después de registrarte y ANTES de depositar, envíame tu ID para validar que la cuenta quedó correctamente vinculada conmigo.\n\n"
-            "Consulta todos los detalles aquí:"
-        )
+        texto = respuesta_niveles_es()
         kb = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-02-27")]]
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
 
-
-
     # --- Levels & Plans (EN) ---
     if q.data == "levels_plans_en":
-        texto = (
-            "📊 JT TRADERS LEVELS\n\n"
-            "🟢 Basic — from $50 USD in your own trading account.\n"
-            "Education + limited CRYPTO IDX signals/tools.\n\n"
-            "🔵 Premium — from $200 USD in your own trading account.\n"
-            "Full signals, 24/7 AI bot, live trading and multi-broker access.\n\n"
-            "🟣 Prestige — from $500 USD in your own trading account.\n"
-            "Everything in Premium + private mentoring, automated Forex and funded-account preparation.\n\n"
-            "✅ My community is completely FREE: these amounts are NOT a payment to me; they are capital you deposit directly into YOUR trading account.\n\n"
-            f"⭐ Stockity (primary option): {ENLACE_REFERIDO_STOCKITY}\n"
-            f"🔹 Binomo (secondary option): {ENLACE_REFERIDO}\n\n"
-            "⚠️ VERY IMPORTANT: after registering and BEFORE depositing, send me your ID so I can validate that the account is correctly linked to me.\n\n"
-            "See full details here:"
-        )
+        texto = respuesta_niveles_en()
         kb = [[InlineKeyboardButton("📄 View full structure", url="https://telegra.ph/OFFICIAL-EVOLUTION-OF-OUR-TRADING-COMMUNITY-02-28")]]
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
+
 
     # --- Acciones para imagen (ID vs depósito) ---
     if q.data and q.data.startswith("IMG_IS_ID|"):
@@ -1222,7 +1195,7 @@ REGISTRO Y ACCESO
 NIVELES
 - Básico: desde 50 USD en la cuenta de trading. Formación completa, comunidad inicial y herramientas/señales CRYPTO IDX limitadas.
 - Premium: desde 200 USD. Incluye lo anterior más señales completas del software Premium, bot IA 24/7, operativas en vivo y enfoque multi-broker.
-- Prestige: desde 500 USD. Incluye Premium más mentorías privadas, acompañamiento cercano, Forex automatizado y preparación para cuentas de fondeo.
+- Prestige: desde 500 USD. Incluye Premium más mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.
 - Si un usuario tiene menos de 50 USD, no negocies una excepción ni prometas acceso: indícale que debe escribirle directamente a Johanna para revisar su caso.
 
 SI YA TIENE CUENTA
@@ -1755,6 +1728,9 @@ def detect_intent_es(texto: str) -> str:
         "cuanto necesito para entrar", "cuánto necesito para entrar",
         "cuanto debo depositar", "cuánto debo depositar",
         "inversion minima", "inversión mínima", "minimum investment",
+        "cuanto cuesta", "cuánto cuesta", "cuanto vale", "cuánto vale",
+        "que niveles tienes", "qué niveles tienes", "niveles disponibles", "planes disponibles",
+        "cuanto hay que invertir", "cuánto hay que invertir", "de cuanto es la inversion", "de cuánto es la inversión",
         "levels", "plans", "basic level", "premium level", "prestige level"
     ]):
         return "NIVELES"
@@ -1783,33 +1759,35 @@ def detect_intent_es(texto: str) -> str:
 
 def respuesta_niveles_es() -> str:
     return (
-        "📊 **Niveles JT TRADERS**\n\n"
-        "🟢 **Básico — desde 50 USD**\n"
+        "📊 Niveles JT TRADERS\n\n"
+        "💜 Mi comunidad es totalmente GRATIS. No pagas una membresía: la inversión de cada nivel se deposita directamente en TU propia cuenta de trading.\n\n"
+        "🟢 Básico — desde 50 USD\n"
         "Formación + herramientas y señales CRYPTO IDX limitadas.\n\n"
-        "🔵 **Premium — desde 200 USD**\n"
+        "🔵 Premium — desde 200 USD\n"
         "Señales completas, bot IA 24/7, operativas en vivo y enfoque multi-broker.\n\n"
-        "🟣 **Prestige — desde 500 USD**\n"
-        "Todo Premium + mentorías privadas, Forex automatizado y preparación para cuentas de fondeo.\n\n"
-        "✅ **Mi comunidad es totalmente GRATIS.** Estos valores no son un pago para mí: son capital que depositas directamente en **TU propia cuenta de trading**.\n\n"
-        f"⭐ **Stockity (opción principal):** {ENLACE_REFERIDO_STOCKITY}\n"
-        f"🔹 **Binomo (opción secundaria):** {ENLACE_REFERIDO}\n\n"
-        "⚠️ **Antes de depositar**, envíame tu ID para validar que tu cuenta quedó correctamente vinculada conmigo. 🚀"
+        "🟣 Prestige — desde 500 USD\n"
+        "Todo Premium + mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.\n\n"
+        "⚠️ IMPORTANTE: primero regístrate con uno de mis enlaces y ANTES de depositar en tu cuenta de trading envíame tu ID para verificar que quedó correctamente vinculado conmigo.\n\n"
+        f"⭐ Stockity — opción principal:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
+        f"🔹 Binomo — opción secundaria:\n{ENLACE_REFERIDO}\n\n"
+        "🚀 Haz tu registro, envíame tu ID y yo te indico el siguiente paso."
     )
 
 
 def respuesta_niveles_en() -> str:
     return (
-        "📊 **JT TRADERS Levels**\n\n"
-        "🟢 **Basic — from 50 USD**\n"
+        "📊 JT TRADERS Levels\n\n"
+        "💜 My community is completely FREE. There is no membership fee: the investment for each level is deposited directly into YOUR own trading account.\n\n"
+        "🟢 Basic — from 50 USD\n"
         "Education + limited CRYPTO IDX signals/tools.\n\n"
-        "🔵 **Premium — from 200 USD**\n"
+        "🔵 Premium — from 200 USD\n"
         "Full signals, 24/7 AI bot, live trading and multi-broker access.\n\n"
-        "🟣 **Prestige — from 500 USD**\n"
-        "Everything in Premium + private mentoring, automated Forex and funded-account preparation.\n\n"
-        "✅ **My community is completely FREE.** These amounts are not a payment to me: they are capital you deposit directly into **YOUR own trading account**.\n\n"
-        f"⭐ **Stockity (primary option):** {ENLACE_REFERIDO_STOCKITY}\n"
-        f"🔹 **Binomo (secondary option):** {ENLACE_REFERIDO}\n\n"
-        "⚠️ **Before depositing**, send me your ID so I can validate that your account is correctly linked to me. 🚀"
+        "🟣 Prestige — from 500 USD\n"
+        "Everything in Premium + private mentoring, closer guidance and funded-account preparation.\n\n"
+        "⚠️ IMPORTANT: register with one of my links first and BEFORE depositing into your trading account, send me your ID so I can verify that it is correctly linked to me.\n\n"
+        f"⭐ Stockity — primary option:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
+        f"🔹 Binomo — secondary option:\n{ENLACE_REFERIDO}\n\n"
+        "🚀 Complete your registration, send me your ID and I’ll guide you through the next step."
     )
 
 
@@ -1902,7 +1880,7 @@ ESTILO DE JOHANNA
 - Usa algunos emojis para hacer la respuesta atractiva, sin saturar.
 - Contesta primero lo que preguntaron y, cuando sea natural, mueve al siguiente paso útil: registro → ID → depósito → acceso.
 - Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer cualquier CTA comercial.
-- Si preguntan por niveles, planes, inversión mínima o cuánto necesitan para entrar, SIEMPRE debes incluir: que mi comunidad es GRATIS; que el dinero se deposita en la PROPIA cuenta de trading del usuario; los enlaces de Stockity primero y Binomo segundo; y que ANTES de depositar deben enviarme el ID para validarlo conmigo.
+- Si preguntan por niveles, planes, inversión mínima o cuánto necesitan para entrar, SIEMPRE debes comenzar aclarando que mi comunidad es GRATIS y que el dinero se deposita directamente en la PROPIA cuenta de trading del usuario. Luego muestra Básico/Premium/Prestige con emojis, SIN asteriscos alrededor de los nombres y SIN mencionar Forex automatizado. Al final incluye los enlaces de Stockity primero y Binomo segundo, y recalca que ANTES de depositar deben enviarme el ID para validarlo conmigo.
 - Los ejemplos reales de Johanna sirven para aprender vocabulario, ritmo y conocimiento nuevo. Si un ejemplo contiene una regla general claramente expresada por Johanna y es más reciente que información vieja, puedes usarla. NUNCA generalices una excepción que claramente se refiera a una sola persona o caso.
 
 LÍMITES IMPORTANTES
@@ -2345,28 +2323,56 @@ except Exception:
     LIVE_BROADCAST_DAYS = 14
 
 LIVE_BROADCAST_MESSAGE_ES = (
-    "🔴 **¡NOS VEMOS EN VIVO!** 🚀\n\n"
-    "Estoy por comenzar una sesión en vivo de trading. Conéctate para acompañarme en la operativa, análisis y oportunidades del mercado.\n\n"
-    "👇 Entra ahora por tu red preferida:"
+    "🔴 **¡YA CASI EMPEZAMOS EL LIVE!** 🚀\n\n"
+    "Voy a conectarme en vivo para operar, analizar el mercado y compartir la sesión contigo. ✨\n\n"
+    "🎵 **TikTok es mi canal principal para el LIVE.** Toca el botón de abajo y entra ahora.\n"
+    "▶️ Si transmito simultáneamente, también podrás entrar por YouTube."
 )
 
 LIVE_BROADCAST_MESSAGE_EN = (
-    "🔴 **I’M GOING LIVE!** 🚀\n\n"
-    "I’m about to start a live trading session. Join me for the trading session, market analysis and current opportunities.\n\n"
-    "👇 Join from your preferred platform:"
+    "🔴 **I’M ABOUT TO GO LIVE!** 🚀\n\n"
+    "I’m going live to trade, analyze the market and share the session with you. ✨\n\n"
+    "🎵 **TikTok is my main LIVE channel.** Tap the button below and join now.\n"
+    "▶️ If I stream simultaneously, you can also join on YouTube."
 )
 
 
+def live_broadcast_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔴 ENTRAR AL LIVE EN TIKTOK", url="https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1")],
+        [InlineKeyboardButton("▶️ VER EN YOUTUBE", url="https://www.youtube.com/@johaalegria.trader")],
+    ])
+
+
 def _recent_live_recipients(days: int = LIVE_BROADCAST_DAYS):
+    """Obtiene usuarios recientes.
+
+    Para usuarios antiguos creados antes de que existiera last_activity_at no es
+    posible reconstruir la fecha exacta de sus mensajes históricos. Si no hay
+    ningún usuario reciente detectable, usa como recuperación a usuarios que
+    tienen un mensaje guardado en la base para no perder los contactos previos.
+    """
     cutoff = datetime.utcnow() - timedelta(days=days)
     try:
         with Session() as session:
-            rows = (
+            recent_rows = (
                 session.query(Usuario.telegram_id, Usuario.lang)
                 .filter(Usuario.last_activity_at.isnot(None))
                 .filter(Usuario.last_activity_at >= cutoff)
                 .all()
             )
+
+            mode = "recent"
+            rows = recent_rows
+            if not rows:
+                rows = (
+                    session.query(Usuario.telegram_id, Usuario.lang)
+                    .filter(Usuario.mensaje.isnot(None))
+                    .filter(Usuario.mensaje != "")
+                    .all()
+                )
+                mode = "legacy_fallback"
+
         recipients = []
         seen = set()
         for telegram_id, lang in rows:
@@ -2378,25 +2384,28 @@ def _recent_live_recipients(days: int = LIVE_BROADCAST_DAYS):
                 continue
             seen.add(cid)
             recipients.append((cid, lang if lang in ("es", "en") else "es"))
-        return recipients
+        return recipients, mode
     except Exception as e:
         logging.warning("No pude obtener destinatarios LIVE: %s", e)
-        return []
+        return [], "error"
 
 
 async def live_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Abre confirmación; escribir /live o exactamente 'live' nunca envía sin confirmar."""
     if not update.effective_user or update.effective_user.id != ADMIN_ID:
         return
-    recipients = _recent_live_recipients()
+    recipients, recipient_mode = _recent_live_recipients()
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Sí, enviar aviso LIVE", callback_data="live_broadcast_confirm")],
         [InlineKeyboardButton("❌ Cancelar", callback_data="live_broadcast_cancel")],
     ])
+    audience_text = (
+        f"Se enviará a **{len(recipients)} usuarios** con actividad detectada en los últimos **{LIVE_BROADCAST_DAYS} días**.\n\n"
+        if recipient_mode == "recent"
+        else f"No encontré actividad reciente con fecha confiable. Como estos contactos ya existían antes de activar el registro de última actividad, usaré **{len(recipients)} usuarios que sí tienen mensajes guardados** en la base.\n\n"
+    )
     await update.effective_message.reply_text(
-        f"🔴 Aviso LIVE preparado.\n\n"
-        f"Se enviará a **{len(recipients)} usuarios** con actividad en los últimos **{LIVE_BROADCAST_DAYS} días**.\n\n"
-        "¿Confirmas el envío?",
+        "🔴 Aviso LIVE preparado.\n\n" + audience_text + "¿Confirmas el envío?",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=kb,
     )
@@ -2417,9 +2426,10 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
     if query.data != "live_broadcast_confirm":
         return
 
-    recipients = _recent_live_recipients()
+    recipients, recipient_mode = _recent_live_recipients()
+    audience_label = "usuarios recientes" if recipient_mode == "recent" else "contactos con mensajes guardados"
     await query.edit_message_text(
-        f"⏳ Enviando aviso LIVE a {len(recipients)} usuarios recientes..."
+        f"⏳ Enviando aviso LIVE a {len(recipients)} {audience_label}..."
     )
 
     sent = 0
@@ -2431,7 +2441,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
                 chat_id=chat_id,
                 text=msg,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=live_keyboard(),
+                reply_markup=live_broadcast_keyboard(),
                 disable_web_page_preview=True,
             )
             sent += 1
@@ -2445,7 +2455,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
                         chat_id=chat_id,
                         text=msg,
                         parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=live_keyboard(),
+                        reply_markup=live_broadcast_keyboard(),
                         disable_web_page_preview=True,
                     )
                     sent += 1
@@ -2465,7 +2475,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
             "✅ Aviso LIVE finalizado.\n\n"
             f"👥 Enviados: {sent}\n"
             f"🚫 No entregados: {failed}\n"
-            f"📅 Ventana usada: últimos {LIVE_BROADCAST_DAYS} días"
+            + (f"📅 Ventana usada: últimos {LIVE_BROADCAST_DAYS} días" if recipient_mode == "recent" else "📚 Modo recuperación: contactos con mensajes históricos guardados")
         ),
     )
 
