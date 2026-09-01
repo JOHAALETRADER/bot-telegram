@@ -1460,6 +1460,9 @@ https://t.me/JohaaleTraderTeams""", reply_markup=support_keyboard(lang))
 # === PERSISTENCIA MENSAJE DEL USUARIO ===
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Guarda el último mensaje sin permitir que un fallo de BD corte el bot."""
+    # MessageHandler también puede recibir updates editados; en ellos update.message es None.
+    if update.message is None or update.effective_chat is None or update.effective_user is None:
+        return
     chat_id = update.effective_chat.id
     texto = update.message.text or update.message.caption or ""
     nombre = update.effective_user.full_name
@@ -1508,6 +1511,9 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === NOTIFICACIONES AL ADMIN ===
 async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # Evita errores en updates editados/atípicos donde no existe update.message.
+        if update.message is None or update.effective_user is None:
+            return
         usuario = update.message.from_user
         chat_id = usuario.id
         nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
@@ -3277,6 +3283,11 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
 
 # Nueva función para manejar mensajes de usuarios (texto o media)
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Los filtros de PTB pueden hacer match también con mensajes editados.
+    # Si no hay update.message normal, se ignora para no duplicar respuestas ni generar NoneType.
+    if update.message is None or update.effective_chat is None:
+        return
+
     # PRIORIDAD ABSOLUTA: Johanna recibe el mensaje inmediatamente.
     try:
         await notificar_admin(update, context)
