@@ -38,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7-20260831-STABLE-MULTIQUESTION"
+BOT_VERSION = "v7.2-20260831-LIVE-MARKETING-REPORT-FIX"
 
 
 async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update, intent: str, respuesta: str):
@@ -678,8 +678,10 @@ def _daily_report_text(now_local=None) -> str:
                     stage, saved_id = known.get(uid, (STAGE_PRE, None))
                     if stage == STAGE_PRE and not saved_id:
                         no_id_no_deposit += 1
-                    if stage == STAGE_POST:
-                        waiting_deposit += 1
+
+            # Solo cuenta como "ID validado y pendiente de depósito" cuando
+            # Johanna confirmó positivamente la validación durante el día.
+            waiting_deposit = len(ids_validated - deposits_reported - activated)
     except Exception as e:
         logging.warning("No pude completar métricas de reporte diario: %s", e)
 
@@ -1190,6 +1192,55 @@ async def notificar_interaccion(update: Update, context: ContextTypes.DEFAULT_TY
             text=f"⚠️ Error al notificar interacción: {e}"
         )
 
+def _is_positive_id_validation(text_value: str, original_question: str = "") -> bool:
+    """True solo cuando Johanna confirma de forma positiva que el ID fue validado/correcto."""
+    t = _norm(text_value or "")
+    original = _norm(original_question or "")
+    if not t:
+        return False
+
+    negatives = (
+        "id no validado", "id no esta validado", "id no está validado",
+        "id incorrecto", "id errado", "id esta errado", "id está errado",
+        "no pude validar", "no puedo validar", "no lo valide", "no lo validé",
+        "aun no valido", "aún no valido", "pendiente de validar",
+    )
+    if any(n in t for n in negatives):
+        return False
+
+    # Si la pregunta original era claramente un ID, también acepta respuestas
+    # manuales cortas como "es correcto" o "validado".
+    original_is_id = bool(re.search(r"\b\d{6,12}\b", original)) or "id" in original
+    short_positive = t in (
+        "correcto", "es correcto", "si correcto", "sí correcto",
+        "esta correcto", "está correcto", "validado", "ya validado",
+        "ya lo valide", "ya lo validé",
+    )
+    if original_is_id and short_positive:
+        return True
+
+    positives = (
+        "id validado correctamente",
+        "id correctamente validado",
+        "tu id es correcto",
+        "tu id esta correcto",
+        "tu id está correcto",
+        "id correcto",
+        "id ya esta validado",
+        "id ya está validado",
+        "ya valide tu id",
+        "ya validé tu id",
+        "ya valide el id",
+        "ya validé el id",
+        "ya lo valide",
+        "ya lo validé",
+        "id successfully validated",
+        "your id is correct",
+        "i validated your id",
+    )
+    return any(p in t for p in positives)
+
+
 # === RESPUESTA DEL ADMIN (texto/audio) ===
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Puede ser respuesta a un mensaje del admin que contenía texto o media con caption.
@@ -1258,8 +1309,7 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                     if (
                         _norm(GATILLO_ID_OK) in txtn
                         or _norm(GATILLO_ID_OK_EN) in txtn
-                        or ("id validado" in txtn)
-                        or ("id successfully validated" in txtn)
+                        or _is_positive_id_validation(txt, original_question or "")
                     ):
                         set_user_stage(destinatario_id, STAGE_POST)
                         _log_event(destinatario_id, "ID_VALIDATED", txt)
@@ -3051,29 +3101,41 @@ def _marketing_confirm_keyboard():
 
 
 async def live_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inicia un borrador LIVE. La imagen es opcional y solo se publica en canales."""
+    """Inicia LIVE y deja este flujo como el único borrador administrativo activo."""
     if not update.effective_user or update.effective_user.id != ADMIN_ID:
         return
+
+    context.user_data.pop("marketing_draft", None)
+    context.user_data["admin_broadcast_flow"] = "live"
     recipients = _recent_live_recipients()
     context.user_data["live_draft"] = {"status": "awaiting_image", "photo_file_id": None}
-    await update.effective_message.reply_text(
-        "🔴 Aviso LIVE preparado.\n\n"
-        f"👥 Usuarios activos últimos {LIVE_BROADCAST_DAYS} días: **{len(recipients)}**\n"
-        f"📢 Canal informativo: {INFO_CHANNEL_ID}\n"
-        "👑 Canal VIP: tema configurado\n\n"
-        "Si quieres imagen en los canales, **envíamela ahora como foto**. "
-        "Los usuarios privados recibirán SOLO el texto.\n\n"
-        "Si no quieres imagen, toca Continuar sin imagen.",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_live_preview_keyboard(),
-    )
+
+    try:
+        await update.effective_message.reply_text(
+            "🔴 Aviso LIVE preparado.\n\n"
+            f"👥 Usuarios activos últimos {LIVE_BROADCAST_DAYS} días: {len(recipients)}\n"
+            f"📢 Canal informativo: {INFO_CHANNEL_ID}\n"
+            "👑 Canal VIP: tema configurado\n\n"
+            "Si quieres imagen en los canales, envíamela ahora como foto. "
+            "Los usuarios privados recibirán SOLO el texto.\n\n"
+            "Si no quieres imagen, toca Continuar sin imagen.",
+            reply_markup=_live_preview_keyboard(),
+        )
+    except Exception:
+        context.user_data.pop("live_draft", None)
+        if context.user_data.get("admin_broadcast_flow") == "live":
+            context.user_data.pop("admin_broadcast_flow", None)
+        raise
 
 
 async def _show_live_confirmation(context: ContextTypes.DEFAULT_TYPE, message, photo_file_id=None):
+    if context.user_data.get("admin_broadcast_flow") != "live":
+        return
+
     recipients = _recent_live_recipients()
     context.user_data["live_draft"] = {"status": "ready", "photo_file_id": photo_file_id}
     summary = (
-        "🔴 **CONFIRMAR LIVE**\n\n"
+        "🔴 CONFIRMAR LIVE\n\n"
         f"👥 Usuarios últimos {LIVE_BROADCAST_DAYS} días: {len(recipients)} (reciben solo texto)\n"
         f"📢 Informativo: {'imagen + texto' if photo_file_id else 'texto'}\n"
         f"👑 VIP: {'imagen + texto' if photo_file_id else 'texto'}\n"
@@ -3085,50 +3147,68 @@ async def _show_live_confirmation(context: ContextTypes.DEFAULT_TYPE, message, p
             chat_id=ADMIN_ID,
             photo=photo_file_id,
             caption=summary,
-            parse_mode=ParseMode.MARKDOWN,
             reply_markup=_live_confirm_keyboard(),
         )
     else:
-        await message.reply_text(summary, parse_mode=ParseMode.MARKDOWN, reply_markup=_live_confirm_keyboard())
+        await message.reply_text(summary, reply_markup=_live_confirm_keyboard())
 
 
 async def marketing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inicia marketing y deja este flujo como el único borrador administrativo activo."""
     if not update.effective_user or update.effective_user.id != ADMIN_ID:
         return
+
+    context.user_data.pop("live_draft", None)
+    context.user_data["admin_broadcast_flow"] = "marketing"
     recipients = _recent_marketing_recipients()
-    context.user_data["marketing_draft"] = {"status": "awaiting_content", "photo_file_id": None, "text": ""}
-    await update.effective_message.reply_text(
-        "📣 MARKETING MANUAL\n\n"
-        f"Se enviará únicamente a usuarios PRE/POST activos en los últimos {MARKETING_BROADCAST_DAYS} días.\n"
-        f"👥 Destinatarios actuales: **{len(recipients)}**\n"
-        "🚫 Los usuarios con cuenta ya activa (DEPOSITED) quedan excluidos.\n\n"
-        "Envíame ahora **un texto** o **una foto con texto en el caption**. "
-        "Si envías la foto sin texto, después te pediré el texto.",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    context.user_data["marketing_draft"] = {
+        "status": "awaiting_content",
+        "photo_file_id": None,
+        "text": "",
+    }
+
+    try:
+        await update.effective_message.reply_text(
+            "📣 MARKETING MANUAL\n\n"
+            f"Se enviará únicamente a usuarios PRE/POST activos en los últimos {MARKETING_BROADCAST_DAYS} días.\n"
+            f"👥 Destinatarios actuales: {len(recipients)}\n"
+            "🚫 Los usuarios con cuenta ya activa (DEPOSITED) quedan excluidos.\n\n"
+            "Envíame ahora un texto o una foto con texto en el caption. "
+            "Si envías la foto sin texto, después te pediré el texto."
+        )
+    except Exception:
+        context.user_data.pop("marketing_draft", None)
+        if context.user_data.get("admin_broadcast_flow") == "marketing":
+            context.user_data.pop("admin_broadcast_flow", None)
+        raise
 
 
 async def admin_draft_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Captura contenido de /live o /marketing antes del manejador normal del admin."""
+    """Captura exclusivamente el borrador LIVE o MARKETING que esté activo."""
     if not update.effective_user or update.effective_user.id != ADMIN_ID:
         return
-    # Si Johanna está respondiendo directamente a una notificación de usuario,
-    # esa respuesta SIEMPRE tiene prioridad sobre cualquier borrador de marketing/live.
+
     if update.effective_message.reply_to_message:
         return
 
-    live_draft = context.user_data.get("live_draft")
-    marketing_draft = context.user_data.get("marketing_draft")
+    flow = context.user_data.get("admin_broadcast_flow")
 
-    if live_draft and live_draft.get("status") == "awaiting_image":
-        if update.message.photo:
+    if flow == "live":
+        context.user_data.pop("marketing_draft", None)
+        live_draft = context.user_data.get("live_draft") or {}
+        if live_draft.get("status") == "awaiting_image" and update.message.photo:
             photo_file_id = update.message.photo[-1].file_id
             await _show_live_confirmation(context, update.message, photo_file_id=photo_file_id)
             from telegram.ext import ApplicationHandlerStop
             raise ApplicationHandlerStop
-        # Mientras espera imagen, un texto normal no debe bloquear la función de responder usuarios.
+        return
 
-    if marketing_draft:
+    if flow == "marketing":
+        context.user_data.pop("live_draft", None)
+        marketing_draft = context.user_data.get("marketing_draft")
+        if not marketing_draft:
+            return
+
         status = marketing_draft.get("status")
         if status == "awaiting_content":
             if update.message.photo:
@@ -3140,7 +3220,9 @@ async def admin_draft_capture(update: Update, context: ContextTypes.DEFAULT_TYPE
                 else:
                     marketing_draft["status"] = "awaiting_caption"
                     context.user_data["marketing_draft"] = marketing_draft
-                    await update.message.reply_text("📝 Imagen recibida. Ahora envíame el texto que quieres acompañar la imagen.")
+                    await update.message.reply_text(
+                        "📝 Imagen recibida. Ahora envíame el texto que quieres acompañar la imagen."
+                    )
                     from telegram.ext import ApplicationHandlerStop
                     raise ApplicationHandlerStop
             elif update.message.text:
@@ -3159,7 +3241,7 @@ async def admin_draft_capture(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["marketing_draft"] = marketing_draft
             recipients = _recent_marketing_recipients()
             preview = (
-                "📣 **VISTA PREVIA MARKETING**\n\n"
+                "📣 VISTA PREVIA MARKETING\n\n"
                 f"👥 Destinatarios PRE/POST últimos {MARKETING_BROADCAST_DAYS} días: {len(recipients)}\n"
                 "🚫 DEPOSITED: excluidos\n\n"
                 + (marketing_draft.get("text") or "")
@@ -3169,11 +3251,14 @@ async def admin_draft_capture(update: Update, context: ContextTypes.DEFAULT_TYPE
                     chat_id=ADMIN_ID,
                     photo=marketing_draft["photo_file_id"],
                     caption=preview[:1024],
-                    parse_mode=ParseMode.MARKDOWN,
                     reply_markup=_marketing_confirm_keyboard(),
                 )
             else:
-                await update.message.reply_text(preview, parse_mode=ParseMode.MARKDOWN, reply_markup=_marketing_confirm_keyboard())
+                await update.message.reply_text(
+                    preview,
+                    reply_markup=_marketing_confirm_keyboard(),
+                )
+
             from telegram.ext import ApplicationHandlerStop
             raise ApplicationHandlerStop
 
@@ -3223,14 +3308,35 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if query.data == "live_broadcast_cancel":
         context.user_data.pop("live_draft", None)
-        await query.edit_message_text("❌ Aviso LIVE cancelado. No se envió ningún mensaje.")
+        if context.user_data.get("admin_broadcast_flow") == "live":
+            context.user_data.pop("admin_broadcast_flow", None)
+        try:
+            await query.edit_message_text("❌ Aviso LIVE cancelado. No se envió ningún mensaje.")
+        except Exception:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text="❌ Aviso LIVE cancelado. No se envió ningún mensaje.",
+            )
         return
 
     if query.data == "live_no_image":
+        if context.user_data.get("admin_broadcast_flow") != "live":
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text="ℹ️ Ese borrador LIVE ya no está activo.",
+            )
+            return
         await _show_live_confirmation(context, query.message, photo_file_id=None)
         return
 
     if query.data != "live_broadcast_confirm":
+        return
+
+    if context.user_data.get("admin_broadcast_flow") != "live":
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="ℹ️ Ese borrador LIVE ya no está activo.",
+        )
         return
 
     draft = context.user_data.get("live_draft") or {}
@@ -3276,6 +3382,8 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
 
     channel_results = await _send_live_to_channels(context, photo_file_id=photo_file_id)
     context.user_data.pop("live_draft", None)
+    if context.user_data.get("admin_broadcast_flow") == "live":
+        context.user_data.pop("admin_broadcast_flow", None)
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
@@ -3299,6 +3407,8 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if query.data == "marketing_cancel":
         context.user_data.pop("marketing_draft", None)
+        if context.user_data.get("admin_broadcast_flow") == "marketing":
+            context.user_data.pop("admin_broadcast_flow", None)
         try:
             await query.edit_message_text("❌ Marketing cancelado. No se envió ningún mensaje.")
         except Exception:
@@ -3306,6 +3416,13 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if query.data != "marketing_confirm":
+        return
+
+    if context.user_data.get("admin_broadcast_flow") != "marketing":
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="ℹ️ Ese borrador de marketing ya no está activo.",
+        )
         return
 
     draft = context.user_data.get("marketing_draft") or {}
@@ -3359,6 +3476,8 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await asyncio.sleep(0.06)
 
     context.user_data.pop("marketing_draft", None)
+    if context.user_data.get("admin_broadcast_flow") == "marketing":
+        context.user_data.pop("admin_broadcast_flow", None)
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
