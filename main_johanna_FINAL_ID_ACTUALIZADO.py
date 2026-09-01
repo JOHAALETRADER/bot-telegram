@@ -83,10 +83,53 @@ usuarios_objetivo = {}
 
 # === CONFIGURACIÓN ===
 logging.basicConfig(level=logging.INFO)
-# Evita que httpx/httpcore impriman URLs completas de Telegram en Railway,
-# donde la URL incluye el BOT_TOKEN. Se conservan warnings y errores reales.
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _redact_sensitive_text(value):
+    """Oculta el BOT_TOKEN si llega a aparecer dentro de los logs."""
+    try:
+        text = str(value)
+    except Exception:
+        return value
+
+    token_env = os.getenv("BOT_TOKEN")
+    if token_env:
+        text = text.replace(token_env, "<REDACTED_BOT_TOKEN>")
+
+    # Token expuesto dentro de URLs tipo https://api.telegram.org/bot<token>/...
+    text = re.sub(r"bot\d{6,}:[A-Za-z0-9_-]{20,}", "bot<REDACTED_BOT_TOKEN>", text)
+    # Token expuesto como valor aislado
+    text = re.sub(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b", "<REDACTED_BOT_TOKEN>", text)
+    return text
+
+
+class RedactSensitiveLogFilter(logging.Filter):
+    """Filtra cualquier línea de log que accidentalmente incluya el token."""
+    def filter(self, record):
+        try:
+            record.msg = _redact_sensitive_text(record.msg)
+            if record.args:
+                if isinstance(record.args, dict):
+                    record.args = {k: _redact_sensitive_text(v) for k, v in record.args.items()}
+                elif isinstance(record.args, tuple):
+                    record.args = tuple(_redact_sensitive_text(v) for v in record.args)
+                else:
+                    record.args = _redact_sensitive_text(record.args)
+        except Exception:
+            pass
+        return True
+
+
+_redaction_filter = RedactSensitiveLogFilter()
+_root_logger = logging.getLogger()
+_root_logger.addFilter(_redaction_filter)
+for _handler in _root_logger.handlers:
+    _handler.addFilter(_redaction_filter)
+
+# Baja el ruido de requests HTTP y evita exponer URLs completas en INFO.
+for _logger_name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection", "httpcore.proxy", "httpcore.http2"):
+    logging.getLogger(_logger_name).setLevel(logging.WARNING)
+
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
