@@ -39,7 +39,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.5-20260831-ADMIN-BUTTON-LOG-CLEAN"
+BOT_VERSION = "v7.6-20260901-EN-BUTTONS-IMAGE-FLOW"
 
 
 def utcnow_naive():
@@ -522,7 +522,7 @@ BENEFICIOS_EN = """✨ Exclusive Benefits You’ll Receive ✨
 async def _send_job_message(context: ContextTypes.DEFAULT_TYPE, text_es: str, text_en: str):
     chat_id, lang = context.job.data  # (chat_id, "es"/"en")
     try:
-        await context.bot.send_message(chat_id=chat_id, text=text_es if lang == "es" else text_en, reply_markup=support_keyboard())
+        await context.bot.send_message(chat_id=chat_id, text=text_es if lang == "es" else text_en, reply_markup=support_keyboard(lang))
     except Exception as e:
         logging.warning(f"Job send failed to {chat_id}: {e}")
 
@@ -733,22 +733,27 @@ def schedule_daily_report(application):
     )
 
 
-# === Teclado de soporte (solo para el flujo nuevo / redirecciones) ===
-def support_rows():
+# === Teclado de soporte (ES/EN según idioma del usuario) ===
+def support_rows(lang: str = "es"):
+    if lang == "en":
+        return [
+            [InlineKeyboardButton("💬 Message me here", url=SUPPORT_URL)],
+            [InlineKeyboardButton("🏠 Back to main menu", callback_data="back_main_menu")],
+        ]
     return [
         [InlineKeyboardButton("💬 Escríbeme aquí", url=SUPPORT_URL)],
         [InlineKeyboardButton("🏠 Volver al menú principal", callback_data="back_main_menu")],
     ]
 
-def support_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(support_rows())
+def support_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(support_rows(lang))
 
-def live_keyboard() -> InlineKeyboardMarkup:
+def live_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎵 TikTok (Lives)", url=TIKTOK_LIVE_URL)],
         [InlineKeyboardButton("📲 Instagram (Lives)", url="https://www.instagram.com/johaale_trader/")],
         [InlineKeyboardButton("▶️ YouTube", url=YOUTUBE_LIVE_URL)],
-        *support_rows(),
+        *support_rows(lang),
     ])
 
 # === PANEL PRIVADO DE JOHANNA ===
@@ -839,7 +844,7 @@ async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str, 
         await context.bot.send_message(
             chat_id=chat_id,
             text=text_es if lang == "es" else text_en,
-            reply_markup=support_keyboard(),
+            reply_markup=support_keyboard(lang),
         )
     except Exception as e:
         logging.warning("Job B send failed to %s: %s", chat_id, e)
@@ -974,27 +979,38 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Niveles y Planes (informativo) ---
     if q.data == "niveles_planes":
         texto = respuesta_niveles_es()
-        kb = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-02-27")], *support_rows()]
+        kb = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-02-27")], *support_rows("es")]
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
 
     # --- Levels & Plans (EN) ---
     if q.data == "levels_plans_en":
         texto = respuesta_niveles_en()
-        kb = [[InlineKeyboardButton("📄 View full structure", url="https://telegra.ph/OFFICIAL-EVOLUTION-OF-OUR-TRADING-COMMUNITY-02-28")], *support_rows()]
+        kb = [[InlineKeyboardButton("📄 View full structure", url="https://telegra.ph/OFFICIAL-EVOLUTION-OF-OUR-TRADING-COMMUNITY-02-28")], *support_rows("en")]
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
 
 
-    # --- Acciones para imagen (ID vs depósito) ---
+    # --- Acciones para imagen (ID vs depósito) — ES/EN ---
+    lang = get_user_lang(chat_id)
+
     if q.data and q.data.startswith("IMG_IS_ID|"):
         msg = (
-            "Perfecto ✅\n"
-            "Para poder validarlo necesito que me envíes el **ID en texto** (solo el número).\n"
-            "📌 Ábrelo en Stockity o Binomo, cópialo y pégalo aquí.\n\n"
-            "Si prefieres, también puedes escribirme al chat personal 👇"
+            (
+                "Perfecto ✅\n"
+                "Para poder validarlo necesito que me envíes el **ID en texto** (solo el número).\n"
+                "📌 Ábrelo en Stockity o Binomo, cópialo y pégalo aquí.\n\n"
+                "Si prefieres, también puedes escribirme al chat personal 👇"
+            )
+            if lang == "es" else
+            (
+                "Perfect ✅\n"
+                "To validate it, I need you to send me the **ID as text** (numbers only).\n"
+                "📌 Open your Stockity or Binomo profile, copy the ID and paste it here.\n\n"
+                "If you prefer, you can also message me directly in my personal chat 👇"
+            )
         )
-        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "IMG_IS_ID", msg)
         return
 
@@ -1002,50 +1018,87 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saved_id = context.user_data.get("binomo_id")
         if saved_id:
             msg = (
-                "Perfecto ✅\n\n"
-                "Recibido. Estoy validando tu depósito ahora mismo.\n"
-                "Te escribiré de nuevo para confirmar y habilitar tu acceso 🎉\n\n"
-                "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
+                (
+                    "Perfecto ✅\n\n"
+                    "Recibido. Estoy validando tu depósito ahora mismo.\n"
+                    "Te escribiré de nuevo para confirmar y habilitar tu acceso 🎉\n\n"
+                    "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
+                )
+                if lang == "es" else
+                (
+                    "Perfect ✅\n\n"
+                    "Received. I’m validating your deposit now.\n"
+                    "I’ll message you again to confirm it and enable your access 🎉\n\n"
+                    "If you prefer, you can also send it to my personal chat using the button below 👇"
+                )
             )
-            await q.message.reply_text(msg, reply_markup=support_keyboard())
+            await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
             await send_admin_auto_log(context, update, "AUTO_IMG_DEPOSIT_VALIDATING", msg)
             return
 
         msg = (
-            "Perfecto ✅\n\n"
-            "Recibido. Para continuar, envíame tu **ID de Stockity o Binomo en texto** (solo el número) y lo dejo en validación 👇\n\n"
-            "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
+            (
+                "Perfecto ✅\n\n"
+                "Recibido. Para continuar, envíame tu **ID de Stockity o Binomo en texto** (solo el número) y lo dejo en validación 👇\n\n"
+                "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
+            )
+            if lang == "es" else
+            (
+                "Perfect ✅\n\n"
+                "Received. To continue, send me your **Stockity or Binomo ID as text** (numbers only) and I’ll leave it for validation 👇\n\n"
+                "If you prefer, you can also send it to my personal chat using the button below 👇"
+            )
         )
-        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "AUTO_IMG_DEPOSIT_NEED_ID", msg)
         return
 
     if q.data and q.data.startswith("IMG_IS_OTHER|"):
         msg = (
-            "Listo ✅\n"
-            "Dime qué necesitas exactamente (bono, retiros, ID o horarios).\n"
-            "O escríbeme al chat personal y lo revisamos en 1 minuto 👇"
+            (
+                "Listo ✅\n"
+                "Dime qué necesitas exactamente (bono, retiros, ID o horarios).\n"
+                "O escríbeme al chat personal y lo revisamos en 1 minuto 👇"
+            )
+            if lang == "es" else
+            (
+                "Got it ✅\n"
+                "Tell me exactly what you need help with (bonus, withdrawals, ID or schedules).\n"
+                "Or message me directly in my personal chat and I’ll review it with you 👇"
+            )
         )
-        await q.message.reply_text(msg, reply_markup=support_keyboard())
+        await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "IMG_IS_OTHER", msg)
         return
 
     # --- Confirmación de depósito desde botones (tanto del precheck como del flujo POST) ---
     if q.data and (q.data.startswith("DEP_YES|") or q.data.startswith("dep_yes:")):
         msg = (
-            "Perfecto ✅\n\n"
-            "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) y tu **ID de Stockity o Binomo en texto** "
-            "(solo el número) para validarlo y habilitar tu acceso 👇"
+            (
+                "Perfecto ✅\n\n"
+                "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) y tu **ID de Stockity o Binomo en texto** "
+                "(solo el número) para validarlo y habilitar tu acceso 👇"
+            )
+            if lang == "es" else
+            (
+                "Perfect ✅\n\n"
+                "Send me your **deposit/activation proof** here (photo or screenshot) and your **Stockity or Binomo ID as text** "
+                "(numbers only) so I can validate it and enable your access 👇"
+            )
         )
         context.user_data["awaiting_deposit_proof"] = True
-        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard())
+        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM_BTN", msg)
         return
 
     if q.data and (q.data.startswith("DEP_NO|") or q.data.startswith("dep_no:")):
-        msg = "Perfecto ✅\n\nCuéntame en texto qué necesitas revisar 👇"
+        msg = (
+            "Perfecto ✅\n\nCuéntame en texto qué necesitas revisar 👇"
+            if lang == "es" else
+            "Perfect ✅\n\nTell me in a text message what you need me to review 👇"
+        )
         context.user_data.pop("awaiting_deposit_proof", None)
-        await q.message.reply_text(msg, reply_markup=support_keyboard())
+        await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "AUTO_DEP_NOT_RELATED_BTN", msg)
         return
 
@@ -1067,18 +1120,18 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "registrarme":
         if lang == "es":
-            await q.message.reply_text(MENSAJE_REGISTRARME_ES, reply_markup=support_keyboard())
+            await q.message.reply_text(MENSAJE_REGISTRARME_ES, reply_markup=support_keyboard(lang))
             # Video SOLO en español
             await q.message.reply_video(
                 video="BAACAgEAAxkBAAIBaGhdq0nQXi6B4N8uRwmaOHKkUarbAAIMBgACTgAB8UbIZIU9XTMCzjYE",
                 caption="📹 Paso a paso en el vídeo",
-                reply_markup=support_keyboard(),
+                reply_markup=support_keyboard(lang),
             )
         else:
-            await q.message.reply_text(MENSAJE_REGISTRARME_EN, reply_markup=support_keyboard())
+            await q.message.reply_text(MENSAJE_REGISTRARME_EN, reply_markup=support_keyboard(lang))
 
     elif q.data == "ya_tengo_cuenta":
-        await q.message.reply_text(MENSAJE_YA_TENGO_CUENTA_ES if lang=="es" else MENSAJE_YA_TENGO_CUENTA_EN, reply_markup=support_keyboard())
+        await q.message.reply_text(MENSAJE_YA_TENGO_CUENTA_ES if lang=="es" else MENSAJE_YA_TENGO_CUENTA_EN, reply_markup=support_keyboard(lang))
 
     elif q.data == "gestion_capital":
         texto_gestion = (
@@ -1089,7 +1142,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Son objetivos, NO ganancias garantizadas. El trading implica riesgo.\n\n"
             "Si te interesa, escríbeme directamente y te explico condiciones, disponibilidad y proceso 👇"
         )
-        await q.message.reply_text(texto_gestion, reply_markup=support_keyboard())
+        await q.message.reply_text(texto_gestion, reply_markup=support_keyboard(lang))
 
     elif q.data == "gestion_capital_en":
         texto_gestion = (
@@ -1100,10 +1153,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ These are targets, NOT guaranteed profits. Trading involves risk.\n\n"
             "If you are interested, message me directly so I can explain the current conditions and availability 👇"
         )
-        await q.message.reply_text(texto_gestion, reply_markup=support_keyboard())
+        await q.message.reply_text(texto_gestion, reply_markup=support_keyboard(lang))
 
     elif q.data == "beneficios_vip":
-        await q.message.reply_text(BENEFICIOS_ES if lang=="es" else BENEFICIOS_EN, reply_markup=support_keyboard())
+        await q.message.reply_text(BENEFICIOS_ES if lang=="es" else BENEFICIOS_EN, reply_markup=support_keyboard(lang))
 
     elif q.data == "redes_sociales":
         if lang == "es":
@@ -1119,7 +1172,7 @@ https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
 https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 
 💬 Telegram:
-https://t.me/JohaaleTraderTeams""", reply_markup=support_keyboard())
+https://t.me/JohaaleTraderTeams""", reply_markup=support_keyboard(lang))
         else:
             await q.message.reply_text("""🌐 Social Media:
 
@@ -1133,7 +1186,7 @@ https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
 https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 
 💬 Telegram:
-https://t.me/JohaaleTraderTeams""", reply_markup=support_keyboard())
+https://t.me/JohaaleTraderTeams""", reply_markup=support_keyboard(lang))
 
 # === PERSISTENCIA MENSAJE DEL USUARIO ===
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2666,7 +2719,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=chat_id,
             text=answer,
-            reply_markup=support_keyboard(),
+            reply_markup=support_keyboard(lang),
             disable_web_page_preview=True,
         )
         _clear_pending_ai_db(chat_id)
@@ -2817,7 +2870,7 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
 
     if blocks:
         combined = "\n\n────────────\n\n".join(blocks)
-        keyboard = live_keyboard() if "LIVE" in handled else support_keyboard()
+        keyboard = live_keyboard(lang) if "LIVE" in handled else support_keyboard(lang)
         await _send_user_blocks(update, combined, reply_markup=keyboard)
         await send_admin_auto_log(context, update, "MULTI_" + "+".join(effective_intents), combined)
 
@@ -2884,10 +2937,12 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📩 Received. Is this image your Stockity/Binomo ID, your deposit/activation proof, or something else?"
             )
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📌 Es mi ID", callback_data=f"IMG_IS_ID|{chat_id}"),
-                 InlineKeyboardButton("💳 Es mi depósito", callback_data=f"IMG_IS_DEP|{chat_id}")],
-                [InlineKeyboardButton("❌ Era otra cosa", callback_data=f"IMG_IS_OTHER|{chat_id}")],
-                *support_rows(),
+                [
+                    InlineKeyboardButton("📌 Es mi ID" if lang == "es" else "📌 This is my ID", callback_data=f"IMG_IS_ID|{chat_id}"),
+                    InlineKeyboardButton("💳 Es mi depósito" if lang == "es" else "💳 This is my deposit", callback_data=f"IMG_IS_DEP|{chat_id}")
+                ],
+                [InlineKeyboardButton("❌ Era otra cosa" if lang == "es" else "❌ Something else", callback_data=f"IMG_IS_OTHER|{chat_id}")],
+                *support_rows(lang),
             ])
             await update.message.reply_text(qtxt, reply_markup=kb)
             await send_admin_auto_log(context, update, "AUTO_IMAGE", qtxt)
@@ -2922,37 +2977,37 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent == "GREETING":
         msg = "¡Hola! 🤍 ¿En qué puedo ayudarte hoy?" if lang == "es" else "Hi! 🤍 How can I help you today?"
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "AUTO_GREETING", msg)
         return
 
     if intent == "YA_TENGO_CUENTA":
         msg = MENSAJE_YA_TENGO_CUENTA_ES if lang == "es" else MENSAJE_YA_TENGO_CUENTA_EN
-        await _send_user_blocks(update, msg, reply_markup=support_keyboard())
+        await _send_user_blocks(update, msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "YA_TENGO_CUENTA", msg)
         return
 
     if intent == "REGISTRO":
         msg = MENSAJE_REGISTRARME_ES if lang == "es" else MENSAJE_REGISTRARME_EN
-        await _send_user_blocks(update, msg, reply_markup=support_keyboard())
+        await _send_user_blocks(update, msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "REGISTRO", msg)
         return
 
     if intent == "YA_REGISTRE":
         msg = _immediate_block("YA_REGISTRE", lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "AUTO_YA_REGISTRE", msg)
         return
 
     if intent == "DEP_LATER":
         msg = _immediate_block("DEP_LATER", lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_LATER", msg)
         return
 
     if intent == "MIN_50":
         msg = _immediate_block("MIN_50", lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "AUTO_MIN50_ESCALATE", msg)
         return
 
@@ -2963,7 +3018,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if lang == "es" else
             "Perfect ✅\n\nSend me your deposit/activation proof and your Stockity/Binomo ID as text so it can be validated and your access enabled."
         )
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM", msg)
         return
 
@@ -2985,20 +3040,20 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if lang == "es" else
             "✅ Received. I have your ID and it is now pending validation. I will confirm once it has been checked."
         )
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "ID_SUBMIT", msg)
         return
 
     if intent in ("GESTION_CAPITAL", "VPN", "PAIS"):
         msg = _immediate_block(intent, lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, intent, msg)
         return
 
     if intent in ("NEXT_STEP", "WHERE_SEND_ID", "NIVELES", "LIVE", "ID", "BENEFICIOS", "SENALES", "BOT_IA"):
         msg = _immediate_block(intent, lang)
         if msg:
-            keyboard = live_keyboard() if intent == "LIVE" else support_keyboard()
+            keyboard = live_keyboard(lang) if intent == "LIVE" else support_keyboard(lang)
             await _send_user_blocks(update, msg, reply_markup=keyboard)
             await send_admin_auto_log(context, update, intent, msg)
             return
@@ -3006,12 +3061,12 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "BONO":
         if not bonus_needs_guide:
             msg = respuesta_bono_es() if lang == "es" else respuesta_bono_en()
-            await update.message.reply_text(msg, reply_markup=support_keyboard())
+            await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
             await send_admin_auto_log(context, update, "BONO_ACTIVO", msg)
             return
         # Pregunta detallada de bono: muestra los bonos y deja la explicación a la IA.
         msg = respuesta_bono_es() if lang == "es" else respuesta_bono_en()
-        await update.message.reply_text(msg, reply_markup=support_keyboard())
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
         await send_admin_auto_log(context, update, "BONO_ACTIVO", msg)
         schedule_ai_reply(update, context, texto, answered_topics=["BONO_ACTIVO"])
         return
@@ -3130,13 +3185,19 @@ LIVE_BROADCAST_MESSAGE_EN = (
 )
 
 
-def live_broadcast_keyboard(user_chat: bool = True) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("🔴 ENTRAR AL LIVE EN TIKTOK", url=TIKTOK_LIVE_URL)],
-        [InlineKeyboardButton("▶️ VER EN YOUTUBE", url=YOUTUBE_LIVE_URL)],
-    ]
+def live_broadcast_keyboard(user_chat: bool = True, lang: str = "es") -> InlineKeyboardMarkup:
+    if lang == "en":
+        rows = [
+            [InlineKeyboardButton("🔴 JOIN LIVE ON TIKTOK", url=TIKTOK_LIVE_URL)],
+            [InlineKeyboardButton("▶️ WATCH ON YOUTUBE", url=YOUTUBE_LIVE_URL)],
+        ]
+    else:
+        rows = [
+            [InlineKeyboardButton("🔴 ENTRAR AL LIVE EN TIKTOK", url=TIKTOK_LIVE_URL)],
+            [InlineKeyboardButton("▶️ VER EN YOUTUBE", url=YOUTUBE_LIVE_URL)],
+        ]
     if user_chat:
-        rows.extend(support_rows())
+        rows.extend(support_rows(lang))
     return InlineKeyboardMarkup(rows)
 
 
@@ -3492,7 +3553,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
                 chat_id=chat_id,
                 text=msg,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=live_broadcast_keyboard(user_chat=True),
+                reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang),
                 disable_web_page_preview=True,
             )
             sent += 1
@@ -3503,7 +3564,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
                     await asyncio.sleep(float(retry_after) + 1)
                     await context.bot.send_message(
                         chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=live_broadcast_keyboard(user_chat=True), disable_web_page_preview=True,
+                        reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang), disable_web_page_preview=True,
                     )
                     sent += 1
                     continue
@@ -3593,7 +3654,7 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     sent = 0
     failed = 0
-    for chat_id, _lang, _stage in recipients:
+    for chat_id, lang, _stage in recipients:
         try:
             if photo_file_id:
                 if marketing_text and len(marketing_text) > 1000:
@@ -3601,7 +3662,7 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text=marketing_text,
-                        reply_markup=support_keyboard(),
+                        reply_markup=support_keyboard(lang),
                         disable_web_page_preview=True,
                     )
                 else:
@@ -3609,13 +3670,13 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         chat_id=chat_id,
                         photo=photo_file_id,
                         caption=marketing_text if marketing_text else None,
-                        reply_markup=support_keyboard(),
+                        reply_markup=support_keyboard(lang),
                     )
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=marketing_text,
-                    reply_markup=support_keyboard(),
+                    reply_markup=support_keyboard(lang),
                     disable_web_page_preview=True,
                 )
             sent += 1
