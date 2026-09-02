@@ -38,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9.6-20260901-UNIFIED-LINK-FORMAT"
+BOT_VERSION = "v7.9.7-20260901-LIVE-INTENT-FIX"
 
 
 def utcnow_naive():
@@ -2725,6 +2725,91 @@ def _norm(s: str) -> str:
     return s
 
 
+def _is_live_info_query(texto: str) -> bool:
+    """Detecta una consulta real sobre horarios/plataformas LIVE, no una simple mención."""
+    t = _norm(texto or "").strip()
+    if not t:
+        return False
+
+    # Mensajes muy cortos que claramente funcionan como solicitud de información.
+    if t in {
+        "live", "live?", "en vivo", "en vivo?", "directo", "directo?",
+        "horario", "horario?", "horarios", "horarios?",
+        "live hoy", "live hoy?", "en vivo hoy", "en vivo hoy?",
+        "live schedule", "live schedule?",
+    }:
+        return True
+
+    explicit_queries = (
+        # Español — hora/cuándo
+        "a que hora te conectas", "a qué hora te conectas",
+        "a que hora haces live", "a qué hora haces live",
+        "a que hora es el live", "a qué hora es el live",
+        "a que hora estas en vivo", "a qué hora estás en vivo",
+        "a que hora sales en vivo", "a qué hora sales en vivo",
+        "a que hora haces directo", "a qué hora haces directo",
+        "a que hora transmites", "a qué hora transmites",
+        "cuando te conectas", "cuándo te conectas",
+        "cuando hay live", "cuándo hay live",
+        "cuando es el live", "cuándo es el live",
+        "cuando haces live", "cuándo haces live",
+        "cuando haces directo", "cuándo haces directo",
+        "cuando estas en vivo", "cuándo estás en vivo",
+        "cuando transmites", "cuándo transmites",
+        "proximo live", "próximo live", "siguiente live",
+
+        # Español — hoy/mañana
+        "hay live hoy", "hay en vivo hoy", "hay directo hoy",
+        "tienes live hoy", "tienes en vivo hoy",
+        "haces live hoy", "estas en vivo hoy", "estás en vivo hoy",
+        "vas a hacer live hoy", "vas a estar en vivo hoy",
+        "haras live hoy", "harás live hoy",
+        "live mañana", "live manana", "hay live mañana", "hay live manana",
+
+        # Español — dónde/cómo entrar
+        "donde haces live", "dónde haces live",
+        "por donde haces live", "por dónde haces live",
+        "donde transmites", "dónde transmites",
+        "por donde transmites", "por dónde transmites",
+        "donde es el live", "dónde es el live",
+        "como entro al live", "cómo entro al live",
+        "como me conecto al live", "cómo me conecto al live",
+        "quiero entrar al live", "quiero conectarme al live",
+        "horario de live", "horarios de live",
+        "horario del live", "horarios del live",
+        "horario de tus lives", "horarios de tus lives",
+
+        # English
+        "what time do you go live", "what time are you live",
+        "what time is the live", "what time is your live",
+        "when do you go live", "when are you live",
+        "when is the live", "when is your live",
+        "do you go live today", "are you live today",
+        "do you have a live today", "is there a live today",
+        "where do you go live", "where is the live",
+        "how do i join the live", "how can i join the live",
+        "next live", "next live?",
+    )
+    if any(q in t for q in explicit_queries):
+        return True
+
+    # Formas compactas naturales: "hoy live?", "mañana en vivo?", etc.
+    live_terms = ("live", "en vivo", "directo", "transmision", "transmisión", "stream", "streaming")
+    time_terms = ("hoy", "mañana", "manana", "esta noche", "tonight", "today", "tomorrow")
+    if any(term in t for term in live_terms) and any(term in t for term in time_terms):
+        # Solo si el texto parece pedir información, no relatar una experiencia.
+        narrative_markers = (
+            "te vi", "estuve", "estaba", "opere", "operé", "operando",
+            "gracias por", "me gusto", "me gustó", "me encanto", "me encantó",
+            "sali", "salí", "gané", "gane", "ganancias", "profit",
+            "i saw", "i watched", "thanks for", "i was", "i made profit",
+        )
+        if not any(marker in t for marker in narrative_markers):
+            return True
+
+    return False
+
+
 def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
 
@@ -2830,26 +2915,10 @@ def detect_intent_es(texto: str) -> str:
     if ("error" in t and ("pais" in t or "país" in t or "country" in t)) or ("me sale" in t and "pais" in t):
         return "PAIS"
 
-    # ---- Live / conexión (sinónimos) ----
-    if any(k in t for k in [
-        "horario", "horarios", "live", "en vivo", "directo", "transmision", "transmisión",
-        "stream", "streaming", "conectas", "conectas hoy", "a que hora te conectas", "a qué hora te conectas",
-        "a que hora haces live", "a qué hora haces live", "a que hora es el live", "a qué hora es el live",
-        "a que hora estas en vivo", "a qué hora estás en vivo", "a que hora haces directo", "a qué hora haces directo",
-            "te conectas",
-        "conexion",
-        "conexión",
-        "transmitir",
-        "horario de live",
-        "horarios de live",
-        "a que hora te conectas hoy",
-        "a qué hora te conectas hoy",
-        "a que hora te conectas", "a qué hora te conectas", "a que hora te conectas?", "a qué hora te conectas?",
-        "a que hora haces live", "a qué hora haces live", "a que hora sales en vivo", "a qué hora sales en vivo",
-        "cuando te conectas", "cuándo te conectas", "cuando hay live", "cuándo hay live",
-        "cuando haces directo", "cuándo haces directo", "cuando estas en vivo", "cuándo estás en vivo",
-        "transmision", "transmisión", "stream", "directo", "en vivo", "conexion", "conexión",
-]):
+    # ---- Live / conexión ----
+    # Solo responde horarios/plataformas cuando el usuario realmente los consulta.
+    # Menciones narrativas como "te vi en live" o "operé contigo en vivo" NO disparan este bloque.
+    if _is_live_info_query(texto):
         return "LIVE"
 
     # ---- Niveles / planes / inversión mínima ----
@@ -2987,11 +3056,8 @@ def detect_all_intents(texto: str):
     if (("error" in t or "problema" in t) and ("pais" in t or "país" in t or "country" in t)):
         _add_intent(found, "PAIS")
 
-    if any(k in t for k in [
-        "horario", "horarios", "live", "en vivo", "directo", "transmision", "transmisión", "stream", "streaming",
-        "a que hora te conectas", "a qué hora te conectas", "cuando te conectas", "cuándo te conectas",
-        "cuando hay live", "cuándo hay live", "when do you go live", "live schedule",
-    ]):
+    # LIVE solo cuando existe una consulta real; una simple mención no cuenta como intención.
+    if _is_live_info_query(texto):
         _add_intent(found, "LIVE")
 
     if any(k in t for k in [
