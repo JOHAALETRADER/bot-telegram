@@ -38,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9.5-20260901-PRIVATE-USER-HARDENED"
+BOT_VERSION = "v7.9.6-20260901-UNIFIED-LINK-FORMAT"
 
 
 def utcnow_naive():
@@ -353,8 +353,11 @@ Para tener acceso a mi comunidad VIP y sus herramientas, tu cuenta debe quedar r
 
 Haz un nuevo registro únicamente si la plataforma lo permite, utilizando un correo que NO hayas usado antes en esa plataforma y tus datos reales y verificables.
 
-🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
-🔗 Binomo: {ENLACE_REFERIDO}
+🔗 Stockity — opción principal:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — opción secundaria:
+{ENLACE_REFERIDO}
 
 Luego envíame el nuevo ID para validarlo antes de depositar."""
 
@@ -460,8 +463,11 @@ MENSAJE_YA_TENGO_CUENTA_ES = f"""Si ya tienes una cuenta de Stockity o Binomo y 
 
 ❗ No uses VPN para saltar restricciones de país. Si tienes un problema de disponibilidad o país, escríbeme directamente para revisar tu caso.
 
-🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
-🔗 Binomo: {ENLACE_REFERIDO}
+🔗 Stockity — opción principal:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — opción secundaria:
+{ENLACE_REFERIDO}
 
 📌 SUPER IMPORTANTE: envíame el nuevo ID antes de depositar para validarlo."""
 
@@ -475,8 +481,11 @@ MENSAJE_YA_TENGO_CUENTA_EN = f"""If you already have a Stockity or Binomo accoun
 
 ❗ Do not use a VPN to bypass country restrictions. If you have a country/availability issue, message me directly so I can review your case.
 
-🔗 Stockity: {ENLACE_REFERIDO_STOCKITY}
-🔗 Binomo: {ENLACE_REFERIDO}
+🔗 Stockity — primary option:
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Binomo — secondary option:
+{ENLACE_REFERIDO}
 
 📌 VERY IMPORTANT: send me the new ID before depositing so I can validate it."""
 
@@ -2260,8 +2269,13 @@ IDENTIDAD Y FORMA DE RESPONDER
 REGISTRO Y ACCESO
 - El acceso a la comunidad es GRATUITO. No existe una membresía adicional que el usuario deba pagar a Johanna para entrar.
 - El usuario invierte/deposita en su PROPIA cuenta de trading. La cantidad de herramientas y beneficios depende del nivel elegido.
-- Opción principal de registro: Stockity: {ENLACE_REFERIDO_STOCKITY}
-- Opción secundaria: Binomo: {ENLACE_REFERIDO}
+- Cuando debas mostrar los enlaces de registro, usa SIEMPRE esta estructura visual:
+  🔗 Stockity — opción principal:
+  {ENLACE_REFERIDO_STOCKITY}
+
+  🔗 Binomo — opción secundaria:
+  {ENLACE_REFERIDO}
+- En inglés usa exactamente las etiquetas "🔗 Stockity — primary option:" y "🔗 Binomo — secondary option:", manteniendo la URL debajo y una línea en blanco entre plataformas.
 - Después del registro, el usuario debe enviar su ID de Stockity o Binomo para validación ANTES de depositar.
 - Chat personal/validación: {SUPPORT_URL}
 - Nunca confirmes por tu cuenta que un ID, depósito, afiliación o acceso quedó validado. Esa confirmación la realiza Johanna manualmente.
@@ -3184,8 +3198,8 @@ def respuesta_niveles_es() -> str:
         "🟣 Prestige — desde 500 USD\n"
         "Todo Premium + mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.\n\n"
         "⚠️ IMPORTANTE: primero regístrate con uno de mis enlaces y ANTES de depositar en tu cuenta de trading envíame tu ID para verificar que quedó correctamente vinculado conmigo.\n\n"
-        f"⭐ Stockity — opción principal:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
-        f"🔹 Binomo — opción secundaria:\n{ENLACE_REFERIDO}\n\n"
+        f"🔗 Stockity — opción principal:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
+        f"🔗 Binomo — opción secundaria:\n{ENLACE_REFERIDO}\n\n"
         "🚀 Haz tu registro, envíame tu ID y yo te indico el siguiente paso."
     )
 
@@ -3201,8 +3215,8 @@ def respuesta_niveles_en() -> str:
         "🟣 Prestige — from 500 USD\n"
         "Everything in Premium + private mentoring, closer guidance and funded-account preparation.\n\n"
         "⚠️ IMPORTANT: register with one of my links first and BEFORE depositing into your trading account, send me your ID so I can verify that it is correctly linked to me.\n\n"
-        f"⭐ Stockity — primary option:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
-        f"🔹 Binomo — secondary option:\n{ENLACE_REFERIDO}\n\n"
+        f"🔗 Stockity — primary option:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
+        f"🔗 Binomo — secondary option:\n{ENLACE_REFERIDO}\n\n"
         "🚀 Complete your registration, send me your ID and I’ll guide you through the next step."
     )
 
@@ -3446,7 +3460,7 @@ ESTILO DE JOHANNA
 - Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer CTA comercial.
 - Si preguntan por niveles/planes/inversión mínima, comienza aclarando que mi comunidad es GRATIS y que el dinero se deposita directamente en la PROPIA cuenta de trading. Muestra Básico/Premium/Prestige con emojis, SIN asteriscos alrededor de los nombres y SIN mencionar Forex automatizado. Incluye Stockity primero y Binomo segundo y recalca que ANTES de depositar deben enviarme el ID para validarlo conmigo.
 - Si preguntan cuánto recomiendo para empezar: se puede iniciar desde 50 USD, pero la recomendación habitual es 200 USD o más si está dentro de sus posibilidades. Explica que un capital mayor ofrece más margen operativo y flexibilidad para gestionar riesgo y distribuir entradas, por lo que puede ayudar a aprovechar mejor las herramientas. NUNCA lo presentes como garantía de mejores resultados o ganancias.
-- FORMATO DE ENLACES: nunca uses Markdown tipo [texto](URL). Si incluyes Stockity/Binomo, escribe cada plataforma en su propio bloque, con la URL en la línea siguiente y una línea en blanco entre ambas. Stockity siempre primero y Binomo después.
+- FORMATO DE ENLACES: nunca uses Markdown tipo [texto](URL). Si incluyes Stockity/Binomo, usa EXACTAMENTE bloques separados. En español: "🔗 Stockity — opción principal:" + URL en la línea siguiente, una línea en blanco, luego "🔗 Binomo — opción secundaria:" + URL en la línea siguiente. En inglés: "🔗 Stockity — primary option:" + URL, línea en blanco, luego "🔗 Binomo — secondary option:" + URL. Stockity siempre primero y Binomo después.
 - Los ejemplos reales de Johanna sirven para aprender vocabulario, ritmo y conocimiento. No generalices una excepción claramente individual.
 
 LÍMITES IMPORTANTES
