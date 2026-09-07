@@ -38,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9.8-20260907-CHANNEL-WELCOME"
+BOT_VERSION = "v7.9.9-20260907-CHANNEL-WELCOME-REPORT"
 
 
 def utcnow_naive():
@@ -956,6 +956,8 @@ def _daily_report_text(now_local=None) -> str:
     now_local = now_local or datetime.now(COLOMBIA_TZ)
     start_utc, end_utc = _colombia_day_utc_bounds(now_local)
     writers = _event_user_ids("MESSAGE", start_utc, end_utc)
+    channel_welcome_starts = _event_user_ids("CHANNEL_WELCOME_START", start_utc, end_utc)
+    channel_welcome_writers = channel_welcome_starts & writers
     ids_sent = _event_user_ids("ID_SUBMITTED", start_utc, end_utc)
     ids_validated = _event_user_ids("ID_VALIDATED", start_utc, end_utc)
     deposits_reported = _event_user_ids("DEPOSIT_REPORTED", start_utc, end_utc)
@@ -995,6 +997,8 @@ def _daily_report_text(now_local=None) -> str:
         f"📊 REPORTE DIARIO — {fecha}\n\n"
         f"👥 Personas que escribieron: {len(writers)}\n"
         f"💬 Mensajes recibidos: {total_messages}\n"
+        f"🚀 Llegaron al bot desde la bienvenida del canal: {len(channel_welcome_starts)}\n"
+        f"💜 De ellos, escribieron al bot: {len(channel_welcome_writers)}\n"
         f"🆔 Enviaron ID: {len(ids_sent)}\n"
         f"✅ ID validados: {len(ids_validated)}\n"
         f"💳 Avisaron que depositaron: {len(deposits_reported)}\n"
