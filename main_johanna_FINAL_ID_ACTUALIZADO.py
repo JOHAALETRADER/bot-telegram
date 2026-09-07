@@ -38,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9.9-20260907-CHANNEL-WELCOME-REPORT"
+BOT_VERSION = "v7.10.0-20260907-CHANNEL-EN-BLOCK-CLEANUP"
 
 
 def utcnow_naive():
@@ -634,6 +634,9 @@ async def _send_job_message(context: ContextTypes.DEFAULT_TYPE, text_es: str, te
     try:
         await context.bot.send_message(chat_id=chat_id, text=text_es if lang == "es" else text_en, reply_markup=support_keyboard(lang))
     except Exception as e:
+        if _is_blocked_user_error(e):
+            _cleanup_blocked_user_tasks(context, chat_id, source="legacy_scheduled_message")
+            return
         logging.warning(f"Job send failed to {chat_id}: {e}")
 
 async def mensaje_1h(context: ContextTypes.DEFAULT_TYPE):
@@ -952,11 +955,41 @@ def _event_user_ids(event_type: str, start_utc: datetime, end_utc: datetime):
         return set()
 
 
+def _event_user_ids_with_detail(event_type: str, detail_value: str, start_utc: datetime, end_utc: datetime):
+    """Usuarios únicos de un evento cuyo detail coincide exactamente."""
+    try:
+        with Session() as session:
+            rows = (
+                session.query(BotEvent.telegram_id)
+                .filter(BotEvent.event_type == event_type)
+                .filter(BotEvent.detail == detail_value)
+                .filter(BotEvent.created_at >= start_utc, BotEvent.created_at < end_utc)
+                .distinct()
+                .all()
+            )
+        return {
+            str(row[0]) for row in rows
+            if row and row[0] and _is_private_user_id(row[0])
+        }
+    except Exception as e:
+        logging.warning(
+            "No pude consultar eventos %s detail=%s: %s",
+            event_type, detail_value, e,
+        )
+        return set()
+
+
 def _daily_report_text(now_local=None) -> str:
     now_local = now_local or datetime.now(COLOMBIA_TZ)
     start_utc, end_utc = _colombia_day_utc_bounds(now_local)
     writers = _event_user_ids("MESSAGE", start_utc, end_utc)
-    channel_welcome_starts = _event_user_ids("CHANNEL_WELCOME_START", start_utc, end_utc)
+    channel_welcome_es = _event_user_ids_with_detail(
+        "CHANNEL_WELCOME_START", "canal_bienvenida", start_utc, end_utc
+    )
+    channel_welcome_en = _event_user_ids_with_detail(
+        "CHANNEL_WELCOME_START", "canal_bienvenida_en", start_utc, end_utc
+    )
+    channel_welcome_starts = channel_welcome_es | channel_welcome_en
     channel_welcome_writers = channel_welcome_starts & writers
     ids_sent = _event_user_ids("ID_SUBMITTED", start_utc, end_utc)
     ids_validated = _event_user_ids("ID_VALIDATED", start_utc, end_utc)
@@ -997,7 +1030,9 @@ def _daily_report_text(now_local=None) -> str:
         f"📊 REPORTE DIARIO — {fecha}\n\n"
         f"👥 Personas que escribieron: {len(writers)}\n"
         f"💬 Mensajes recibidos: {total_messages}\n"
-        f"🚀 Llegaron al bot desde la bienvenida del canal: {len(channel_welcome_starts)}\n"
+        f"🚀 Llegaron al bot desde bienvenida de canal: {len(channel_welcome_starts)}\n"
+        f"🇪🇸 Desde canal ES: {len(channel_welcome_es)}\n"
+        f"🇺🇸 Desde canal EN: {len(channel_welcome_en)}\n"
         f"💜 De ellos, escribieron al bot: {len(channel_welcome_writers)}\n"
         f"🆔 Enviaron ID: {len(ids_sent)}\n"
         f"✅ ID validados: {len(ids_validated)}\n"
@@ -1174,6 +1209,73 @@ def _cancel_jobs_prefix(context: ContextTypes.DEFAULT_TYPE, prefix: str, chat_id
     _delete_persistent_campaign_series(prefix, chat_id)
 
 
+def _is_blocked_user_error(exc) -> bool:
+    """Detecta respuestas de Telegram que indican que el usuario ya no puede recibir mensajes."""
+    msg = str(exc or "").lower()
+    return (
+        "bot was blocked by the user" in msg
+        or "user is deactivated" in msg
+    )
+
+
+def _cleanup_blocked_user_tasks(context: ContextTypes.DEFAULT_TYPE, chat_id: int, source: str = ""):
+    """Elimina tareas pendientes de un usuario que bloqueó el bot, sin borrar su historial."""
+    if not _is_private_user_id(chat_id):
+        return
+
+    # Jobs en memoria: campañas A/B + IA pendiente.
+    if context and context.job_queue:
+        names = [f"AI_REPLY_{chat_id}"]
+        names.extend(
+            f"{prefix}_{step}_{chat_id}"
+            for prefix in ("A", "B")
+            for step in ("1h", "3h", "24h", "48h")
+        )
+        for name in names:
+            try:
+                for job in context.job_queue.get_jobs_by_name(name):
+                    job.schedule_removal()
+            except Exception:
+                pass
+
+    removed_campaigns = 0
+    cleared_ai = False
+    removed_activity = False
+    try:
+        with Session() as session:
+            removed_campaigns = (
+                session.query(CampaignJob)
+                .filter(
+                    CampaignJob.telegram_id == str(chat_id),
+                    CampaignJob.sent_at.is_(None),
+                )
+                .delete(synchronize_session=False)
+            )
+
+            user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            if user and (user.ai_pending_text or user.ai_pending_message_id or user.ai_pending_due_at):
+                user.ai_pending_text = None
+                user.ai_pending_message_id = None
+                user.ai_pending_due_at = None
+                cleared_ai = True
+
+            activity = session.get(UserActivity, str(chat_id))
+            if activity:
+                session.delete(activity)
+                removed_activity = True
+
+            session.commit()
+    except Exception as e:
+        logging.warning("No pude limpiar tareas del usuario bloqueado %s: %s", chat_id, e)
+        return
+
+    _log_event(chat_id, "BOT_BLOCKED", source or "telegram_forbidden")
+    logging.info(
+        "🧹 Usuario bloqueó el bot: %s | campañas pendientes eliminadas=%s | IA limpiada=%s | actividad removida=%s | origen=%s",
+        chat_id, removed_campaigns, cleared_ai, removed_activity, source or "telegram_forbidden",
+    )
+
+
 def _create_persistent_campaign_series(chat_id: int, series: str, lang: str, started_at=None):
     """Crea los cuatro vencimientos absolutos solo para usuarios privados."""
     if not _is_private_user_id(chat_id):
@@ -1300,7 +1402,13 @@ async def persistent_campaign_job(context: ContextTypes.DEFAULT_TYPE):
                 session.commit()
         logging.info("✅ Campaña %s %s enviada a chat_id %s (lang=%s)", series, step, chat_id, lang)
     except Exception as e:
-        # No marcamos como enviado: un reinicio podrá recuperarlo.
+        if _is_blocked_user_error(e):
+            _cleanup_blocked_user_tasks(
+                context, chat_id, source=f"campaign_{series}_{step}"
+            )
+            return
+        # Para errores transitorios distintos de bloqueo, no marcamos como enviado:
+        # un reinicio podrá recuperarlo conservando su vencimiento original.
         logging.warning("Job campaña %s %s falló para %s: %s", series, step, chat_id, e)
 
 
@@ -1326,6 +1434,9 @@ async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str, 
             reply_markup=support_keyboard(lang),
         )
     except Exception as e:
+        if _is_blocked_user_error(e):
+            _cleanup_blocked_user_tasks(context, chat_id, source="legacy_series_b")
+            return
         logging.warning("Job B send failed to %s: %s", chat_id, e)
 
 
@@ -1599,34 +1710,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_lang(chat_id)
     _touch_user_activity(chat_id, lang)
 
-    # Deep link exclusivo de la bienvenida del canal informativo.
-    # No altera el /start normal ni los demás flujos del bot.
+    # Deep links exclusivos de las bienvenidas de los canales ES / EN.
+    # Cada origen fija el idioma correspondiente y NO altera el /start normal.
     start_param = (context.args[0].strip().lower() if context.args else "")
-    if start_param == "canal_bienvenida":
+    if start_param in ("canal_bienvenida", "canal_bienvenida_en"):
+        source_lang = "en" if start_param == "canal_bienvenida_en" else "es"
+        set_user_lang(chat_id, nombre, source_lang)
+        lang = source_lang
+
         first_name = (update.effective_user.first_name or nombre or "").strip() or "✨"
+        safe_name = html.escape(first_name.upper())
+
         if lang == "en":
             texto_entrada = (
-                f"💜 Hi, {first_name}. Great to have you here.\n\n"
-                "I saw you came from my information channel, and I’m here to guide you. 🚀\n\n"
-                "👇 Choose what you’d like to know:"
+                f"💜✨ <b>HI, {safe_name}!</b> ✨💜\n\n"
+                "Great to have you here. I see you’re coming from my English channel, and I’m here to guide you. 🚀\n\n"
+                "<b>👇 Choose what you’d like to know:</b>"
             )
+            source_label = "canal EN"
         else:
             texto_entrada = (
-                f"💜 Hola, {first_name}. Qué bueno tenerte aquí.\n\n"
-                "Vi que vienes desde mi canal informativo y estoy aquí para guiarte. 🚀\n\n"
-                "👇 Elige lo que quieres conocer:"
+                f"💜✨ <b>¡HOLA, {safe_name}!</b> ✨💜\n\n"
+                "Qué bueno tenerte aquí. Vienes desde mi canal informativo y estoy aquí para guiarte. 🚀\n\n"
+                "<b>👇 Elige lo que quieres conocer:</b>"
             )
+            source_label = "canal ES"
 
-        _log_event(chat_id, "CHANNEL_WELCOME_START", "canal_bienvenida")
-        await update.message.reply_text(texto_entrada, reply_markup=build_main_menu(lang))
+        _log_event(chat_id, "CHANNEL_WELCOME_START", start_param)
+        await update.message.reply_text(
+            texto_entrada,
+            parse_mode=ParseMode.HTML,
+            reply_markup=build_main_menu(lang),
+        )
 
-        # Mantiene exactamente la misma campaña que corresponda a su etapa,
+        # Mantiene exactamente la campaña que corresponda a su etapa,
         # sin reiniciar relojes existentes si el usuario vuelve a tocar el enlace.
         _sync_menu_campaign_for_stage(chat_id, lang, context)
 
         user = update.effective_user
         mensaje_admin = (
-            f"🚀 Llegó al bot desde la bienvenida del canal: "
+            f"🚀 Llegó al bot desde la bienvenida del {source_label}: "
             f"@{user.username or 'SinUsername'} (ID: {user.id})."
         )
         await context.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
@@ -3704,6 +3827,9 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         _append_ai_exchange(chat_id, question, answer)
         await _send_scheduled_ai_admin_log(context, chat_id, question, answer)
     except Exception as e:
+        if _is_blocked_user_error(e):
+            _cleanup_blocked_user_tasks(context, chat_id, source="delayed_ai")
+            return
         logging.warning("No se pudo enviar la respuesta IA a %s: %s", chat_id, e)
 
 
@@ -4159,6 +4285,12 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await update.message.reply_text("⚠️ No se pudo enviar nada. Revisa el contenido.")
     except Exception as e:
+        if "chat_id" in locals() and _is_blocked_user_error(e):
+            _cleanup_blocked_user_tasks(context, chat_id, source="admin_direct_send")
+            await update.message.reply_text(
+                "🚫 Ese usuario bloqueó el bot. Limpié automáticamente sus campañas, IA pendiente y actividad de envíos."
+            )
+            return
         print(f"❌ Error al enviar mensaje directo: {e}")
         await update.message.reply_text("⚠️ Ocurrió un error al intentar enviar el mensaje.")
 
@@ -4564,6 +4696,13 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             sent += 1
         except Exception as e:
+            if _is_blocked_user_error(e):
+                _cleanup_blocked_user_tasks(context, chat_id, source="live_broadcast")
+                failed += 1
+                logging.info("Aviso LIVE no entregado a %s: usuario bloqueó el bot", chat_id)
+                await asyncio.sleep(0.06)
+                continue
+
             retry_after = getattr(e, "retry_after", None)
             if retry_after:
                 try:
@@ -4574,8 +4713,13 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
                     )
                     sent += 1
                     continue
-                except Exception:
-                    pass
+                except Exception as retry_error:
+                    if _is_blocked_user_error(retry_error):
+                        _cleanup_blocked_user_tasks(context, chat_id, source="live_broadcast_retry")
+                        failed += 1
+                        logging.info("Aviso LIVE no entregado a %s: usuario bloqueó el bot", chat_id)
+                        await asyncio.sleep(0.06)
+                        continue
             failed += 1
             logging.info("Aviso LIVE no entregado a %s: %s", chat_id, e)
         await asyncio.sleep(0.06)
@@ -4716,8 +4860,13 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 sent_es += 1
         except Exception as e:
-            failed += 1
-            logging.info("Marketing no entregado a %s: %s", chat_id, e)
+            if _is_blocked_user_error(e):
+                _cleanup_blocked_user_tasks(context, chat_id, source="marketing_broadcast")
+                failed += 1
+                logging.info("Marketing no entregado a %s: usuario bloqueó el bot", chat_id)
+            else:
+                failed += 1
+                logging.info("Marketing no entregado a %s: %s", chat_id, e)
         await asyncio.sleep(0.06)
 
     context.user_data.pop("marketing_draft", None)
