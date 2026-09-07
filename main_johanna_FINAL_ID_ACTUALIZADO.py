@@ -38,7 +38,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.9.7-20260901-LIVE-INTENT-FIX"
+BOT_VERSION = "v7.9.8-20260907-CHANNEL-WELCOME"
 
 
 def utcnow_naive():
@@ -1592,7 +1592,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.nombre = nombre
         session.commit()
 
-    _touch_user_activity(chat_id, get_user_lang(chat_id))
+    lang = get_user_lang(chat_id)
+    _touch_user_activity(chat_id, lang)
+
+    # Deep link exclusivo de la bienvenida del canal informativo.
+    # No altera el /start normal ni los demás flujos del bot.
+    start_param = (context.args[0].strip().lower() if context.args else "")
+    if start_param == "canal_bienvenida":
+        first_name = (update.effective_user.first_name or nombre or "").strip() or "✨"
+        if lang == "en":
+            texto_entrada = (
+                f"💜 Hi, {first_name}. Great to have you here.\n\n"
+                "I saw you came from my information channel, and I’m here to guide you. 🚀\n\n"
+                "👇 Choose what you’d like to know:"
+            )
+        else:
+            texto_entrada = (
+                f"💜 Hola, {first_name}. Qué bueno tenerte aquí.\n\n"
+                "Vi que vienes desde mi canal informativo y estoy aquí para guiarte. 🚀\n\n"
+                "👇 Elige lo que quieres conocer:"
+            )
+
+        _log_event(chat_id, "CHANNEL_WELCOME_START", "canal_bienvenida")
+        await update.message.reply_text(texto_entrada, reply_markup=build_main_menu(lang))
+
+        # Mantiene exactamente la misma campaña que corresponda a su etapa,
+        # sin reiniciar relojes existentes si el usuario vuelve a tocar el enlace.
+        _sync_menu_campaign_for_stage(chat_id, lang, context)
+
+        user = update.effective_user
+        mensaje_admin = (
+            f"🚀 Llegó al bot desde la bienvenida del canal: "
+            f"@{user.username or 'SinUsername'} (ID: {user.id})."
+        )
+        await context.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
+        return
+
+    # /start normal: conserva el comportamiento original.
     await update.message.reply_text("Elige tu idioma / Choose your language:", reply_markup=build_lang_picker())
 
     # Notificar admin
