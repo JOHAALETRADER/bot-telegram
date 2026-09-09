@@ -20,6 +20,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
     ContextTypes,
     filters,
 )
@@ -38,7 +39,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.0-20260907-CHANNEL-EN-BLOCK-CLEANUP"
+BOT_VERSION = "v7.10.1-20260908-TRACKING-BRIDGE"
 
 
 def utcnow_naive():
@@ -139,6 +140,12 @@ for _logger_name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connectio
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# === PUENTE DE TRACKING (servicio independiente) ===
+# Si alguna variable falta o el servicio externo falla, el bot principal continúa
+# funcionando exactamente igual; el tracking nunca bloquea los flujos del bot.
+TRACKING_BASE_URL = (os.getenv("TRACKING_BASE_URL") or "").strip().rstrip("/")
+TRACKING_SECRET = (os.getenv("TRACKING_SECRET") or "").strip()
 
 Base = declarative_base()
 
@@ -874,6 +881,7 @@ def _record_submitted_trading_id(chat_id: int, text_value: str, context: Context
 
     context.user_data["binomo_id"] = trading_id
     _log_event(chat_id, "ID_SUBMITTED", trading_id)
+    _tracking_fire_event(chat_id, "ID_SUBMITTED", trading_id)
 
     # Si ya estaba POST y envía un ID DISTINTO, ese nuevo ID necesita validación.
     if current_stage == STAGE_POST and previous_id and previous_id != trading_id:
@@ -923,6 +931,116 @@ def _log_event(chat_id: int, event_type: str, detail: str = ""):
             session.commit()
     except Exception as e:
         logging.warning("No pude registrar evento %s para %s: %s", event_type, chat_id, e)
+
+
+async def _tracking_post(path: str, payload: dict, source: str = ""):
+    """Envía datos al servicio JOHAALE-TRACKING sin poder interrumpir el bot."""
+    if not (HAS_HTTPX and TRACKING_BASE_URL and TRACKING_SECRET):
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            response = await client.post(
+                f"{TRACKING_BASE_URL}{path}",
+                json=payload,
+                headers={"X-Tracking-Secret": TRACKING_SECRET},
+            )
+        if response.status_code >= 400:
+            logging.warning(
+                "Tracking no aceptó %s (%s) origen=%s: HTTP %s",
+                path, payload.get("telegram_id"), source or "n/a", response.status_code,
+            )
+            return None
+        try:
+            return response.json()
+        except Exception:
+            return {"ok": True}
+    except Exception as e:
+        logging.warning(
+            "Tracking no disponible para %s (%s) origen=%s: %s",
+            path, payload.get("telegram_id"), source or "n/a", e,
+        )
+        return None
+
+
+def _tracking_fire_event(chat_id: int, event_type: str, detail: str = ""):
+    """Dispara un evento en segundo plano; si tracking falla, el bot sigue normal."""
+    if not _is_private_user_id(chat_id):
+        return
+    if not (HAS_HTTPX and TRACKING_BASE_URL and TRACKING_SECRET):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_tracking_post(
+            "/internal/event",
+            {
+                "telegram_id": int(chat_id),
+                "event": (event_type or "UNKNOWN")[:80],
+                "detail": (detail or "")[:1500] or None,
+            },
+            source=event_type or "UNKNOWN",
+        ))
+    except RuntimeError:
+        # Puede ocurrir únicamente si se llama fuera de un loop async. No afecta al bot.
+        logging.info("Tracking omitido fuera del loop async para %s", chat_id)
+    except Exception as e:
+        logging.warning("No pude programar evento tracking %s para %s: %s", event_type, chat_id, e)
+
+
+def _is_tracking_info_channel(chat) -> bool:
+    """True solo para el canal informativo ES usado por la pauta."""
+    if chat is None:
+        return False
+    target = str(INFO_CHANNEL_ID or "@JohaaleTrader_es").strip()
+    try:
+        if re.fullmatch(r"-?\d+", target):
+            return int(chat.id) == int(target)
+    except Exception:
+        pass
+    target_username = target.lstrip("@").lower()
+    return bool(target_username and (getattr(chat, "username", None) or "").lower() == target_username)
+
+
+async def tracking_channel_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Vincula invite-link único de pauta con Telegram ID al entrar al canal ES."""
+    change = getattr(update, "chat_member", None)
+    chat = update.effective_chat
+    if not change or not _is_tracking_info_channel(chat):
+        return
+
+    old_status = str(getattr(getattr(change, "old_chat_member", None), "status", "") or "").lower()
+    new_status = str(getattr(getattr(change, "new_chat_member", None), "status", "") or "").lower()
+    active_statuses = {"member", "administrator", "restricted"}
+    if new_status not in active_statuses or old_status in active_statuses:
+        return
+
+    invite_obj = getattr(change, "invite_link", None)
+    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
+    invite_name = (getattr(invite_obj, "name", None) or "").strip()
+
+    # Solo procesamos enlaces creados por JOHAALE-TRACKING (name=track-JT-...).
+    # Entradas orgánicas o por enlaces normales del canal quedan intactas.
+    if not invite_link or not invite_name.startswith("track-JT-"):
+        return
+
+    member = getattr(getattr(change, "new_chat_member", None), "user", None)
+    if not member or not _is_private_user_id(getattr(member, "id", None)):
+        return
+
+    result = await _tracking_post(
+        "/internal/channel-join",
+        {
+            "telegram_id": int(member.id),
+            "invite_link": invite_link,
+            "username": getattr(member, "username", None),
+            "first_name": getattr(member, "first_name", None),
+        },
+        source="channel_join",
+    )
+    if result and result.get("click_id"):
+        logging.info(
+            "🎯 Tracking vinculado: Telegram %s -> %s",
+            member.id, result.get("click_id"),
+        )
 
 
 def _colombia_day_utc_bounds(now_local=None):
@@ -1713,6 +1831,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Deep links exclusivos de las bienvenidas de los canales ES / EN.
     # Cada origen fija el idioma correspondiente y NO altera el /start normal.
     start_param = (context.args[0].strip().lower() if context.args else "")
+    _tracking_fire_event(chat_id, "BOT_START", start_param or "normal")
     if start_param in ("canal_bienvenida", "canal_bienvenida_en"):
         source_lang = "en" if start_param == "canal_bienvenida_en" else "es"
         set_user_lang(chat_id, nombre, source_lang)
@@ -1737,6 +1856,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             source_label = "canal ES"
 
         _log_event(chat_id, "CHANNEL_WELCOME_START", start_param)
+        _tracking_fire_event(chat_id, "CHANNEL_WELCOME_START", start_param)
         await update.message.reply_text(
             texto_entrada,
             parse_mode=ParseMode.HTML,
@@ -2278,6 +2398,7 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         if _has_submitted_id_evidence(destinatario_id, saved_id):
                             set_user_stage(destinatario_id, STAGE_POST)
                             _log_event(destinatario_id, "ID_VALIDATED", f"ID={saved_id} | {txt}")
+                            _tracking_fire_event(destinatario_id, "ID_VALIDATED", f"ID={saved_id}")
                             _cancel_jobs_prefix(context, "A", destinatario_id)
                             schedule_series_b(destinatario_id, context)
                             await context.bot.send_message(
@@ -2295,6 +2416,7 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         if current_stage == STAGE_POST and _strict_validated_id_state(destinatario_id):
                             set_user_stage(destinatario_id, STAGE_DEPOSITED)
                             _log_event(destinatario_id, "ACCOUNT_ACTIVATED", txt)
+                            _tracking_fire_event(destinatario_id, "ACCOUNT_ACTIVATED", txt)
                             _cancel_jobs_prefix(context, "A", destinatario_id)
                             _cancel_jobs_prefix(context, "B", destinatario_id)
                             await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Acceso confirmado. Campañas detenidas para {destinatario_id}")
@@ -3952,6 +4074,7 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
 
         if intent == "DEPOSITO":
             _log_event(chat_id, "DEPOSIT_REPORTED", texto)
+            _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
             block = (
                 "💳 Perfecto. Envíame aquí el comprobante de depósito/activación y tu ID de Stockity o Binomo en texto para revisarlo y habilitar el acceso."
                 if lang == "es" else
@@ -4146,6 +4269,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent == "DEPOSITO":
         _log_event(chat_id, "DEPOSIT_REPORTED", texto)
+        _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
         msg = (
             "Perfecto ✅\n\nEnvíame aquí tu comprobante de depósito/activación (foto o captura) y también tu ID de Stockity o Binomo en texto para validarlo y habilitar tu acceso."
             if lang == "es" else
@@ -5011,6 +5135,13 @@ async def post_init_app(application):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).post_init(post_init_app).build()
 
+    # Tracking de altas al canal ES mediante los enlaces únicos creados por JOHAALE-TRACKING.
+    # Es un tipo de update independiente: no entra al flujo de mensajes del VIP/canales.
+    app.add_handler(
+        ChatMemberHandler(tracking_channel_member_update, ChatMemberHandler.CHAT_MEMBER),
+        group=-90,
+    )
+
     # BLOQUEO GLOBAL: el VIP/grupos/temas/canales son solo destinos de salida.
     # Nada recibido allí puede activar menús, IA, campañas, reportes ni flujos del bot.
     app.add_handler(
@@ -5098,4 +5229,4 @@ if __name__ == "__main__":
     ))
 
     logging.info("Bot corriendo…")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
