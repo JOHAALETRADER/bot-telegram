@@ -40,7 +40,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.5-20260909-ADS-GATE-BOT-FIRST"
+BOT_VERSION = "v7.10.6-20260909-ADS-GATE-AI5"
 
 
 def utcnow_naive():
@@ -2124,15 +2124,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _tracking_fire_event(chat_id, "BOT_START", "ads_gate")
 
         first_name = (update.effective_user.first_name or nombre or "").strip() or "✨"
-        safe_name = html.escape(first_name.upper())
+        safe_name = html.escape(first_name)
         texto_ads = (
-            f"💜✨ <b>¡HOLA, {safe_name}!</b> ✨💜\n\n"
-            "Antes de comenzar, entra a mi <b>canal informativo oficial</b>. "
-            "Allí podrás conocer mi contenido, resultados, novedades y todo lo que comparto con mi comunidad. 🚀\n\n"
-            "<b>👇 Toca el botón para entrar:</b>"
+            f"💜 <b>¡Hola, {safe_name}! Bienvenido.</b>\n\n"
+            "Gracias por estar aquí. ✨\n"
+            "<b>Solo te falta un paso para continuar.</b>\n\n"
+            "Entra a mi <b>canal informativo oficial</b> y accede a contenido, operativas, resultados y novedades "
+            "que pueden ayudarte a seguir avanzando en tu camino como trader. 🚀\n\n"
+            "👇 <b>Toca el botón para entrar.</b>"
         )
         ads_gate_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📲 ENTRAR AL CANAL INFORMATIVO", url=CANAL_ES)
+            InlineKeyboardButton("💜 QUIERO ENTRAR AL CANAL", url=CANAL_ES)
         ]])
         await update.message.reply_text(
             texto_ads,
@@ -2854,11 +2856,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 # Modelo recomendado para transcribir respuestas de voz de Johanna.
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
-# 8 minutos de prioridad para Johanna. Puede cambiarse en Railway con AI_WAIT_MINUTES.
+# 5 minutos de prioridad para Johanna. Puede cambiarse en Railway con AI_WAIT_MINUTES.
 try:
-    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "8")))
+    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "5")))
 except Exception:
-    AI_WAIT_MINUTES = 8
+    AI_WAIT_MINUTES = 5
 AI_WAIT_SECONDS = AI_WAIT_MINUTES * 60
 AI_HISTORY_MAX_MESSAGES = 16
 
@@ -4374,7 +4376,7 @@ async def _send_user_blocks(update: Update, text_value: str, reply_markup=None):
 
 
 async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, lang: str, intents, unknown_parts):
-    """Responde todas las partes conocidas y deja solo lo restante para IA a los 8 min."""
+    """Responde todas las partes conocidas y deja solo lo restante para IA a los 5 min."""
     chat_id = update.effective_chat.id
     blocks = []
     handled = []
@@ -4450,7 +4452,7 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
     if unknown_parts or needs_ai_topics or not blocks:
         # La IA solo recibe las partes que quedaron SIN responder.
         # Esto evita que, después de una respuesta automática multi-pregunta,
-        # vuelva a repetir niveles/bonos/registro a los 8 minutos.
+        # vuelva a repetir niveles/bonos/registro a los 5 minutos.
         ai_parts = []
         for part in _split_question_parts(texto):
             p_intents = [i for i in detect_all_intents(part) if i != "GREETING"]
