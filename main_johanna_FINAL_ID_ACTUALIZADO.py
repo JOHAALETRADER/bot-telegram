@@ -40,7 +40,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.4-20260909-ADS-SOURCE-RECONCILE"
+BOT_VERSION = "v7.10.5-20260909-ADS-GATE-BOT-FIRST"
 
 
 def utcnow_naive():
@@ -1044,6 +1044,45 @@ def _get_channel_source(chat_id: int) -> str:
     return "ORGANIC_OTHER"
 
 
+def _record_source_attribution_only(chat_id: int, detected_source: str, authoritative: bool = False) -> str:
+    """Guarda la fuente first-touch/paid-touch SIN contar todavía un ingreso al canal.
+
+    Se usa en la puerta ADS: el usuario ya quedó identificado por el deep-link del anuncio,
+    pero ChannelJoinEvent solo se crea cuando Telegram confirma posteriormente que entró
+    al canal. Una atribución ADS confirmada puede elevar un registro orgánico previo y
+    nunca se degrada después.
+    """
+    if not _is_private_user_id(chat_id):
+        return "ORGANIC_OTHER"
+    detected_source = _normalize_channel_source(detected_source)
+    now = utcnow_naive()
+    try:
+        with Session() as session:
+            row = session.get(ChannelSourceAttribution, str(chat_id))
+            if row:
+                if row.source == "ADS":
+                    final_source = "ADS"
+                elif authoritative and detected_source == "ADS":
+                    row.source = "ADS"
+                    final_source = "ADS"
+                else:
+                    final_source = "ORGANIC_OTHER"
+                row.last_seen_at = now
+            else:
+                final_source = detected_source
+                session.add(ChannelSourceAttribution(
+                    telegram_id=str(chat_id),
+                    source=final_source,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                ))
+            session.commit()
+        return final_source
+    except Exception as e:
+        logging.warning("No pude guardar atribución previa al canal para %s: %s", chat_id, e)
+        return detected_source
+
+
 def _record_channel_join_source(chat_id: int, detected_source: str, invite_name: str = "", authoritative: bool = False) -> str:
     """Guarda origen del canal sin tocar `usuarios`.
 
@@ -1307,6 +1346,7 @@ def _daily_report_text(now_local=None) -> str:
     ids_validated = _event_user_ids("ID_VALIDATED", start_utc, end_utc)
     deposits_reported = _event_user_ids("DEPOSIT_REPORTED", start_utc, end_utc)
     activated = _event_user_ids("ACCOUNT_ACTIVATED", start_utc, end_utc)
+    ads_gate_starts = _event_user_ids("ADS_GATE_START", start_utc, end_utc)
 
     # Nuevas métricas de origen: ADS confirmado vs todo lo demás (Orgánico/Otros).
     channel_join_ids, channel_join_ads_ids, channel_join_organic_ids = _channel_join_source_metrics(start_utc, end_utc)
@@ -1361,6 +1401,7 @@ def _daily_report_text(now_local=None) -> str:
         f"🟡 Escribieron pero siguen sin ID ni depósito: {no_id_no_deposit}\n"
         f"🔵 ID validado y pendientes de depósito: {waiting_deposit}\n\n"
         f"📢 ORIGEN — CANAL INFORMATIVO\n"
+        f"🎯 Llegaron desde ADS al bot-puerta: {len(ads_gate_starts)}\n"
         f"👥 Personas que entraron al canal: {len(channel_join_ids)}\n"
         f"📣 ADS confirmados: {len(channel_join_ads_ids)}\n"
         f"🌱 Orgánico/Otros: {len(channel_join_organic_ids)}\n\n"
@@ -2042,10 +2083,77 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_lang(chat_id)
     _touch_user_activity(chat_id, lang)
 
+    # Deep links: ADS usa un token opaco (trk_...) y las bienvenidas del canal
+    # conservan sus parámetros históricos. El token nunca se muestra ni se guarda
+    # en los eventos locales del bot.
+    start_param_raw = (context.args[0].strip() if context.args else "")
+    start_param = start_param_raw.lower()
+
+    # === PUERTA ADS: publicidad -> bot mínimo -> canal informativo ===
+    # No muestra idioma, menú VIP ni activa campañas. La atribución ocurre ANTES
+    # de que el usuario entre al canal, lo que permite reconocer después su alta
+    # aunque Telegram no entregue invite_link/invite_name en chat_member.
+    if start_param.startswith("trk_") and re.fullmatch(r"trk_[a-z0-9_-]{6,60}", start_param):
+        set_user_lang(chat_id, nombre, "es")
+        lang = "es"
+        result = await _tracking_post(
+            "/internal/ads-start",
+            {
+                "telegram_id": int(chat_id),
+                "token": start_param_raw[4:],
+                "username": getattr(update.effective_user, "username", None),
+                "first_name": getattr(update.effective_user, "first_name", None),
+            },
+            source="ads_gate_start",
+        )
+        confirmed_source = _normalize_channel_source(
+            result.get("source") if isinstance(result, dict) else None
+        )
+        if isinstance(result, dict) and result.get("ok"):
+            final_source = _record_source_attribution_only(
+                chat_id, confirmed_source, authoritative=True
+            )
+        else:
+            # Si tracking estuviera temporalmente caído, no inventamos ADS.
+            # La puerta sigue funcionando y el bot principal no se interrumpe.
+            final_source = _get_channel_source(chat_id)
+
+        _log_event(chat_id, "ADS_GATE_START", final_source)
+        # El BOT_START sale después de reclamar el token para que cualquier postback
+        # posterior ya encuentre la fuente ADS asociada al Telegram ID.
+        _tracking_fire_event(chat_id, "BOT_START", "ads_gate")
+
+        first_name = (update.effective_user.first_name or nombre or "").strip() or "✨"
+        safe_name = html.escape(first_name.upper())
+        texto_ads = (
+            f"💜✨ <b>¡HOLA, {safe_name}!</b> ✨💜\n\n"
+            "Antes de comenzar, entra a mi <b>canal informativo oficial</b>. "
+            "Allí podrás conocer mi contenido, resultados, novedades y todo lo que comparto con mi comunidad. 🚀\n\n"
+            "<b>👇 Toca el botón para entrar:</b>"
+        )
+        ads_gate_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📲 ENTRAR AL CANAL INFORMATIVO", url=CANAL_ES)
+        ]])
+        await update.message.reply_text(
+            texto_ads,
+            parse_mode=ParseMode.HTML,
+            reply_markup=ads_gate_keyboard,
+        )
+
+        user = update.effective_user
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "📣 Entrada desde publicidad al bot-puerta: "
+                f"@{user.username or 'SinUsername'} (ID: {user.id}) | origen={final_source}."
+            ),
+        )
+        return
+
+    _tracking_fire_event(chat_id, "BOT_START", start_param or "normal")
+
     # Deep links exclusivos de las bienvenidas de los canales ES / EN.
     # Cada origen fija el idioma correspondiente y NO altera el /start normal.
-    start_param = (context.args[0].strip().lower() if context.args else "")
-    _tracking_fire_event(chat_id, "BOT_START", start_param or "normal")
     if start_param in ("canal_bienvenida", "canal_bienvenida_en"):
         source_lang = "en" if start_param == "canal_bienvenida_en" else "es"
         set_user_lang(chat_id, nombre, source_lang)
