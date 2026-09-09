@@ -21,6 +21,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ChatMemberHandler,
+    ChatJoinRequestHandler,
     ContextTypes,
     filters,
 )
@@ -39,7 +40,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.1-20260908-TRACKING-BRIDGE"
+BOT_VERSION = "v7.10.2-20260908-TRACKING-JOIN-REQUEST-FIX"
 
 
 def utcnow_naive():
@@ -1039,6 +1040,65 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
     if result and result.get("click_id"):
         logging.info(
             "🎯 Tracking vinculado: Telegram %s -> %s",
+            member.id, result.get("click_id"),
+        )
+
+
+async def tracking_channel_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Atribución fiable para el canal público ES.
+
+    Telegram puede omitir ``invite_link`` en ``chat_member`` cuando el destino es
+    público. Los enlaces de pauta se crean ahora con solicitud de ingreso; este
+    handler recibe ``chat_join_request`` con el usuario y el enlace usado, aprueba
+    inmediatamente la solicitud y comunica la vinculación al servicio de tracking.
+    Entradas normales del canal no pasan por este flujo.
+    """
+    req = getattr(update, "chat_join_request", None)
+    if not req or not _is_tracking_info_channel(getattr(req, "chat", None)):
+        return
+
+    invite_obj = getattr(req, "invite_link", None)
+    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
+    invite_name = (getattr(invite_obj, "name", None) or "").strip()
+
+    # Los enlaces generados por JOHAALE-TRACKING llevan name=track-JT-....
+    # Si Telegram no entrega nombre, no autoaprobamos una solicitud desconocida.
+    if not invite_link or not invite_name.startswith("track-JT-"):
+        logging.info(
+            "Tracking join request ignorado: enlace no reconocido | chat=%s | name=%s",
+            getattr(getattr(req, "chat", None), "id", None),
+            invite_name or "(sin nombre)",
+        )
+        return
+
+    member = getattr(req, "from_user", None)
+    if not member or not _is_private_user_id(getattr(member, "id", None)):
+        return
+
+    # La experiencia del usuario tiene prioridad: aprobamos de inmediato.
+    try:
+        await context.bot.approve_chat_join_request(
+            chat_id=req.chat.id,
+            user_id=member.id,
+        )
+    except Exception as e:
+        logging.warning("No pude aprobar join request tracking de %s: %s", member.id, e)
+        return
+
+    result = await _tracking_post(
+        "/internal/channel-join",
+        {
+            "telegram_id": int(member.id),
+            "invite_link": invite_link,
+            "username": getattr(member, "username", None),
+            "first_name": getattr(member, "first_name", None),
+        },
+        source="channel_join_request",
+    )
+    if result and result.get("click_id"):
+        logging.info(
+            "🎯 Tracking vinculado por join request: Telegram %s -> %s",
             member.id, result.get("click_id"),
         )
 
@@ -5136,7 +5196,12 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).post_init(post_init_app).build()
 
     # Tracking de altas al canal ES mediante los enlaces únicos creados por JOHAALE-TRACKING.
-    # Es un tipo de update independiente: no entra al flujo de mensajes del VIP/canales.
+    # Principal para canal público: join request autoaprobado + invite_link fiable.
+    app.add_handler(
+        ChatJoinRequestHandler(tracking_channel_join_request),
+        group=-95,
+    )
+    # Fallback: conserva chat_member para cualquier alta donde Telegram sí entregue invite_link.
     app.add_handler(
         ChatMemberHandler(tracking_channel_member_update, ChatMemberHandler.CHAT_MEMBER),
         group=-90,
