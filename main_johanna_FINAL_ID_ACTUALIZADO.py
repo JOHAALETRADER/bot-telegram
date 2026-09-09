@@ -40,7 +40,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.2-20260908-TRACKING-JOIN-REQUEST-FIX"
+BOT_VERSION = "v7.10.3-20260909-ADS-ORGANIC-REPORT"
 
 
 def utcnow_naive():
@@ -221,6 +221,30 @@ class CampaignJob(Base):
     due_at      = Column(DateTime, index=True)
     sent_at     = Column(DateTime, nullable=True, index=True)
     created_at  = Column(DateTime, default=utcnow_naive)
+
+
+class ChannelSourceAttribution(Base):
+    """Origen first-touch del usuario al entrar al canal informativo ES.
+
+    Se mantiene en tabla independiente para no alterar `usuarios` ni ninguna
+    consulta histórica del bot. ADS es la única fuente especial; todo lo que
+    no tenga marca ADS queda como ORGANIC_OTHER.
+    """
+    __tablename__ = "channel_source_attribution"
+    telegram_id   = Column(String, primary_key=True)
+    source        = Column(String, default="ORGANIC_OTHER", index=True)
+    first_seen_at = Column(DateTime, default=utcnow_naive, index=True)
+    last_seen_at  = Column(DateTime, default=utcnow_naive, index=True)
+
+
+class ChannelJoinEvent(Base):
+    """Cada ingreso/reingreso detectado al canal, separado del historial del bot."""
+    __tablename__ = "channel_join_events"
+    id          = Column(Integer, primary_key=True)
+    telegram_id = Column(String, index=True)
+    source      = Column(String, default="ORGANIC_OTHER", index=True)
+    invite_name = Column(String)
+    created_at  = Column(DateTime, default=utcnow_naive, index=True)
 
 
 engine = create_engine(DATABASE_URL, echo=False)
@@ -1001,8 +1025,109 @@ def _is_tracking_info_channel(chat) -> bool:
     return bool(target_username and (getattr(chat, "username", None) or "").lower() == target_username)
 
 
+def _normalize_channel_source(value: str | None) -> str:
+    raw = (value or "").strip().upper().replace("-", "_").replace(" ", "_")
+    return "ADS" if raw in {"ADS", "AD", "PAID", "PUBLICIDAD"} else "ORGANIC_OTHER"
+
+
+def _get_channel_source(chat_id: int) -> str:
+    """Devuelve la atribución first-touch; sin marca ADS se considera Orgánico/Otros."""
+    if not _is_private_user_id(chat_id):
+        return "ORGANIC_OTHER"
+    try:
+        with Session() as session:
+            row = session.get(ChannelSourceAttribution, str(chat_id))
+            if row and row.source == "ADS":
+                return "ADS"
+    except Exception as e:
+        logging.warning("No pude leer origen de canal para %s: %s", chat_id, e)
+    return "ORGANIC_OTHER"
+
+
+def _record_channel_join_source(chat_id: int, detected_source: str, invite_name: str = "") -> str:
+    """Guarda origen first-touch y el ingreso al canal sin tocar `usuarios`."""
+    if not _is_private_user_id(chat_id):
+        return "ORGANIC_OTHER"
+    detected_source = _normalize_channel_source(detected_source)
+    now = utcnow_naive()
+    try:
+        with Session() as session:
+            row = session.get(ChannelSourceAttribution, str(chat_id))
+            if row:
+                # First-touch: una atribución anterior no se sobrescribe por reingresos.
+                final_source = "ADS" if row.source == "ADS" else "ORGANIC_OTHER"
+                row.last_seen_at = now
+            else:
+                final_source = detected_source
+                session.add(ChannelSourceAttribution(
+                    telegram_id=str(chat_id),
+                    source=final_source,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                ))
+
+            session.add(ChannelJoinEvent(
+                telegram_id=str(chat_id),
+                source=final_source,
+                invite_name=(invite_name or "")[:255],
+                created_at=now,
+            ))
+            session.commit()
+        return final_source
+    except Exception as e:
+        logging.warning("No pude guardar origen de canal para %s: %s", chat_id, e)
+        return detected_source
+
+
+def _source_breakdown(user_ids) -> tuple[int, int]:
+    """Cuenta ADS vs Orgánico/Otros para un conjunto de Telegram IDs."""
+    ids = {str(x) for x in (user_ids or set()) if x and _is_private_user_id(x)}
+    if not ids:
+        return 0, 0
+    ads_ids = set()
+    try:
+        with Session() as session:
+            rows = (
+                session.query(ChannelSourceAttribution.telegram_id)
+                .filter(
+                    ChannelSourceAttribution.telegram_id.in_(list(ids)),
+                    ChannelSourceAttribution.source == "ADS",
+                )
+                .all()
+            )
+            ads_ids = {str(r[0]) for r in rows if r and r[0]}
+    except Exception as e:
+        logging.warning("No pude calcular desglose de origen: %s", e)
+    return len(ads_ids), len(ids - ads_ids)
+
+
+def _channel_join_source_metrics(start_utc: datetime, end_utc: datetime):
+    """Personas únicas que ingresaron al canal durante el día, por origen."""
+    all_ids = set()
+    ads_ids = set()
+    try:
+        with Session() as session:
+            rows = (
+                session.query(ChannelJoinEvent.telegram_id, ChannelJoinEvent.source)
+                .filter(
+                    ChannelJoinEvent.created_at >= start_utc,
+                    ChannelJoinEvent.created_at < end_utc,
+                )
+                .all()
+            )
+        for telegram_id, source in rows:
+            if telegram_id and _is_private_user_id(telegram_id):
+                uid = str(telegram_id)
+                all_ids.add(uid)
+                if source == "ADS":
+                    ads_ids.add(uid)
+    except Exception as e:
+        logging.warning("No pude calcular ingresos al canal por origen: %s", e)
+    return all_ids, ads_ids, all_ids - ads_ids
+
+
 async def tracking_channel_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Vincula invite-link único de pauta con Telegram ID al entrar al canal ES."""
+    """Registra TODA alta al canal ES y distingue ADS del resto cuando Telegram entrega la marca."""
     change = getattr(update, "chat_member", None)
     chat = update.effective_chat
     if not change or not _is_tracking_info_channel(chat):
@@ -1014,93 +1139,78 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
     if new_status not in active_statuses or old_status in active_statuses:
         return
 
-    invite_obj = getattr(change, "invite_link", None)
-    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
-    invite_name = (getattr(invite_obj, "name", None) or "").strip()
-
-    # Solo procesamos enlaces creados por JOHAALE-TRACKING (name=track-JT-...).
-    # Entradas orgánicas o por enlaces normales del canal quedan intactas.
-    if not invite_link or not invite_name.startswith("track-JT-"):
-        return
-
     member = getattr(getattr(change, "new_chat_member", None), "user", None)
     if not member or not _is_private_user_id(getattr(member, "id", None)):
         return
 
-    result = await _tracking_post(
+    invite_obj = getattr(change, "invite_link", None)
+    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
+    invite_name = (getattr(invite_obj, "name", None) or "").strip()
+
+    # Nuevo enlace permanente de pauta: name=source-ADS.
+    # Los antiguos track-JT-* también se consideran ADS para conservar compatibilidad.
+    detected_source = "ADS" if (
+        invite_name.upper().startswith("SOURCE-ADS")
+        or invite_name.startswith("track-JT-")
+    ) else "ORGANIC_OTHER"
+
+    final_source = _record_channel_join_source(member.id, detected_source, invite_name)
+    logging.info(
+        "📢 Alta canal detectada: Telegram %s | origen=%s | invite=%s",
+        member.id, final_source, invite_name or "(sin marca)",
+    )
+
+    await _tracking_post(
         "/internal/channel-join",
         {
             "telegram_id": int(member.id),
-            "invite_link": invite_link,
+            "invite_link": invite_link or None,
+            "invite_name": invite_name or None,
+            "source": final_source,
             "username": getattr(member, "username", None),
             "first_name": getattr(member, "first_name", None),
         },
         source="channel_join",
     )
-    if result and result.get("click_id"):
-        logging.info(
-            "🎯 Tracking vinculado: Telegram %s -> %s",
-            member.id, result.get("click_id"),
-        )
 
 
 async def tracking_channel_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Atribución fiable para el canal público ES.
-
-    Telegram puede omitir ``invite_link`` en ``chat_member`` cuando el destino es
-    público. Los enlaces de pauta se crean ahora con solicitud de ingreso; este
-    handler recibe ``chat_join_request`` con el usuario y el enlace usado, aprueba
-    inmediatamente la solicitud y comunica la vinculación al servicio de tracking.
-    Entradas normales del canal no pasan por este flujo.
-    """
+    """Compatibilidad con enlaces antiguos que pudieran seguir creando join requests."""
     req = getattr(update, "chat_join_request", None)
     if not req or not _is_tracking_info_channel(getattr(req, "chat", None)):
-        return
-
-    invite_obj = getattr(req, "invite_link", None)
-    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
-    invite_name = (getattr(invite_obj, "name", None) or "").strip()
-
-    # Los enlaces generados por JOHAALE-TRACKING llevan name=track-JT-....
-    # Si Telegram no entrega nombre, no autoaprobamos una solicitud desconocida.
-    if not invite_link or not invite_name.startswith("track-JT-"):
-        logging.info(
-            "Tracking join request ignorado: enlace no reconocido | chat=%s | name=%s",
-            getattr(getattr(req, "chat", None), "id", None),
-            invite_name or "(sin nombre)",
-        )
         return
 
     member = getattr(req, "from_user", None)
     if not member or not _is_private_user_id(getattr(member, "id", None)):
         return
 
-    # La experiencia del usuario tiene prioridad: aprobamos de inmediato.
+    invite_obj = getattr(req, "invite_link", None)
+    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
+    invite_name = (getattr(invite_obj, "name", None) or "").strip()
+    detected_source = "ADS" if (
+        invite_name.upper().startswith("SOURCE-ADS")
+        or invite_name.startswith("track-JT-")
+    ) else "ORGANIC_OTHER"
+
     try:
-        await context.bot.approve_chat_join_request(
-            chat_id=req.chat.id,
-            user_id=member.id,
-        )
+        await context.bot.approve_chat_join_request(chat_id=req.chat.id, user_id=member.id)
     except Exception as e:
-        logging.warning("No pude aprobar join request tracking de %s: %s", member.id, e)
+        logging.warning("No pude aprobar join request de %s: %s", member.id, e)
         return
 
-    result = await _tracking_post(
+    final_source = _record_channel_join_source(member.id, detected_source, invite_name)
+    await _tracking_post(
         "/internal/channel-join",
         {
             "telegram_id": int(member.id),
-            "invite_link": invite_link,
+            "invite_link": invite_link or None,
+            "invite_name": invite_name or None,
+            "source": final_source,
             "username": getattr(member, "username", None),
             "first_name": getattr(member, "first_name", None),
         },
         source="channel_join_request",
     )
-    if result and result.get("click_id"):
-        logging.info(
-            "🎯 Tracking vinculado por join request: Telegram %s -> %s",
-            member.id, result.get("click_id"),
-        )
 
 
 def _colombia_day_utc_bounds(now_local=None):
@@ -1174,6 +1284,14 @@ def _daily_report_text(now_local=None) -> str:
     deposits_reported = _event_user_ids("DEPOSIT_REPORTED", start_utc, end_utc)
     activated = _event_user_ids("ACCOUNT_ACTIVATED", start_utc, end_utc)
 
+    # Nuevas métricas de origen: ADS confirmado vs todo lo demás (Orgánico/Otros).
+    channel_join_ids, channel_join_ads_ids, channel_join_organic_ids = _channel_join_source_metrics(start_utc, end_utc)
+    welcome_ads, welcome_organic = _source_breakdown(channel_welcome_starts)
+    ids_sent_ads, ids_sent_organic = _source_breakdown(ids_sent)
+    ids_validated_ads, ids_validated_organic = _source_breakdown(ids_validated)
+    deposits_reported_ads, deposits_reported_organic = _source_breakdown(deposits_reported)
+    activated_ads, activated_organic = _source_breakdown(activated)
+
     total_messages = 0
     no_id_no_deposit = 0
     waiting_deposit = 0
@@ -1218,6 +1336,18 @@ def _daily_report_text(now_local=None) -> str:
         f"🟢 Cuentas/depósitos confirmados: {len(activated)}\n"
         f"🟡 Escribieron pero siguen sin ID ni depósito: {no_id_no_deposit}\n"
         f"🔵 ID validado y pendientes de depósito: {waiting_deposit}\n\n"
+        f"📢 ORIGEN — CANAL INFORMATIVO\n"
+        f"👥 Personas que entraron al canal: {len(channel_join_ids)}\n"
+        f"📣 ADS confirmados: {len(channel_join_ads_ids)}\n"
+        f"🌱 Orgánico/Otros: {len(channel_join_organic_ids)}\n\n"
+        f"🤖 PASARON DEL CANAL AL BOT\n"
+        f"📣 ADS: {welcome_ads}\n"
+        f"🌱 Orgánico/Otros: {welcome_organic}\n\n"
+        f"🆔 ENVIARON ID — ADS: {ids_sent_ads} | Orgánico/Otros: {ids_sent_organic}\n"
+        f"✅ ID VALIDADOS — ADS: {ids_validated_ads} | Orgánico/Otros: {ids_validated_organic}\n"
+        f"💳 AVISARON DEPÓSITO — ADS: {deposits_reported_ads} | Orgánico/Otros: {deposits_reported_organic}\n"
+        f"🟢 DEPÓSITOS CONFIRMADOS — ADS: {activated_ads} | Orgánico/Otros: {activated_organic}\n\n"
+        "ℹ️ Orgánico/Otros = toda persona sin atribución ADS confirmada.\n"
         "⏰ Corte automático: 11:00 p. m. hora Colombia."
     )
 
@@ -5195,13 +5325,13 @@ async def post_init_app(application):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).post_init(post_init_app).build()
 
-    # Tracking de altas al canal ES mediante los enlaces únicos creados por JOHAALE-TRACKING.
-    # Principal para canal público: join request autoaprobado + invite_link fiable.
+    # Tracking de altas al canal ES. El enlace especial ADS es permanente;
+    # el enlace público normal del canal continúa funcionando como Orgánico/Otros.
     app.add_handler(
         ChatJoinRequestHandler(tracking_channel_join_request),
         group=-95,
     )
-    # Fallback: conserva chat_member para cualquier alta donde Telegram sí entregue invite_link.
+    # ChatMember registra todas las altas/reingresos detectados en el canal ES.
     app.add_handler(
         ChatMemberHandler(tracking_channel_member_update, ChatMemberHandler.CHAT_MEMBER),
         group=-90,
