@@ -40,7 +40,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.3-20260909-ADS-ORGANIC-REPORT"
+BOT_VERSION = "v7.10.4-20260909-ADS-SOURCE-RECONCILE"
 
 
 def utcnow_naive():
@@ -1044,8 +1044,13 @@ def _get_channel_source(chat_id: int) -> str:
     return "ORGANIC_OTHER"
 
 
-def _record_channel_join_source(chat_id: int, detected_source: str, invite_name: str = "") -> str:
-    """Guarda origen first-touch y el ingreso al canal sin tocar `usuarios`."""
+def _record_channel_join_source(chat_id: int, detected_source: str, invite_name: str = "", authoritative: bool = False) -> str:
+    """Guarda origen del canal sin tocar `usuarios`.
+
+    La respuesta del servicio JOHAALE-TRACKING es la autoridad para ADS porque puede
+    reconocer el invite_link exacto aunque Telegram omita el nombre del enlace en
+    ``chat_member``. Una atribución ADS nunca se degrada a orgánico.
+    """
     if not _is_private_user_id(chat_id):
         return "ORGANIC_OTHER"
     detected_source = _normalize_channel_source(detected_source)
@@ -1054,8 +1059,15 @@ def _record_channel_join_source(chat_id: int, detected_source: str, invite_name:
         with Session() as session:
             row = session.get(ChannelSourceAttribution, str(chat_id))
             if row:
-                # First-touch: una atribución anterior no se sobrescribe por reingresos.
-                final_source = "ADS" if row.source == "ADS" else "ORGANIC_OTHER"
+                if row.source == "ADS":
+                    final_source = "ADS"
+                elif authoritative and detected_source == "ADS":
+                    # Reconciliación: el tracking externo confirmó que el enlace usado
+                    # corresponde a ADS aunque Telegram no haya enviado invite_name.
+                    row.source = "ADS"
+                    final_source = "ADS"
+                else:
+                    final_source = "ORGANIC_OTHER"
                 row.last_seen_at = now
             else:
                 final_source = detected_source
@@ -1154,23 +1166,30 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
         or invite_name.startswith("track-JT-")
     ) else "ORGANIC_OTHER"
 
-    final_source = _record_channel_join_source(member.id, detected_source, invite_name)
-    logging.info(
-        "📢 Alta canal detectada: Telegram %s | origen=%s | invite=%s",
-        member.id, final_source, invite_name or "(sin marca)",
-    )
-
-    await _tracking_post(
+    # El servicio de tracking puede reconocer el invite_link exacto aun cuando
+    # Telegram omite invite_name. Por eso consultamos tracking ANTES de persistir
+    # la clasificación local y usamos su respuesta como autoridad si está disponible.
+    result = await _tracking_post(
         "/internal/channel-join",
         {
             "telegram_id": int(member.id),
             "invite_link": invite_link or None,
             "invite_name": invite_name or None,
-            "source": final_source,
+            "source": detected_source,
             "username": getattr(member, "username", None),
             "first_name": getattr(member, "first_name", None),
         },
         source="channel_join",
+    )
+    authoritative_source = _normalize_channel_source(
+        result.get("source") if isinstance(result, dict) else detected_source
+    )
+    final_source = _record_channel_join_source(
+        member.id, authoritative_source, invite_name, authoritative=bool(result)
+    )
+    logging.info(
+        "📢 Alta canal detectada: Telegram %s | origen=%s | invite=%s | link=%s",
+        member.id, final_source, invite_name or "(sin marca)", "sí" if invite_link else "no",
     )
 
 
@@ -1198,18 +1217,23 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
         logging.warning("No pude aprobar join request de %s: %s", member.id, e)
         return
 
-    final_source = _record_channel_join_source(member.id, detected_source, invite_name)
-    await _tracking_post(
+    result = await _tracking_post(
         "/internal/channel-join",
         {
             "telegram_id": int(member.id),
             "invite_link": invite_link or None,
             "invite_name": invite_name or None,
-            "source": final_source,
+            "source": detected_source,
             "username": getattr(member, "username", None),
             "first_name": getattr(member, "first_name", None),
         },
         source="channel_join_request",
+    )
+    authoritative_source = _normalize_channel_source(
+        result.get("source") if isinstance(result, dict) else detected_source
+    )
+    _record_channel_join_source(
+        member.id, authoritative_source, invite_name, authoritative=bool(result)
     )
 
 
