@@ -2448,7 +2448,7 @@ https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
 https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 
 💬 Telegram:
-https://t.me/JohaaleTraderTeams""", reply_markup=support_keyboard(lang))
+https://t.me/JohaaleTrader_es""", reply_markup=support_keyboard(lang))
         else:
             await q.message.reply_text("""🌐 Social Media:
 
@@ -2462,7 +2462,7 @@ https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
 https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 
 💬 Telegram:
-https://t.me/JohaaleTraderTeams""", reply_markup=support_keyboard(lang))
+https://t.me/JohaaleTrader_es""", reply_markup=support_keyboard(lang))
 
 # === PERSISTENCIA MENSAJE DEL USUARIO ===
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
