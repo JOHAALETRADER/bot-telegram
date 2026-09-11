@@ -40,7 +40,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.6-20260909-ADS-GATE-AI5"
+BOT_VERSION = "v7.10.7-20260910-AFFILIATE-ATTRIBUTION-REPORT"
 
 
 def utcnow_naive():
@@ -60,6 +60,7 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
     """Envía al ADMIN la pregunta + la respuesta exacta (texto plano, sin Markdown)."""
     try:
         chat_id = update.effective_chat.id
+        respuesta = _personalize_referral_links(respuesta, chat_id)
         u = update.effective_user
         username = u.username or u.full_name or "usuario"
         msg = update.effective_message
@@ -245,6 +246,14 @@ class ChannelJoinEvent(Base):
     source      = Column(String, default="ORGANIC_OTHER", index=True)
     invite_name = Column(String)
     created_at  = Column(DateTime, default=utcnow_naive, index=True)
+
+
+class AdsClickAttribution(Base):
+    """Último click_id confirmado de publicidad para personalizar enlaces de afiliado."""
+    __tablename__ = "ads_click_attribution"
+    telegram_id = Column(String, primary_key=True)
+    click_id    = Column(String(40), index=True)
+    updated_at  = Column(DateTime, default=utcnow_naive, index=True)
 
 
 engine = create_engine(DATABASE_URL, echo=False)
@@ -664,7 +673,8 @@ async def _send_job_message(context: ContextTypes.DEFAULT_TYPE, text_es: str, te
     if not _is_private_user_id(chat_id):
         return
     try:
-        await context.bot.send_message(chat_id=chat_id, text=text_es if lang == "es" else text_en, reply_markup=support_keyboard(lang))
+        outbound = _personalize_referral_links(text_es if lang == "es" else text_en, chat_id)
+        await context.bot.send_message(chat_id=chat_id, text=outbound, reply_markup=support_keyboard(lang))
     except Exception as e:
         if _is_blocked_user_error(e):
             _cleanup_blocked_user_tasks(context, chat_id, source="legacy_scheduled_message")
@@ -1044,6 +1054,109 @@ def _get_channel_source(chat_id: int) -> str:
     return "ORGANIC_OTHER"
 
 
+def _save_ads_click_token(chat_id: int, click_id: str) -> None:
+    """Guarda el click_id confirmado del último acceso ADS del usuario."""
+    if not _is_private_user_id(chat_id):
+        return
+    token = (click_id or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{20}", token):
+        return
+    try:
+        with Session() as session:
+            row = session.get(AdsClickAttribution, str(chat_id))
+            if row:
+                row.click_id = token
+                row.updated_at = utcnow_naive()
+            else:
+                session.add(AdsClickAttribution(
+                    telegram_id=str(chat_id),
+                    click_id=token,
+                    updated_at=utcnow_naive(),
+                ))
+            session.commit()
+    except Exception as e:
+        logging.warning("No pude guardar click ADS de %s: %s", chat_id, e)
+
+
+def _get_ads_click_token(chat_id: int) -> str:
+    """Devuelve el click_id ADS confirmado del usuario, si existe."""
+    if not _is_private_user_id(chat_id):
+        return ""
+    try:
+        with Session() as session:
+            row = session.get(AdsClickAttribution, str(chat_id))
+            token = (row.click_id or "").strip().lower() if row else ""
+        return token if re.fullmatch(r"[a-f0-9]{20}", token) else ""
+    except Exception as e:
+        logging.warning("No pude leer click ADS de %s: %s", chat_id, e)
+        return ""
+
+
+def _url_with_query_param(url: str, key: str, value: str) -> str:
+    """Añade/reemplaza un parámetro sin alterar el resto del enlace oficial."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        replaced = False
+        new_pairs = []
+        for k, v in pairs:
+            if k == key:
+                if not replaced:
+                    new_pairs.append((k, value))
+                    replaced = True
+            else:
+                new_pairs.append((k, v))
+        if not replaced:
+            new_pairs.append((key, value))
+        return urllib.parse.urlunsplit((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urllib.parse.urlencode(new_pairs),
+            parsed.fragment,
+        ))
+    except Exception:
+        joiner = "&" if "?" in url else "?"
+        return f"{url}{joiner}{urllib.parse.quote_plus(key)}={urllib.parse.quote_plus(value)}"
+
+
+def _referral_links_for_user(chat_id: int) -> tuple[str, str]:
+    """En ADS agrega la subcuenta individual; en orgánico conserva los enlaces actuales."""
+    stockity = ENLACE_REFERIDO_STOCKITY
+    binomo = ENLACE_REFERIDO
+    if _get_channel_source(chat_id) != "ADS":
+        return stockity, binomo
+
+    token = _get_ads_click_token(chat_id)
+    if not token:
+        # ADS antiguo/sin token local: no inventamos una atribución individual.
+        return stockity, binomo
+
+    # Conserva la etiqueta histórica JTTRADERS y añade el click individual.
+    subaccount = f"JTTRADERS_{token}"
+    return (
+        _url_with_query_param(stockity, "sa", subaccount),
+        _url_with_query_param(binomo, "sa", subaccount),
+    )
+
+
+def _personalize_referral_links(text_value: str, chat_id: int) -> str:
+    """Sustituye solo los dos enlaces oficiales cuando el usuario tiene click ADS confirmado."""
+    value = text_value or ""
+    if not value or not _is_private_user_id(chat_id):
+        return value
+    stockity, binomo = _referral_links_for_user(chat_id)
+    if stockity == ENLACE_REFERIDO_STOCKITY and binomo == ENLACE_REFERIDO:
+        return value
+
+    # Idempotente: si un bloque ya fue personalizado para este usuario, no duplica el sufijo.
+    if stockity != ENLACE_REFERIDO_STOCKITY and stockity not in value:
+        value = value.replace(ENLACE_REFERIDO_STOCKITY, stockity)
+    if binomo != ENLACE_REFERIDO and binomo not in value:
+        value = value.replace(ENLACE_REFERIDO, binomo)
+    return value
+
+
 def _record_source_attribution_only(chat_id: int, detected_source: str, authoritative: bool = False) -> str:
     """Guarda la fuente first-touch/paid-touch SIN contar todavía un ingreso al canal.
 
@@ -1330,9 +1443,40 @@ def _event_user_ids_with_detail(event_type: str, detail_value: str, start_utc: d
         return set()
 
 
+def _message_source_metrics(start_utc: datetime, end_utc: datetime) -> tuple[int, int]:
+    """Cuenta mensajes (no solo personas) separados por ADS vs Orgánico/Otros."""
+    try:
+        with Session() as session:
+            rows = (
+                session.query(BotEvent.telegram_id)
+                .filter(BotEvent.event_type == "MESSAGE")
+                .filter(BotEvent.created_at >= start_utc, BotEvent.created_at < end_utc)
+                .all()
+            )
+            ids = {str(r[0]) for r in rows if r and r[0] and _is_private_user_id(r[0])}
+            ads_ids = set()
+            if ids:
+                ads_rows = (
+                    session.query(ChannelSourceAttribution.telegram_id)
+                    .filter(
+                        ChannelSourceAttribution.telegram_id.in_(list(ids)),
+                        ChannelSourceAttribution.source == "ADS",
+                    )
+                    .all()
+                )
+                ads_ids = {str(r[0]) for r in ads_rows if r and r[0]}
+        ads_messages = sum(1 for r in rows if r and r[0] and str(r[0]) in ads_ids)
+        organic_messages = sum(1 for r in rows if r and r[0] and str(r[0]) not in ads_ids and _is_private_user_id(r[0]))
+        return ads_messages, organic_messages
+    except Exception as e:
+        logging.warning("No pude calcular mensajes por origen: %s", e)
+        return 0, 0
+
+
 def _daily_report_text(now_local=None) -> str:
     now_local = now_local or datetime.now(COLOMBIA_TZ)
     start_utc, end_utc = _colombia_day_utc_bounds(now_local)
+
     writers = _event_user_ids("MESSAGE", start_utc, end_utc)
     channel_welcome_es = _event_user_ids_with_detail(
         "CHANNEL_WELCOME_START", "canal_bienvenida", start_utc, end_utc
@@ -1341,32 +1485,24 @@ def _daily_report_text(now_local=None) -> str:
         "CHANNEL_WELCOME_START", "canal_bienvenida_en", start_utc, end_utc
     )
     channel_welcome_starts = channel_welcome_es | channel_welcome_en
-    channel_welcome_writers = channel_welcome_starts & writers
     ids_sent = _event_user_ids("ID_SUBMITTED", start_utc, end_utc)
     ids_validated = _event_user_ids("ID_VALIDATED", start_utc, end_utc)
     deposits_reported = _event_user_ids("DEPOSIT_REPORTED", start_utc, end_utc)
     activated = _event_user_ids("ACCOUNT_ACTIVATED", start_utc, end_utc)
     ads_gate_starts = _event_user_ids("ADS_GATE_START", start_utc, end_utc)
 
-    # Nuevas métricas de origen: ADS confirmado vs todo lo demás (Orgánico/Otros).
     channel_join_ids, channel_join_ads_ids, channel_join_organic_ids = _channel_join_source_metrics(start_utc, end_utc)
     welcome_ads, welcome_organic = _source_breakdown(channel_welcome_starts)
+    writers_ads, writers_organic = _source_breakdown(writers)
     ids_sent_ads, ids_sent_organic = _source_breakdown(ids_sent)
     ids_validated_ads, ids_validated_organic = _source_breakdown(ids_validated)
     deposits_reported_ads, deposits_reported_organic = _source_breakdown(deposits_reported)
     activated_ads, activated_organic = _source_breakdown(activated)
+    messages_ads, messages_organic = _message_source_metrics(start_utc, end_utc)
 
-    total_messages = 0
-    no_id_no_deposit = 0
-    waiting_deposit = 0
+    no_id_users = set()
     try:
         with Session() as session:
-            total_messages = (
-                session.query(BotEvent.id)
-                .filter(BotEvent.event_type == "MESSAGE")
-                .filter(BotEvent.created_at >= start_utc, BotEvent.created_at < end_utc)
-                .count()
-            )
             if writers:
                 rows = (
                     session.query(Usuario.telegram_id, Usuario.stage, Usuario.binomo_id)
@@ -1377,43 +1513,33 @@ def _daily_report_text(now_local=None) -> str:
                 for uid in writers:
                     stage, saved_id = known.get(uid, (STAGE_PRE, None))
                     if stage == STAGE_PRE and not saved_id:
-                        no_id_no_deposit += 1
-
-            # Solo cuenta como "ID validado y pendiente de depósito" cuando
-            # Johanna confirmó positivamente la validación durante el día.
-            waiting_deposit = len(ids_validated - deposits_reported - activated)
+                        no_id_users.add(str(uid))
     except Exception as e:
-        logging.warning("No pude completar métricas de reporte diario: %s", e)
+        logging.warning("No pude completar pendientes sin ID del reporte: %s", e)
+
+    # Validado durante el día y todavía sin aviso/confirmación de depósito.
+    waiting_users = ids_validated - deposits_reported - activated
+    no_id_ads, no_id_organic = _source_breakdown(no_id_users)
+    waiting_ads, waiting_organic = _source_breakdown(waiting_users)
 
     fecha = now_local.strftime("%d/%m/%Y")
     return (
         f"📊 REPORTE DIARIO — {fecha}\n\n"
-        f"👥 Personas que escribieron: {len(writers)}\n"
-        f"💬 Mensajes recibidos: {total_messages}\n"
-        f"🚀 Llegaron al bot desde bienvenida de canal: {len(channel_welcome_starts)}\n"
-        f"🇪🇸 Desde canal ES: {len(channel_welcome_es)}\n"
-        f"🇺🇸 Desde canal EN: {len(channel_welcome_en)}\n"
-        f"💜 De ellos, escribieron al bot: {len(channel_welcome_writers)}\n"
-        f"🆔 Enviaron ID: {len(ids_sent)}\n"
-        f"✅ ID validados: {len(ids_validated)}\n"
-        f"💳 Avisaron que depositaron: {len(deposits_reported)}\n"
-        f"🟢 Cuentas/depósitos confirmados: {len(activated)}\n"
-        f"🟡 Escribieron pero siguen sin ID ni depósito: {no_id_no_deposit}\n"
-        f"🔵 ID validado y pendientes de depósito: {waiting_deposit}\n\n"
-        f"📢 ORIGEN — CANAL INFORMATIVO\n"
-        f"🎯 Llegaron desde ADS al bot-puerta: {len(ads_gate_starts)}\n"
-        f"👥 Personas que entraron al canal: {len(channel_join_ids)}\n"
-        f"📣 ADS confirmados: {len(channel_join_ads_ids)}\n"
-        f"🌱 Orgánico/Otros: {len(channel_join_organic_ids)}\n\n"
-        f"🤖 PASARON DEL CANAL AL BOT\n"
-        f"📣 ADS: {welcome_ads}\n"
-        f"🌱 Orgánico/Otros: {welcome_organic}\n\n"
-        f"🆔 ENVIARON ID — ADS: {ids_sent_ads} | Orgánico/Otros: {ids_sent_organic}\n"
-        f"✅ ID VALIDADOS — ADS: {ids_validated_ads} | Orgánico/Otros: {ids_validated_organic}\n"
-        f"💳 AVISARON DEPÓSITO — ADS: {deposits_reported_ads} | Orgánico/Otros: {deposits_reported_organic}\n"
-        f"🟢 DEPÓSITOS CONFIRMADOS — ADS: {activated_ads} | Orgánico/Otros: {activated_organic}\n\n"
+        f"📣 ADS\n"
+        f"🎯 Bot-puerta: {len(ads_gate_starts)} | 📥 Canal: {len(channel_join_ads_ids)}\n"
+        f"🤖 Del canal al bot: {welcome_ads}\n"
+        f"👤 Escribieron: {writers_ads} | 💬 Mensajes: {messages_ads}\n"
+        f"🆔 ID enviados: {ids_sent_ads} | ✅ Validados: {ids_validated_ads}\n"
+        f"💳 Avisaron depósito: {deposits_reported_ads} | 🟢 Confirmados: {activated_ads}\n"
+        f"⏳ Sin ID: {no_id_ads} | ID validado sin depósito: {waiting_ads}\n\n"
+        f"🌱 ORGÁNICO / OTROS\n"
+        f"📥 Canal: {len(channel_join_organic_ids)} | 🤖 Del canal al bot: {welcome_organic}\n"
+        f"👤 Escribieron: {writers_organic} | 💬 Mensajes: {messages_organic}\n"
+        f"🆔 ID enviados: {ids_sent_organic} | ✅ Validados: {ids_validated_organic}\n"
+        f"💳 Avisaron depósito: {deposits_reported_organic} | 🟢 Confirmados: {activated_organic}\n"
+        f"⏳ Sin ID: {no_id_organic} | ID validado sin depósito: {waiting_organic}\n\n"
         "ℹ️ Orgánico/Otros = toda persona sin atribución ADS confirmada.\n"
-        "⏰ Corte automático: 11:00 p. m. hora Colombia."
+        "⏰ Corte: 11:00 p. m. Colombia."
     )
 
 
@@ -1756,7 +1882,7 @@ async def persistent_campaign_job(context: ContextTypes.DEFAULT_TYPE):
         return
 
     text_es, text_en = _campaign_text_pair(series, step)
-    outbound = text_es if lang == "es" else text_en
+    outbound = _personalize_referral_links(text_es if lang == "es" else text_en, chat_id)
     if not outbound:
         logging.warning("No existe texto de campaña %s %s para %s", series, step, chat_id)
         return
@@ -2113,6 +2239,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             final_source = _record_source_attribution_only(
                 chat_id, confirmed_source, authoritative=True
             )
+            _save_ads_click_token(chat_id, start_param_raw[4:])
         else:
             # Si tracking estuviera temporalmente caído, no inventamos ADS.
             # La puerta sigue funcionando y el bot principal no se interrumpe.
@@ -2254,14 +2381,14 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Niveles y Planes (informativo) ---
     if q.data == "niveles_planes":
-        texto = respuesta_niveles_es()
+        texto = _personalize_referral_links(respuesta_niveles_es(), chat_id)
         kb = [[InlineKeyboardButton("📄 Ver estructura completa", url="https://telegra.ph/EVOLUCI%C3%93N-OFICIAL-DE-NUESTRA-COMUNIDAD-02-27")], *support_rows("es")]
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
 
     # --- Levels & Plans (EN) ---
     if q.data == "levels_plans_en":
-        texto = respuesta_niveles_en()
+        texto = _personalize_referral_links(respuesta_niveles_en(), chat_id)
         kb = [[InlineKeyboardButton("📄 View full structure", url="https://telegra.ph/OFFICIAL-EVOLUTION-OF-OUR-TRADING-COMMUNITY-02-28")], *support_rows("en")]
         await q.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -2396,7 +2523,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "registrarme":
         if lang == "es":
-            await q.message.reply_text(MENSAJE_REGISTRARME_ES, reply_markup=support_keyboard(lang))
+            await q.message.reply_text(_personalize_referral_links(MENSAJE_REGISTRARME_ES, chat_id), reply_markup=support_keyboard(lang))
             # Video SOLO en español
             await q.message.reply_video(
                 video="BAACAgEAAxkBAAIBaGhdq0nQXi6B4N8uRwmaOHKkUarbAAIMBgACTgAB8UbIZIU9XTMCzjYE",
@@ -2404,10 +2531,11 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=support_keyboard(lang),
             )
         else:
-            await q.message.reply_text(MENSAJE_REGISTRARME_EN, reply_markup=support_keyboard(lang))
+            await q.message.reply_text(_personalize_referral_links(MENSAJE_REGISTRARME_EN, chat_id), reply_markup=support_keyboard(lang))
 
     elif q.data == "ya_tengo_cuenta":
-        await q.message.reply_text(MENSAJE_YA_TENGO_CUENTA_ES if lang=="es" else MENSAJE_YA_TENGO_CUENTA_EN, reply_markup=support_keyboard(lang))
+        _msg_account = MENSAJE_YA_TENGO_CUENTA_ES if lang=="es" else MENSAJE_YA_TENGO_CUENTA_EN
+        await q.message.reply_text(_personalize_referral_links(_msg_account, chat_id), reply_markup=support_keyboard(lang))
 
     elif q.data == "gestion_capital":
         texto_gestion = (
@@ -2687,9 +2815,10 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                     learned_reply = await _transcribe_admin_voice(context, update.message.voice.file_id)
                     manual_reply_text = learned_reply or "[Respuesta de voz enviada por Johanna]"
                 else:
+                    _manual_outbound = _personalize_referral_links(update.message.text or "", destinatario_id)
                     await context.bot.send_message(
                         chat_id=destinatario_id,
-                        text=update.message.text
+                        text=_manual_outbound
                     )
                     learned_reply = (update.message.text or "").strip()
                     manual_reply_text = learned_reply
@@ -4263,6 +4392,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        answer = _personalize_referral_links(answer, chat_id)
         await context.bot.send_message(
             chat_id=chat_id,
             text=answer,
@@ -4351,7 +4481,8 @@ async def recover_pending_ai_jobs(application):
 
 async def _send_user_blocks(update: Update, text_value: str, reply_markup=None):
     """Envía texto largo en bloques seguros para Telegram; teclado solo en el último."""
-    text_value = (text_value or "").strip()
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    text_value = _personalize_referral_links((text_value or "").strip(), chat_id)
     if not text_value:
         return
     max_len = 3600
@@ -4726,7 +4857,8 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
 
         # Si no es archivo multimedia, enviar como texto
         if mensaje:
-            await context.bot.send_message(chat_id=chat_id, text=mensaje)
+            _direct_outbound = _personalize_referral_links(mensaje, chat_id)
+            await context.bot.send_message(chat_id=chat_id, text=_direct_outbound)
             _learn_direct_admin_message(chat_id, mensaje, "text")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje)
             await update.message.reply_text("✅ Mensaje enviado con éxito.")
