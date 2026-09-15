@@ -49,7 +49,13 @@ try:
 except Exception:
     REPORT_CHAT_ID = DEFAULT_REPORT_CHAT_ID
 
-BOT_VERSION = "v7.10.10-20260914-ADS-REPORTS-CONNECTED"
+# Dashboard privado de ADS REPORTS. Railway puede sobreescribirlo sin modificar código.
+DASHBOARD_URL = (
+    os.getenv("DASHBOARD_URL", "https://johaale-tracking-production.up.railway.app/dashboard")
+    or "https://johaale-tracking-production.up.railway.app/dashboard"
+).strip()
+
+BOT_VERSION = "v7.10.11-20260914-DASHBOARD-BUTTON"
 
 
 def utcnow_naive():
@@ -1618,11 +1624,22 @@ async def _daily_report_with_affiliate(now_local=None) -> str:
     return _daily_report_text(now_local, affiliate_summary)
 
 
+def report_dashboard_keyboard() -> InlineKeyboardMarkup:
+    """Botón seguro de solo navegación al dashboard privado de ADS REPORTS."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📊 ABRIR DASHBOARD ADS", url=DASHBOARD_URL)
+    ]])
+
+
 async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
     """Envía el corte diario al grupo de reportes; mientras no esté configurado, cae al ADMIN."""
     target_chat_id = REPORT_CHAT_ID if REPORT_CHAT_ID else ADMIN_ID
     try:
-        await context.bot.send_message(chat_id=target_chat_id, text=await _daily_report_with_affiliate())
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=await _daily_report_with_affiliate(),
+            reply_markup=report_dashboard_keyboard() if target_chat_id == REPORT_CHAT_ID else None,
+        )
     except Exception as e:
         logging.warning("No pude enviar reporte diario a %s: %s", target_chat_id, e)
         # Si el grupo fue mal configurado o el bot perdió permisos, Johanna no pierde el reporte.
@@ -1676,6 +1693,7 @@ async def report_group_test_command(update: Update, context: ContextTypes.DEFAUL
         await context.bot.send_message(
             chat_id=REPORT_CHAT_ID,
             text=await _daily_report_with_affiliate(),
+            reply_markup=report_dashboard_keyboard(),
         )
         await update.effective_message.reply_text(
             "✅ Reporte de prueba enviado a JOHAALETRADER · ADS REPORTS."
