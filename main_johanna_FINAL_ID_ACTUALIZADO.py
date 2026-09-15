@@ -40,7 +40,15 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.8-20260914-AFFILIATE-REPORT-REGENTRY"
+
+# Grupo privado de reportes ADS. Déjalo vacío/0 hasta obtener el ID con /reportid.
+# En Railway se configura como REPORT_CHAT_ID=-100xxxxxxxxxx.
+try:
+    REPORT_CHAT_ID = int((os.getenv("REPORT_CHAT_ID", "0") or "0").strip())
+except Exception:
+    REPORT_CHAT_ID = 0
+
+BOT_VERSION = "v7.10.9-20260914-ADS-REPORTS-GROUP"
 
 
 def utcnow_naive():
@@ -1610,15 +1618,71 @@ async def _daily_report_with_affiliate(now_local=None) -> str:
 
 
 async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
+    """Envía el corte diario al grupo de reportes; mientras no esté configurado, cae al ADMIN."""
+    target_chat_id = REPORT_CHAT_ID if REPORT_CHAT_ID else ADMIN_ID
     try:
-        await context.bot.send_message(chat_id=ADMIN_ID, text=await _daily_report_with_affiliate())
+        await context.bot.send_message(chat_id=target_chat_id, text=await _daily_report_with_affiliate())
     except Exception as e:
-        logging.warning("No pude enviar reporte diario: %s", e)
+        logging.warning("No pude enviar reporte diario a %s: %s", target_chat_id, e)
+        # Si el grupo fue mal configurado o el bot perdió permisos, Johanna no pierde el reporte.
+        if target_chat_id != ADMIN_ID:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "⚠️ No pude publicar el reporte diario en JOHAALETRADER · ADS REPORTS. "
+                        "Te envío el reporte aquí como respaldo.\n\n"
+                        + await _daily_report_with_affiliate()
+                    ),
+                )
+            except Exception as fallback_error:
+                logging.warning("Tampoco pude enviar respaldo del reporte al ADMIN: %s", fallback_error)
 
 
 async def daily_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Conserva /reporte privado para Johanna."""
     if update.effective_user and update.effective_user.id == ADMIN_ID:
         await update.effective_message.reply_text(await _daily_report_with_affiliate())
+
+
+async def report_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Devuelve el ID del grupo SOLO a Johanna; se registra antes del bloqueo global."""
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+        return
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text(
+            "ℹ️ Usa /reportid dentro del grupo JOHAALETRADER · ADS REPORTS."
+        )
+        return
+    title = getattr(chat, "title", None) or "(sin título)"
+    await update.effective_message.reply_text(
+        f"✅ Grupo detectado\n\nNombre: {title}\nREPORT_CHAT_ID = {chat.id}\n\n"
+        "Copia ese número para configurarlo en Railway."
+    )
+
+
+async def report_group_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prueba manual desde el chat privado de Johanna hacia el grupo configurado."""
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+        return
+    if not REPORT_CHAT_ID:
+        await update.effective_message.reply_text(
+            "⚠️ REPORT_CHAT_ID aún no está configurado. Primero usa /reportid dentro del grupo."
+        )
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=REPORT_CHAT_ID,
+            text=await _daily_report_with_affiliate(),
+        )
+        await update.effective_message.reply_text(
+            "✅ Reporte de prueba enviado a JOHAALETRADER · ADS REPORTS."
+        )
+    except Exception as e:
+        await update.effective_message.reply_text(
+            f"❌ No pude enviar el reporte al grupo configurado: {e}"
+        )
 
 
 def schedule_daily_report(application):
@@ -5725,6 +5789,13 @@ if __name__ == "__main__":
         group=-90,
     )
 
+    # EXCEPCIÓN ADMINISTRATIVA SEGURA: permite a Johanna conocer el ID del grupo de reportes.
+    # Debe ejecutarse ANTES del bloqueo global y solo responde al ADMIN_ID.
+    app.add_handler(
+        CommandHandler("reportid", report_id_command, filters=filters.User(ADMIN_ID)),
+        group=-110,
+    )
+
     # BLOQUEO GLOBAL: el VIP/grupos/temas/canales son solo destinos de salida.
     # Nada recibido allí puede activar menús, IA, campañas, reportes ni flujos del bot.
     app.add_handler(
@@ -5763,6 +5834,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.User(ADMIN_ID) & filters.Regex(r"(?i)^live$"), live_command))
     app.add_handler(CommandHandler("marketing", marketing_command))
     app.add_handler(CommandHandler("reporte", daily_report_command))
+    app.add_handler(CommandHandler("reportegrupo", report_group_test_command))
     app.add_handler(CommandHandler("version", version_command))
 
     # Captura fotos/texto de borradores antes del manejador normal del admin.
