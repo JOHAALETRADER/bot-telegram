@@ -41,14 +41,15 @@ except Exception:
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
 
-# Grupo privado de reportes ADS. Déjalo vacío/0 hasta obtener el ID con /reportid.
-# En Railway se configura como REPORT_CHAT_ID=-100xxxxxxxxxx.
+# Grupo privado de reportes ADS.
+# Railway puede sobreescribir este valor con la variable REPORT_CHAT_ID.
+DEFAULT_REPORT_CHAT_ID = -5324419580
 try:
-    REPORT_CHAT_ID = int((os.getenv("REPORT_CHAT_ID", "0") or "0").strip())
+    REPORT_CHAT_ID = int((os.getenv("REPORT_CHAT_ID", str(DEFAULT_REPORT_CHAT_ID)) or str(DEFAULT_REPORT_CHAT_ID)).strip())
 except Exception:
-    REPORT_CHAT_ID = 0
+    REPORT_CHAT_ID = DEFAULT_REPORT_CHAT_ID
 
-BOT_VERSION = "v7.10.9-20260914-ADS-REPORTS-GROUP"
+BOT_VERSION = "v7.10.10-20260914-ADS-REPORTS-CONNECTED"
 
 
 def utcnow_naive():
@@ -1658,7 +1659,7 @@ async def report_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = getattr(chat, "title", None) or "(sin título)"
     await update.effective_message.reply_text(
         f"✅ Grupo detectado\n\nNombre: {title}\nREPORT_CHAT_ID = {chat.id}\n\n"
-        "Copia ese número para configurarlo en Railway."
+        "Este es el ID del grupo configurado para los reportes."
     )
 
 
