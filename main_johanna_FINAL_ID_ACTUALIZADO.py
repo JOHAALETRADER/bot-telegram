@@ -40,7 +40,7 @@ except Exception:
     HAS_HTTPX = False
 
 ADMIN_ID = 5924691120  # Tu ID personal de Telegram
-BOT_VERSION = "v7.10.7-20260910-AFFILIATE-ATTRIBUTION-REPORT"
+BOT_VERSION = "v7.10.8-20260914-AFFILIATE-REPORT-REGENTRY"
 
 
 def utcnow_naive():
@@ -997,6 +997,24 @@ async def _tracking_post(path: str, payload: dict, source: str = ""):
         return None
 
 
+async def _tracking_affiliate_summary(start_utc: datetime, end_utc: datetime):
+    """Consulta al tracking el resumen real de Affiliate Top para el rango UTC indicado.
+
+    Si tracking no está disponible, devuelve None y el reporte lo muestra como no disponible
+    sin afectar ninguna otra función del bot.
+    """
+    if not (HAS_HTTPX and TRACKING_BASE_URL and TRACKING_SECRET):
+        return None
+    return await _tracking_post(
+        "/internal/affiliate-summary",
+        {
+            "start_utc": start_utc.isoformat(),
+            "end_utc": end_utc.isoformat(),
+        },
+        source="affiliate_summary",
+    )
+
+
 def _tracking_fire_event(chat_id: int, event_type: str, detail: str = ""):
     """Dispara un evento en segundo plano; si tracking falla, el bot sigue normal."""
     if not _is_private_user_id(chat_id):
@@ -1473,7 +1491,7 @@ def _message_source_metrics(start_utc: datetime, end_utc: datetime) -> tuple[int
         return 0, 0
 
 
-def _daily_report_text(now_local=None) -> str:
+def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
     now_local = now_local or datetime.now(COLOMBIA_TZ)
     start_utc, end_utc = _colombia_day_utc_bounds(now_local)
 
@@ -1490,6 +1508,7 @@ def _daily_report_text(now_local=None) -> str:
     deposits_reported = _event_user_ids("DEPOSIT_REPORTED", start_utc, end_utc)
     activated = _event_user_ids("ACCOUNT_ACTIVATED", start_utc, end_utc)
     ads_gate_starts = _event_user_ids("ADS_GATE_START", start_utc, end_utc)
+    registration_entry_starts = _event_user_ids("REGISTRATION_ENTRY_START", start_utc, end_utc)
 
     channel_join_ids, channel_join_ads_ids, channel_join_organic_ids = _channel_join_source_metrics(start_utc, end_utc)
     welcome_ads, welcome_organic = _source_breakdown(channel_welcome_starts)
@@ -1498,7 +1517,42 @@ def _daily_report_text(now_local=None) -> str:
     ids_validated_ads, ids_validated_organic = _source_breakdown(ids_validated)
     deposits_reported_ads, deposits_reported_organic = _source_breakdown(deposits_reported)
     activated_ads, activated_organic = _source_breakdown(activated)
+    registration_entry_ads, registration_entry_organic = _source_breakdown(registration_entry_starts)
     messages_ads, messages_organic = _message_source_metrics(start_utc, end_utc)
+
+    # Affiliate Top: datos reales recibidos por el servicio de tracking.
+    affiliate_ok = isinstance(affiliate_summary, dict) and bool(affiliate_summary.get("ok"))
+    by_source = affiliate_summary.get("by_source", {}) if affiliate_ok else {}
+
+    def _aff_counts(bucket: str):
+        data = by_source.get(bucket, {}) if isinstance(by_source, dict) else {}
+        return (
+            int(data.get("REGISTRATION", 0) or 0),
+            int(data.get("FIRST_DEPOSIT", 0) or 0),
+            int(data.get("REDEPOSIT", 0) or 0),
+        )
+
+    aff_ads = _aff_counts("ADS")
+    aff_organic = _aff_counts("ORGANIC_OTHER")
+    aff_unattributed = _aff_counts("UNATTRIBUTED")
+
+    if affiliate_ok:
+        affiliate_ads_line = (
+            f"📈 Affiliate Top: 📝 Registros {aff_ads[0]} | 💰 1er depósito {aff_ads[1]} | ♻️ Redepósitos {aff_ads[2]}\n"
+        )
+        affiliate_organic_line = (
+            f"📈 Affiliate Top: 📝 Registros {aff_organic[0]} | 💰 1er depósito {aff_organic[1]} | ♻️ Redepósitos {aff_organic[2]}\n"
+        )
+        affiliate_unattributed_line = ""
+        if any(aff_unattributed):
+            affiliate_unattributed_line = (
+                f"🔎 Affiliate sin atribuir: Registros {aff_unattributed[0]} | "
+                f"1er depósito {aff_unattributed[1]} | Redepósitos {aff_unattributed[2]}\n"
+            )
+    else:
+        affiliate_ads_line = "📈 Affiliate Top: ⚠️ no disponible\n"
+        affiliate_organic_line = "📈 Affiliate Top: ⚠️ no disponible\n"
+        affiliate_unattributed_line = ""
 
     no_id_users = set()
     try:
@@ -1527,32 +1581,44 @@ def _daily_report_text(now_local=None) -> str:
         f"📊 REPORTE DIARIO — {fecha}\n\n"
         f"📣 ADS\n"
         f"🎯 Bot-puerta: {len(ads_gate_starts)} | 📥 Canal: {len(channel_join_ads_ids)}\n"
-        f"🤖 Del canal al bot: {welcome_ads}\n"
+        f"🤖 Del canal al bot: {welcome_ads} | 🚀 Entrada registro: {registration_entry_ads}\n"
         f"👤 Escribieron: {writers_ads} | 💬 Mensajes: {messages_ads}\n"
         f"🆔 ID enviados: {ids_sent_ads} | ✅ Validados: {ids_validated_ads}\n"
         f"💳 Avisaron depósito: {deposits_reported_ads} | 🟢 Confirmados: {activated_ads}\n"
+        f"{affiliate_ads_line}"
         f"⏳ Sin ID: {no_id_ads} | ID validado sin depósito: {waiting_ads}\n\n"
         f"🌱 ORGÁNICO / OTROS\n"
         f"📥 Canal: {len(channel_join_organic_ids)} | 🤖 Del canal al bot: {welcome_organic}\n"
+        f"🚀 Entrada registro: {registration_entry_organic}\n"
         f"👤 Escribieron: {writers_organic} | 💬 Mensajes: {messages_organic}\n"
         f"🆔 ID enviados: {ids_sent_organic} | ✅ Validados: {ids_validated_organic}\n"
         f"💳 Avisaron depósito: {deposits_reported_organic} | 🟢 Confirmados: {activated_organic}\n"
+        f"{affiliate_organic_line}"
         f"⏳ Sin ID: {no_id_organic} | ID validado sin depósito: {waiting_organic}\n\n"
+        f"{affiliate_unattributed_line}"
         "ℹ️ Orgánico/Otros = toda persona sin atribución ADS confirmada.\n"
         "⏰ Corte: 11:00 p. m. Colombia."
     )
 
 
+async def _daily_report_with_affiliate(now_local=None) -> str:
+    """Construye el reporte sin hacer depender el bot del tracking externo."""
+    now_local = now_local or datetime.now(COLOMBIA_TZ)
+    start_utc, end_utc = _colombia_day_utc_bounds(now_local)
+    affiliate_summary = await _tracking_affiliate_summary(start_utc, end_utc)
+    return _daily_report_text(now_local, affiliate_summary)
+
+
 async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        await context.bot.send_message(chat_id=ADMIN_ID, text=_daily_report_text())
+        await context.bot.send_message(chat_id=ADMIN_ID, text=await _daily_report_with_affiliate())
     except Exception as e:
         logging.warning("No pude enviar reporte diario: %s", e)
 
 
 async def daily_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user and update.effective_user.id == ADMIN_ID:
-        await update.effective_message.reply_text(_daily_report_text())
+        await update.effective_message.reply_text(await _daily_report_with_affiliate())
 
 
 def schedule_daily_report(application):
@@ -1644,7 +1710,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     elif query.data == "admin_panel_marketing":
         await marketing_command(update, context)
     elif query.data == "admin_panel_report":
-        await context.bot.send_message(chat_id=ADMIN_ID, text=_daily_report_text())
+        await context.bot.send_message(chat_id=ADMIN_ID, text=await _daily_report_with_affiliate())
     elif query.data == "admin_panel_start":
         lang = get_user_lang(ADMIN_ID)
         await context.bot.send_message(
@@ -2151,7 +2217,7 @@ async def recover_pending_campaign_jobs(application):
 def build_main_menu(lang: str) -> InlineKeyboardMarkup:
     if lang == "en":
         kb = [
-            [InlineKeyboardButton("🚀 Complete Registration", callback_data="registrarme")],
+            [InlineKeyboardButton("🚀 CREATE MY ACCOUNT", callback_data="registrarme")],
             [InlineKeyboardButton("✅ Validate your ID | Questions? DM me", url="https://t.me/Johaaletradervalidacion")],
             [InlineKeyboardButton("✅ I already have an account", callback_data="ya_tengo_cuenta")],
             [InlineKeyboardButton("📊 Capital Management", callback_data="gestion_capital_en")],
@@ -2164,7 +2230,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
         ]
     else:
         kb = [
-            [InlineKeyboardButton("🚀 Completar registro", callback_data="registrarme")],
+            [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
             [InlineKeyboardButton("✅ Valida tu ID | ¿Dudas? Escríbeme", url="https://t.me/Johaaletradervalidacion")],
             [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_tengo_cuenta")],
             [InlineKeyboardButton("📊 Gestión de capital", callback_data="gestion_capital")],
@@ -2176,6 +2242,23 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🇺🇸 Switch to English", callback_data="set_lang_en")],
         ]
     return InlineKeyboardMarkup(kb)
+
+
+def build_registration_entry_menu(lang: str = "es") -> InlineKeyboardMarkup:
+    """Entrada mínima para CTAs de registro publicados fuera del bot.
+
+    Reutiliza callbacks existentes: no cambia la lógica de registro ni del menú principal.
+    """
+    if lang == "en":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 CREATE MY ACCOUNT", callback_data="registrarme")],
+            [InlineKeyboardButton("🏠 VIEW FULL MENU", callback_data="back_main_menu")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
+        [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")],
+    ])
+
 
 def build_lang_picker() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -2280,6 +2363,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     _tracking_fire_event(chat_id, "BOT_START", start_param or "normal")
+
+    # === ENTRADA DIRECTA DE REGISTRO ===
+    # Enlace oficial para CTAs externos: https://t.me/JOHAALETRADER_bot?start=registro_canal
+    # Muestra solo bienvenida + REGISTRARME + MENÚ COMPLETO. El callback registrarme
+    # conserva la personalización ADS existente mediante el click_id guardado.
+    if start_param == "registro_canal":
+        set_user_lang(chat_id, nombre, "es")
+        lang = "es"
+        _log_event(chat_id, "REGISTRATION_ENTRY_START", "registro_canal")
+        _tracking_fire_event(chat_id, "REGISTRATION_ENTRY_START", "registro_canal")
+
+        entry_keyboard = build_registration_entry_menu("es")
+        try:
+            with open(WELCOME_IMG, "rb") as img:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=InputFile(img),
+                    caption=MENSAJE_BIENVENIDA_ES,
+                    reply_markup=entry_keyboard,
+                )
+        except FileNotFoundError:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=MENSAJE_BIENVENIDA_ES,
+                reply_markup=entry_keyboard,
+            )
+
+        # Conserva las campañas/etapa actuales sin reiniciar relojes existentes.
+        _sync_menu_campaign_for_stage(chat_id, lang, context)
+
+        user = update.effective_user
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "🚀 Entrada directa de registro al bot: "
+                f"@{user.username or 'SinUsername'} (ID: {user.id}) | origen={_get_channel_source(chat_id)}."
+            ),
+        )
+        return
 
     # Deep links exclusivos de las bienvenidas de los canales ES / EN.
     # Cada origen fija el idioma correspondiente y NO altera el /start normal.
