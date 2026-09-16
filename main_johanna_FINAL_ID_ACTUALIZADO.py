@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.11-20260914-DASHBOARD-BUTTON"
+BOT_VERSION = "v7.10.13-20260915-WELCOME-IMAGE-UPDATE"
 
 
 def utcnow_naive():
@@ -471,7 +471,7 @@ Complete your deposit, activate your level and start using the education, signal
 🔥 Do it now and message me I deposited so I can help you finish the activation."""
 
 # === MENSAJES (ES/EN) ===
-WELCOME_IMG = "bienvenidanuevasi.jpg"
+WELCOME_IMG = "bienvenidanuevasi.jpg"  # Reemplazar este archivo por la nueva imagen de bienvenida
 
 MENSAJE_BIENVENIDA_ES = """👋 ¡Hola! Soy JOHAALETRADER.
 Estoy aquí para ayudarte a empezar en el mundo del trading de opciones binarias de forma segura, guiada y rentable.
@@ -2340,6 +2340,7 @@ def build_registration_entry_menu(lang: str = "es") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
         [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")],
+        [InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_en")],
     ])
 
 
@@ -2448,6 +2449,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _tracking_fire_event(chat_id, "BOT_START", start_param or "normal")
 
     # === ENTRADA DIRECTA DE REGISTRO ===
+# Español es la entrada predeterminada; el menú mínimo incluye solo un acceso a English.
+# El callback set_lang_en reutiliza la bienvenida y el menú completos en inglés ya existentes.
     # Enlace oficial para CTAs externos: https://t.me/JOHAALETRADER_bot?start=registro_canal
     # Muestra solo bienvenida + REGISTRARME + MENÚ COMPLETO. El callback registrarme
     # conserva la personalización ADS existente mediante el click_id guardado.
