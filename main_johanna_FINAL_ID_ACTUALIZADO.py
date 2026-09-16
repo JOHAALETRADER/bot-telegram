@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.13-20260915-WELCOME-IMAGE-UPDATE"
+BOT_VERSION = "v7.10.14-20260916-REMARKETING-REGISTER-BUTTON"
 
 
 def utcnow_naive():
@@ -689,7 +689,7 @@ async def _send_job_message(context: ContextTypes.DEFAULT_TYPE, text_es: str, te
         return
     try:
         outbound = _personalize_referral_links(text_es if lang == "es" else text_en, chat_id)
-        await context.bot.send_message(chat_id=chat_id, text=outbound, reply_markup=support_keyboard(lang))
+        await context.bot.send_message(chat_id=chat_id, text=outbound, reply_markup=remarketing_keyboard(lang))
     except Exception as e:
         if _is_blocked_user_error(e):
             _cleanup_blocked_user_tasks(context, chat_id, source="legacy_scheduled_message")
@@ -1734,6 +1734,14 @@ def support_rows(lang: str = "es"):
 def support_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(support_rows(lang))
 
+def remarketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
+    """Teclado exclusivo del remarketing: registro + soporte + regreso al menú."""
+    register_text = "📝 I want to register" if lang == "en" else "📝 QUIERO REGISTRARME"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(register_text, callback_data="registrarme")],
+        *support_rows(lang),
+    ])
+
 def live_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎵 TikTok (Lives)", url=TIKTOK_LIVE_URL)],
@@ -2040,7 +2048,7 @@ async def persistent_campaign_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=chat_id,
             text=outbound,
-            reply_markup=support_keyboard(lang),
+            reply_markup=remarketing_keyboard(lang),
             disable_web_page_preview=True,
         )
         with Session() as session:
@@ -2079,7 +2087,7 @@ async def _send_job_message_B(context: ContextTypes.DEFAULT_TYPE, text_es: str, 
         await context.bot.send_message(
             chat_id=chat_id,
             text=text_es if lang == "es" else text_en,
-            reply_markup=support_keyboard(lang),
+            reply_markup=remarketing_keyboard(lang),
         )
     except Exception as e:
         if _is_blocked_user_error(e):
