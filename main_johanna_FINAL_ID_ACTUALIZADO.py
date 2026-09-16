@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.14-20260916-REMARKETING-REGISTER-BUTTON"
+BOT_VERSION = "v7.10.15-20260916-MARKETING-REGISTER-BUTTON"
 
 
 def utcnow_naive():
@@ -5633,7 +5633,7 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text=outbound_text,
-                        reply_markup=support_keyboard(lang),
+                        reply_markup=remarketing_keyboard(lang),
                         disable_web_page_preview=True,
                     )
                 else:
@@ -5641,13 +5641,13 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         chat_id=chat_id,
                         photo=photo_file_id,
                         caption=outbound_text if outbound_text else None,
-                        reply_markup=support_keyboard(lang),
+                        reply_markup=remarketing_keyboard(lang),
                     )
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=outbound_text,
-                    reply_markup=support_keyboard(lang),
+                    reply_markup=remarketing_keyboard(lang),
                     disable_web_page_preview=True,
                 )
             sent += 1
