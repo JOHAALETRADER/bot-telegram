@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.17-20260917-USER-FLOW-ADMIN"
+BOT_VERSION = "v7.10.18-20260917-QUEUE-PAGINATION-AI"
 
 
 def utcnow_naive():
@@ -512,19 +512,23 @@ def _personalized_welcome(user, lang: str = "es") -> str:
 
 ADMIN_ID_VALIDATED_ES = (
     "✅ Tu ID ha sido validado con éxito.\n\n"
-    "El siguiente paso es realizar tu depósito para activar tu cuenta y habilitar tu acceso. 🚀"
+    "Ya puedes realizar el depósito directamente en tu cuenta de trading.\n"
+    "Cuando lo hagas, envíame aquí en este chat una captura del depósito para confirmar tu activación. 📸"
 )
 ADMIN_ID_VALIDATED_EN = (
     "✅ Your ID has been successfully validated.\n\n"
-    "The next step is to make your deposit to activate your account and enable your access. 🚀"
+    "You can now make the deposit directly into your trading account.\n"
+    "Once it is done, send me a screenshot of the deposit here in this chat so I can confirm your activation. 📸"
 )
 ADMIN_ACCOUNT_ACTIVE_ES = (
-    "✅ Tu ID y tu depósito han sido validados.\n\n"
-    "🎉 Tu cuenta está activa y tu acceso ha sido confirmado."
+    "✅ Depósito confirmado.\n\n"
+    "🎉 Tu cuenta está activa y tu acceso GRATUITO a mi comunidad VIP ha sido habilitado correctamente.\n"
+    "¡Te doy la bienvenida a JT TRADERS TEAMS! 🚀"
 )
 ADMIN_ACCOUNT_ACTIVE_EN = (
-    "✅ Your ID and deposit have been validated.\n\n"
-    "🎉 Your account is active and your access has been confirmed."
+    "✅ Deposit confirmed.\n\n"
+    "🎉 Your account is active and your FREE access to my VIP community has been enabled successfully.\n"
+    "Welcome to JT TRADERS TEAMS! 🚀"
 )
 
 MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Abre tu cuenta de trading con uno de mis enlaces oficiales:
@@ -1829,16 +1833,24 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def _admin_recent_users(limit: int = 12):
-    """Usuarios privados recientes para gestión manual, sin depender de @username."""
+ADMIN_USER_PAGE_SIZE = 10
+ADMIN_USER_MAX_PENDING = 50
+
+
+def _admin_recent_users(limit: int = ADMIN_USER_MAX_PENDING):
+    """Usuarios PRE/POST recientes pendientes de gestión; DEPOSITED no llena la cola."""
     try:
+        safe_limit = max(1, min(int(limit), ADMIN_USER_MAX_PENDING))
         with Session() as session:
             rows = (
                 session.query(Usuario, UserActivity.last_activity_at)
                 .outerjoin(UserActivity, Usuario.telegram_id == UserActivity.telegram_id)
-                .filter(Usuario.telegram_id != str(ADMIN_ID))
+                .filter(
+                    Usuario.telegram_id != str(ADMIN_ID),
+                    or_(Usuario.stage == None, Usuario.stage.in_((STAGE_PRE, STAGE_POST))),
+                )
                 .order_by(UserActivity.last_activity_at.desc(), Usuario.fecha_registro.desc())
-                .limit(max(1, min(int(limit), 20)))
+                .limit(safe_limit)
                 .all()
             )
         result = []
@@ -1849,14 +1861,15 @@ def _admin_recent_users(limit: int = 12):
                 continue
             if not _is_private_user_id(cid):
                 continue
-            result.append((cid, user.nombre or f"Usuario {cid}", user.stage or STAGE_PRE, user.binomo_id or "", last_activity))
+            stage = user.stage if user.stage in (STAGE_PRE, STAGE_POST) else STAGE_PRE
+            result.append((cid, user.nombre or f"Usuario {cid}", stage, user.binomo_id or "", last_activity))
         return result
     except Exception as e:
-        logging.warning("No pude listar usuarios recientes para admin: %s", e)
+        logging.warning("No pude listar usuarios pendientes para admin: %s", e)
         return []
 
 
-def _admin_user_list_keyboard(rows) -> InlineKeyboardMarkup:
+def _admin_user_list_keyboard(rows, page: int = 0, total_count: int | None = None) -> InlineKeyboardMarkup:
     buttons = []
     stage_icon = {STAGE_PRE: "🟡", STAGE_POST: "🔵", STAGE_DEPOSITED: "🟢"}
     for chat_id, name, stage, _trading_id, _last_activity in rows:
@@ -1866,6 +1879,16 @@ def _admin_user_list_keyboard(rows) -> InlineKeyboardMarkup:
             f"{icon} {clean_name}",
             callback_data=f"admin_user_open:{chat_id}",
         )])
+
+    if total_count is not None:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ ANTERIOR", callback_data=f"admin_user_list_page:{page - 1}"))
+        if (page + 1) * ADMIN_USER_PAGE_SIZE < total_count:
+            nav.append(InlineKeyboardButton("SIGUIENTE ➡️", callback_data=f"admin_user_list_page:{page + 1}"))
+        if nav:
+            buttons.append(nav)
+
     buttons.extend([
         [InlineKeyboardButton("🔎 BUSCAR USUARIO", callback_data="admin_user_search")],
         [InlineKeyboardButton("↩️ VOLVER AL PANEL", callback_data="admin_user_panel")],
@@ -1874,23 +1897,32 @@ def _admin_user_list_keyboard(rows) -> InlineKeyboardMarkup:
 
 
 def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")],
-        [InlineKeyboardButton("🟢 ACTIVAR CUENTA", callback_data=f"admin_user_activate:{chat_id}")],
+    """Muestra solo la siguiente acción válida según la etapa actual."""
+    stage = get_user_stage(chat_id)
+    buttons = []
+    if stage == STAGE_PRE:
+        buttons.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
+    elif stage == STAGE_POST:
+        buttons.append([InlineKeyboardButton("🟢 DEPÓSITO CONFIRMADO · ACTIVAR CUENTA", callback_data=f"admin_user_activate:{chat_id}")])
+    buttons.extend([
         [InlineKeyboardButton("🔎 BUSCAR OTRO", callback_data="admin_user_search")],
-        [InlineKeyboardButton("👥 USUARIOS RECIENTES", callback_data="admin_user_list")],
+        [InlineKeyboardButton("👥 PENDIENTES RECIENTES", callback_data="admin_user_list")],
     ])
+    return InlineKeyboardMarkup(buttons)
 
 
-def admin_user_quick_keyboard(chat_id: int) -> InlineKeyboardMarkup:
-    """Acciones rápidas asociadas al Telegram ID real del usuario."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}"),
-            InlineKeyboardButton("🟢 ACTIVAR", callback_data=f"admin_user_activate:{chat_id}"),
-        ],
-        [InlineKeyboardButton("👤 GESTIONAR", callback_data=f"admin_user_open:{chat_id}")],
-    ])
+def admin_user_quick_keyboard(chat_id: int, event_kind: str = "") -> InlineKeyboardMarkup:
+    """Acción rápida asociada al Telegram ID real y al evento que acaba de llegar."""
+    stage = get_user_stage(chat_id)
+    rows = []
+    if event_kind == "id" or stage == STAGE_PRE:
+        rows.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
+    elif event_kind == "deposit_proof" and stage == STAGE_POST:
+        rows.append([InlineKeyboardButton("🟢 DEPÓSITO CONFIRMADO · ACTIVAR CUENTA", callback_data=f"admin_user_activate:{chat_id}")])
+    elif stage == STAGE_POST:
+        rows.append([InlineKeyboardButton("🟢 DEPÓSITO CONFIRMADO · ACTIVAR CUENTA", callback_data=f"admin_user_activate:{chat_id}")])
+    rows.append([InlineKeyboardButton("👤 GESTIONAR", callback_data=f"admin_user_open:{chat_id}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _admin_user_record(chat_id: int):
@@ -1915,19 +1947,27 @@ def _admin_user_record(chat_id: int):
         return None
 
 
-async def _show_admin_user_list(context: ContextTypes.DEFAULT_TYPE, text_prefix: str = ""):
-    rows = _admin_recent_users()
+async def _show_admin_user_list(context: ContextTypes.DEFAULT_TYPE, page: int = 0, text_prefix: str = ""):
+    all_rows = _admin_recent_users(ADMIN_USER_MAX_PENDING)
+    total = len(all_rows)
+    max_page = max(0, (total - 1) // ADMIN_USER_PAGE_SIZE) if total else 0
+    page = max(0, min(int(page), max_page))
+    start_idx = page * ADMIN_USER_PAGE_SIZE
+    page_rows = all_rows[start_idx:start_idx + ADMIN_USER_PAGE_SIZE]
+
     text_value = (text_prefix + "\n\n" if text_prefix else "") + (
         "👤 GESTIONAR USUARIO\n\n"
-        "Selecciona una persona reciente o usa BUSCAR USUARIO.\n"
-        "🟡 PRE · 🔵 ID validado · 🟢 Cuenta activa"
+        "Solo aparecen procesos pendientes: 🟡 PRE y 🔵 POST.\n"
+        "Las cuentas activadas desaparecen automáticamente de esta lista."
     )
-    if not rows:
-        text_value += "\n\nNo encontré usuarios recientes todavía."
+    if total:
+        text_value += f"\n\nPendientes: {total} de un máximo de {ADMIN_USER_MAX_PENDING} · Página {page + 1}/{max_page + 1}"
+    else:
+        text_value += "\n\n✅ No hay usuarios pendientes en la lista."
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=text_value,
-        reply_markup=_admin_user_list_keyboard(rows),
+        reply_markup=_admin_user_list_keyboard(page_rows, page=page, total_count=total),
     )
 
 
@@ -2046,6 +2086,11 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    page_match = re.fullmatch(r"admin_user_list_page:(\d+)", data)
+    if page_match:
+        await _show_admin_user_list(context, page=int(page_match.group(1)))
+        return
+
     m = re.fullmatch(r"admin_user_(open|validate|validate_confirm|activate|activate_confirm):(\d+)", data)
     if not m:
         return
@@ -2091,7 +2136,7 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data.pop("admin_user_lookup_mode", None)
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=f"✅ VALIDAR ID — {record['nombre']}\n\nEscribe ahora el ID de trading que ya validaste en tu chat personal (solo números).",
+                text=f"✅ VALIDAR ID — {record['nombre']}\n\nEscribe ahora el ID de trading que ya verificaste (solo números).",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")
                 ]]),
@@ -2136,7 +2181,10 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if action == "activate_confirm":
         ok, msg = await _admin_activate_user(context, chat_id)
-        await _show_admin_user(context, chat_id, msg)
+        if ok:
+            await _show_admin_user_list(context, page=0, text_prefix=msg)
+        else:
+            await _show_admin_user(context, chat_id, msg)
         return
 
 
@@ -3092,7 +3140,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if q.data and q.data.startswith("IMG_IS_DEP|"):
-        saved_id = context.user_data.get("binomo_id")
+        saved_id = _get_saved_trading_id(chat_id)
         if saved_id:
             msg = (
                 (
@@ -3314,52 +3362,57 @@ async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === NOTIFICACIONES AL ADMIN ===
 async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Evita errores en updates editados/atípicos donde no existe update.message.
         if update.message is None or update.effective_user is None:
             return
         usuario = update.message.from_user
         chat_id = usuario.id
-        nombre = f"@{usuario.username}" if usuario.username else usuario.first_name
+        nombre = f"@{usuario.username}" if usuario.username else (usuario.full_name or usuario.first_name or f"Usuario {chat_id}")
         lang = get_user_lang(chat_id)
+        stage = get_user_stage(chat_id)
+        visible_text = (update.message.text or update.message.caption or "").strip()
+        candidate_id = _extract_candidate_trading_id(visible_text)
 
-        # Si es media, reenviamos media con caption incluyendo el ID para poder responder
+        # El botón de acción va pegado al mensaje/foto correcta para no obligar a buscar al usuario.
+        action_rows = [[InlineKeyboardButton("✏️ Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]]
+        if update.message.photo and stage == STAGE_POST:
+            action_rows.append([InlineKeyboardButton(
+                "🟢 DEPÓSITO CONFIRMADO · ACTIVAR CUENTA",
+                callback_data=f"admin_user_activate:{chat_id}",
+            )])
+        elif candidate_id:
+            action_rows.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
+        action_rows.append([InlineKeyboardButton("👤 Gestionar usuario", callback_data=f"admin_user_open:{chat_id}")])
+        admin_markup = InlineKeyboardMarkup(action_rows)
+
         if update.message.photo:
             cap = update.message.caption or ""
-            cap_final = f"📩 Foto de {nombre} (ID: {chat_id}) [lang={lang}]\n\n{cap}"
-            await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=cap_final)
+            stage_hint = "POST · pendiente de depósito" if stage == STAGE_POST else ("PRE · pendiente de validar ID" if stage == STAGE_PRE else "CUENTA ACTIVA")
+            cap_final = f"📩 Foto de {nombre} (ID: {chat_id}) [lang={lang}]\nEstado: {stage_hint}\n\n{cap}"
+            await context.bot.send_photo(
+                chat_id=ADMIN_ID,
+                photo=update.message.photo[-1].file_id,
+                caption=cap_final,
+                reply_markup=admin_markup,
+            )
         elif update.message.video:
             cap = update.message.caption or ""
             cap_final = f"📩 Video de {nombre} (ID: {chat_id}) [lang={lang}]\n\n{cap}"
-            await context.bot.send_video(chat_id=ADMIN_ID, video=update.message.video.file_id, caption=cap_final)
+            await context.bot.send_video(chat_id=ADMIN_ID, video=update.message.video.file_id, caption=cap_final, reply_markup=admin_markup)
         elif update.message.audio:
             cap = update.message.caption or ""
             cap_final = f"📩 Audio de {nombre} (ID: {chat_id}) [lang={lang}]\n\n{cap}"
-            await context.bot.send_audio(chat_id=ADMIN_ID, audio=update.message.audio.file_id, caption=cap_final)
+            await context.bot.send_audio(chat_id=ADMIN_ID, audio=update.message.audio.file_id, caption=cap_final, reply_markup=admin_markup)
         elif update.message.voice:
             cap_final = f"📩 Nota de voz de {nombre} (ID: {chat_id}) [lang={lang}]"
-            await context.bot.send_voice(chat_id=ADMIN_ID, voice=update.message.voice.file_id, caption=cap_final)
+            await context.bot.send_voice(chat_id=ADMIN_ID, voice=update.message.voice.file_id, caption=cap_final, reply_markup=admin_markup)
         else:
-            # Texto
             mensaje_usuario = update.message.text or ""
             texto = (
                 f"📩 Nuevo mensaje de {nombre} (ID: {chat_id}) [lang={lang}]:\n\n"
                 f"🗨️ {mensaje_usuario}\n\n"
-                "✏️ Escribe tu respuesta a este mensaje (o usa audio) respondiendo a este mensaje…"
+                "✏️ Puedes responder desde este mismo aviso."
             )
-            await context.bot.send_message(chat_id=ADMIN_ID, text=texto)
-
-        # Botón para responder (solo cuando hay texto visible)
-        botones = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Responder", callback_data="responder:{}:{}".format(chat_id, update.message.message_id))],
-            [
-                InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}"),
-                InlineKeyboardButton("🟢 ACTIVAR", callback_data=f"admin_user_activate:{chat_id}"),
-            ],
-        ])
-        try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text="Pulsa para responder al usuario:", reply_markup=botones)
-        except:
-            pass
+            await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=admin_markup)
 
     except Exception as e:
         await context.bot.send_message(
@@ -3694,7 +3747,7 @@ NIVELES
 - Básico: desde 50 USD en la cuenta de trading. Formación completa, comunidad inicial y herramientas/señales CRYPTO IDX limitadas.
 - Premium: desde 200 USD. Incluye lo anterior más señales completas del software Premium, bot IA 24/7, operativas en vivo y enfoque multi-broker.
 - Prestige: desde 500 USD. Incluye Premium más mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.
-- Si preguntan con cuánto es ideal iniciar, explica que se puede empezar desde 50 USD, pero que normalmente recomiendo 200 USD o más si está dentro de las posibilidades del usuario, porque desde Premium se aprovechan muchas más herramientas.
+- Si preguntan con cuánto es ideal iniciar, explica que se puede empezar desde 50 USD en Básico, pero con herramientas y señales CRYPTO IDX limitadas. Normalmente recomiendo 200 USD o más si está dentro de las posibilidades del usuario, porque Premium activa muchas más herramientas, incluida la lista completa de señales del Software Premium, Bot IA 24/7, operativas en vivo y enfoque multi-broker.
 - Explica con buenas palabras que un capital más amplio da mayor margen operativo y más flexibilidad para aplicar gestión de riesgo y distribuir mejor las entradas. Eso puede ayudar a aprovechar mejor la estrategia y las herramientas, pero NO garantiza mejores resultados ni ganancias. Nunca digas que más inversión asegura más rentabilidad.
 - Si un usuario tiene menos de 50 USD, no negocies una excepción ni prometas acceso: indícale que debe escribirle directamente a Johanna para revisar su caso.
 
@@ -4624,9 +4677,13 @@ def _immediate_block(intent: str, lang: str):
         )
     if intent == "MIN_50":
         return (
-            "💰 El nivel Básico inicia desde 50 USD. Si en este momento tienes menos, escríbeme directamente para revisar tu caso."
+            "💰 Puedes comenzar desde 50 USD en el nivel Básico. Ese nivel te permite empezar, pero tiene una cantidad más limitada de herramientas y señales CRYPTO IDX.\n\n"
+            "Si está dentro de tus posibilidades, recomiendo 200 USD o más: desde Premium activas muchas más herramientas, incluida la lista completa de señales del Software Premium, Bot IA 24/7 y operativas en vivo.\n\n"
+            "El depósito siempre queda en tu propia cuenta de trading. 🚀"
             if lang == "es" else
-            "💰 The Basic level starts from 50 USD. If you currently have less, message me directly so I can review your case."
+            "💰 You can start from 50 USD at the Basic level. It lets you begin, but with a more limited set of tools and CRYPTO IDX signals.\n\n"
+            "If it is within your possibilities, I recommend 200 USD or more: Premium unlocks many more tools, including the full Premium Software signal list, the 24/7 AI Bot and live trading sessions.\n\n"
+            "The deposit always stays in your own trading account. 🚀"
         )
     if intent in ("VPN", "PAIS"):
         return (
@@ -4933,9 +4990,10 @@ ESTILO DE JOHANNA
 - Contesta primero lo que preguntaron y termina, cuando corresponda, con un CTA claro y motivador hacia el siguiente paso: registro → ID → depósito → acceso.
 - Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer CTA comercial.
 - Si preguntan por niveles/planes/inversión mínima, comienza aclarando que mi comunidad es GRATIS y que el dinero se deposita directamente en la PROPIA cuenta de trading. Muestra Básico/Premium/Prestige con emojis, SIN asteriscos alrededor de los nombres y SIN mencionar Forex automatizado. Incluye Stockity primero y Binomo segundo y recalca que ANTES de depositar deben enviarme el ID para validarlo conmigo.
-- Si preguntan cuánto recomiendo para empezar: se puede iniciar desde 50 USD, pero la recomendación habitual es 200 USD o más si está dentro de sus posibilidades. Explica que un capital mayor ofrece más margen operativo y flexibilidad para gestionar riesgo y distribuir entradas, por lo que puede ayudar a aprovechar mejor las herramientas. NUNCA lo presentes como garantía de mejores resultados o ganancias.
+- Si preguntan cuánto es el mínimo, con cuánto recomiendo empezar, si 50 USD está bien o cuál es la diferencia entre 50 y 200: explica claramente que 50 USD corresponde al Básico y permite comenzar, pero con herramientas y señales CRYPTO IDX limitadas. La recomendación habitual es 200 USD o más si está dentro de sus posibilidades porque Premium activa muchas más herramientas, incluida la lista completa de señales del Software Premium, Bot IA 24/7, operativas en vivo y enfoque multi-broker. Puedes añadir que un capital mayor da más margen para gestión de riesgo, pero NUNCA lo presentes como garantía de mejores resultados o ganancias.
 - FORMATO DE ENLACES: nunca uses Markdown tipo [texto](URL). Si incluyes Stockity/Binomo, usa EXACTAMENTE bloques separados. En español: "🔗 Stockity — opción principal:" + URL en la línea siguiente, una línea en blanco, luego "🔗 Binomo — opción secundaria:" + URL en la línea siguiente. En inglés: "🔗 Stockity — primary option:" + URL, línea en blanco, luego "🔗 Binomo — secondary option:" + URL. Stockity siempre primero y Binomo después.
 - Los ejemplos reales de Johanna sirven para aprender vocabulario, ritmo y conocimiento. No generalices una excepción claramente individual.
+- Si el caso realmente necesita revisión personal de Johanna porque es una excepción de cuenta, restricción, bloqueo o falta un dato que solo ella puede verificar, comienza tu respuesta EXACTAMENTE con [[PERSONAL_CHAT]]. No uses esa marca en preguntas normales que puedas resolver con la información disponible.
 
 LÍMITES IMPORTANTES
 - No inventes información, promociones, cupos, resultados ni horarios exactos no confirmados.
@@ -5050,12 +5108,19 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_lang(chat_id)
     stage = get_user_stage(chat_id)
     answer = await openai_answer(question, chat_id, lang, stage, pending.get("answered_topics") or [])
+    personal_review = False
     if not answer:
+        personal_review = True
         answer = (
-            "Quiero darte una respuesta correcta y este caso necesita revisión directa. Escríbeme aquí 👇"
+            "Este caso necesito revisarlo personalmente contigo. 👇"
             if lang == "es" else
-            "I want to give you an accurate answer and this case needs a direct review. Message me here 👇"
+            "I need to review this case personally with you. 👇"
         )
+    else:
+        marker = "[[PERSONAL_CHAT]]"
+        if answer.lstrip().startswith(marker):
+            personal_review = True
+            answer = answer.lstrip()[len(marker):].lstrip()
 
     # Verificación final inmediatamente antes de enviar, por si Johanna respondió mientras se generaba la respuesta.
     latest = _get_pending_ai(chat_id)
@@ -5067,7 +5132,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=chat_id,
             text=answer,
-            reply_markup=support_keyboard(lang),
+            reply_markup=personal_chat_keyboard(lang) if personal_review else support_keyboard(lang),
             disable_web_page_preview=True,
         )
         _clear_pending_ai_db(chat_id)
@@ -5309,9 +5374,24 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (update.message.caption or "").strip():
             return
 
-    # Imagen sin texto: flujo guiado inmediato.
+    # Si el ID ya está validado (POST), cualquier foto que llegue en esta etapa se trata
+    # como comprobante pendiente de revisión. Así Johanna recibe la captura con el botón
+    # de activación sin obligar al usuario a clasificarla de nuevo.
     if update.message and update.message.photo:
         caption = (update.message.caption or "").strip()
+        current_stage = get_user_stage(chat_id)
+        if current_stage == STAGE_POST:
+            _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
+            _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
+            qtxt = (
+                "✅ Recibido. Estoy revisando tu depósito. Te confirmaré por este chat cuando tu cuenta quede activa."
+                if lang == "es" else
+                "✅ Received. I’m reviewing your deposit. I’ll confirm here once your account is active."
+            )
+            await update.message.reply_text(qtxt, reply_markup=support_keyboard(lang))
+            await send_admin_auto_log(context, update, "DEPOSIT_PROOF_POST", qtxt)
+            return
+
         if not caption:
             qtxt = (
                 "📩 Recibido. ¿Esta imagen es tu ID de Stockity/Binomo, tu comprobante de depósito/activación o era otra cosa?"
@@ -5390,7 +5470,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "MIN_50":
         msg = _immediate_block("MIN_50", lang)
         await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
-        await send_admin_auto_log(context, update, "AUTO_MIN50_ESCALATE", msg)
+        await send_admin_auto_log(context, update, "AUTO_MIN50", msg)
         return
 
     if intent == "DEPOSITO":
@@ -5418,7 +5498,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent in ("GESTION_CAPITAL", "VPN", "PAIS"):
         msg = _immediate_block(intent, lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
         await send_admin_auto_log(context, update, intent, msg)
         return
 
