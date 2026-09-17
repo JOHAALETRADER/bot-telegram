@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.15-20260916-MARKETING-REGISTER-BUTTON"
+BOT_VERSION = "v7.10.17-20260917-USER-FLOW-ADMIN"
 
 
 def utcnow_naive():
@@ -77,12 +77,12 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
         chat_id = update.effective_chat.id
         respuesta = _personalize_referral_links(respuesta, chat_id)
         u = update.effective_user
-        username = u.username or u.full_name or "usuario"
+        user_label = _telegram_display_name(u)
         msg = update.effective_message
         pregunta = ((getattr(msg, "text", None) or getattr(msg, "caption", None) or "").strip() or "(sin texto)")
         text = (
             "🤖 RESPUESTA AUTOMÁTICA\n"
-            f"Usuario: @{username} | ID: {chat_id}\n"
+            f"Usuario: {user_label} | ID: {chat_id}\n"
             f"Intento: {intent}\n\n"
             "Pregunta:\n"
             f"{pregunta}\n\n"
@@ -480,6 +480,52 @@ Estoy aquí para ayudarte a empezar en el mundo del trading de opciones binarias
 MENSAJE_BIENVENIDA_EN = """👋 Hi! I’m JOHAALETRADER.
 I’m here to help you start in binary options trading safely, with guidance and real profitability.
 Ready to register and start earning?"""
+
+
+def _telegram_display_name(user) -> str:
+    """Nombre visible estable: @username si existe; de lo contrario nombre de Telegram."""
+    if user is None:
+        return "✨"
+    username = (getattr(user, "username", None) or "").strip()
+    if username:
+        return f"@{username}"
+    full_name = (getattr(user, "full_name", None) or "").strip()
+    first_name = (getattr(user, "first_name", None) or "").strip()
+    return full_name or first_name or "✨"
+
+
+def _personalized_welcome(user, lang: str = "es") -> str:
+    """Conserva el contenido de bienvenida y personaliza únicamente el saludo."""
+    name = _telegram_display_name(user)
+    if lang == "en":
+        return (
+            f"👋 Hi, {name}! I’m JOHAALETRADER.\n"
+            "I’m here to help you start in binary options trading safely, with guidance and real profitability.\n"
+            "Ready to register and start earning?"
+        )
+    return (
+        f"👋 ¡Hola, {name}! Soy JOHAALETRADER.\n"
+        "Estoy aquí para ayudarte a empezar en el mundo del trading de opciones binarias de forma segura, guiada y rentable.\n"
+        "¿Lista o listo para registrarte y empezar a ganar?"
+    )
+
+
+ADMIN_ID_VALIDATED_ES = (
+    "✅ Tu ID ha sido validado con éxito.\n\n"
+    "El siguiente paso es realizar tu depósito para activar tu cuenta y habilitar tu acceso. 🚀"
+)
+ADMIN_ID_VALIDATED_EN = (
+    "✅ Your ID has been successfully validated.\n\n"
+    "The next step is to make your deposit to activate your account and enable your access. 🚀"
+)
+ADMIN_ACCOUNT_ACTIVE_ES = (
+    "✅ Tu ID y tu depósito han sido validados.\n\n"
+    "🎉 Tu cuenta está activa y tu acceso ha sido confirmado."
+)
+ADMIN_ACCOUNT_ACTIVE_EN = (
+    "✅ Your ID and deposit have been validated.\n\n"
+    "🎉 Your account is active and your access has been confirmed."
+)
 
 MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Abre tu cuenta de trading con uno de mis enlaces oficiales:
 
@@ -1721,18 +1767,28 @@ def schedule_daily_report(application):
 
 # === Teclado de soporte (ES/EN según idioma del usuario) ===
 def support_rows(lang: str = "es"):
+    """Prioriza que la conversación continúe dentro de este chat."""
     if lang == "en":
         return [
-            [InlineKeyboardButton("💬 Message me here", url=SUPPORT_URL)],
+            [InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")],
             [InlineKeyboardButton("🏠 Back to main menu", callback_data="back_main_menu")],
         ]
     return [
-        [InlineKeyboardButton("💬 Escríbeme aquí", url=SUPPORT_URL)],
+        [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
         [InlineKeyboardButton("🏠 Volver al menú principal", callback_data="back_main_menu")],
     ]
 
 def support_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(support_rows(lang))
+
+def personal_chat_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
+    """Acceso secundario al chat personal, reservado para casos que sí requieren atención directa."""
+    label = "📩 MY PERSONAL CHAT" if lang == "en" else "📩 MI CHAT PERSONAL"
+    back = "🏠 Back to main menu" if lang == "en" else "🏠 Volver al menú principal"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, url=SUPPORT_URL)],
+        [InlineKeyboardButton(back, callback_data="back_main_menu")],
+    ])
 
 def remarketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     """Teclado exclusivo del remarketing: registro + soporte + regreso al menú."""
@@ -1768,13 +1824,391 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔴 /live — Aviso LIVE", callback_data="admin_panel_live")],
         [InlineKeyboardButton("📣 /marketing — Marketing manual", callback_data="admin_panel_marketing")],
         [InlineKeyboardButton("📊 /reporte — Reporte del día", callback_data="admin_panel_report")],
+        [InlineKeyboardButton("👤 GESTIONAR USUARIO", callback_data="admin_panel_users")],
         [InlineKeyboardButton("🏠 /start — Inicio", callback_data="admin_panel_start")],
     ])
+
+
+def _admin_recent_users(limit: int = 12):
+    """Usuarios privados recientes para gestión manual, sin depender de @username."""
+    try:
+        with Session() as session:
+            rows = (
+                session.query(Usuario, UserActivity.last_activity_at)
+                .outerjoin(UserActivity, Usuario.telegram_id == UserActivity.telegram_id)
+                .filter(Usuario.telegram_id != str(ADMIN_ID))
+                .order_by(UserActivity.last_activity_at.desc(), Usuario.fecha_registro.desc())
+                .limit(max(1, min(int(limit), 20)))
+                .all()
+            )
+        result = []
+        for user, last_activity in rows:
+            try:
+                cid = int(user.telegram_id)
+            except Exception:
+                continue
+            if not _is_private_user_id(cid):
+                continue
+            result.append((cid, user.nombre or f"Usuario {cid}", user.stage or STAGE_PRE, user.binomo_id or "", last_activity))
+        return result
+    except Exception as e:
+        logging.warning("No pude listar usuarios recientes para admin: %s", e)
+        return []
+
+
+def _admin_user_list_keyboard(rows) -> InlineKeyboardMarkup:
+    buttons = []
+    stage_icon = {STAGE_PRE: "🟡", STAGE_POST: "🔵", STAGE_DEPOSITED: "🟢"}
+    for chat_id, name, stage, _trading_id, _last_activity in rows:
+        clean_name = re.sub(r"\s+", " ", str(name or "Usuario")).strip()[:26]
+        icon = stage_icon.get(stage or STAGE_PRE, "⚪")
+        buttons.append([InlineKeyboardButton(
+            f"{icon} {clean_name}",
+            callback_data=f"admin_user_open:{chat_id}",
+        )])
+    buttons.extend([
+        [InlineKeyboardButton("🔎 BUSCAR USUARIO", callback_data="admin_user_search")],
+        [InlineKeyboardButton("↩️ VOLVER AL PANEL", callback_data="admin_user_panel")],
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")],
+        [InlineKeyboardButton("🟢 ACTIVAR CUENTA", callback_data=f"admin_user_activate:{chat_id}")],
+        [InlineKeyboardButton("🔎 BUSCAR OTRO", callback_data="admin_user_search")],
+        [InlineKeyboardButton("👥 USUARIOS RECIENTES", callback_data="admin_user_list")],
+    ])
+
+
+def admin_user_quick_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+    """Acciones rápidas asociadas al Telegram ID real del usuario."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}"),
+            InlineKeyboardButton("🟢 ACTIVAR", callback_data=f"admin_user_activate:{chat_id}"),
+        ],
+        [InlineKeyboardButton("👤 GESTIONAR", callback_data=f"admin_user_open:{chat_id}")],
+    ])
+
+
+def _admin_user_record(chat_id: int):
+    try:
+        with Session() as session:
+            row = (
+                session.query(Usuario.nombre, Usuario.binomo_id, Usuario.lang, Usuario.stage)
+                .filter_by(telegram_id=str(chat_id))
+                .first()
+            )
+        if not row:
+            return None
+        return {
+            "chat_id": int(chat_id),
+            "nombre": row[0] or f"Usuario {chat_id}",
+            "trading_id": (row[1] or "").strip(),
+            "lang": row[2] if row[2] in ("es", "en") else "es",
+            "stage": row[3] if row[3] in (STAGE_PRE, STAGE_POST, STAGE_DEPOSITED) else STAGE_PRE,
+        }
+    except Exception as e:
+        logging.warning("No pude leer usuario %s para panel admin: %s", chat_id, e)
+        return None
+
+
+async def _show_admin_user_list(context: ContextTypes.DEFAULT_TYPE, text_prefix: str = ""):
+    rows = _admin_recent_users()
+    text_value = (text_prefix + "\n\n" if text_prefix else "") + (
+        "👤 GESTIONAR USUARIO\n\n"
+        "Selecciona una persona reciente o usa BUSCAR USUARIO.\n"
+        "🟡 PRE · 🔵 ID validado · 🟢 Cuenta activa"
+    )
+    if not rows:
+        text_value += "\n\nNo encontré usuarios recientes todavía."
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=text_value,
+        reply_markup=_admin_user_list_keyboard(rows),
+    )
+
+
+async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, prefix: str = ""):
+    record = _admin_user_record(chat_id)
+    if not record:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ No encontré al usuario {chat_id} en la base del bot.")
+        return
+    stage_label = {STAGE_PRE: "PRE — pendiente de validar ID", STAGE_POST: "POST — ID validado / esperando depósito", STAGE_DEPOSITED: "DEPOSITED — cuenta activa"}.get(record["stage"], record["stage"])
+    trading = record["trading_id"] or "No registrado en el bot"
+    text_value = (prefix + "\n\n" if prefix else "") + (
+        f"👤 {record['nombre']}\n"
+        f"Telegram ID: {record['chat_id']}\n"
+        f"Estado: {stage_label}\n"
+        f"ID de trading: {trading}"
+    )
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=text_value,
+        reply_markup=_admin_user_actions_keyboard(chat_id),
+    )
+
+
+async def _admin_finalize_id_validation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, trading_id: str):
+    trading_id = (trading_id or "").strip()
+    if not re.fullmatch(r"\d{6,12}", trading_id):
+        return False, "⚠️ El ID de trading debe contener entre 6 y 12 números."
+    record = _admin_user_record(chat_id)
+    if not record:
+        return False, "⚠️ Ese usuario no está registrado en el bot."
+    if record["stage"] == STAGE_DEPOSITED:
+        return False, "ℹ️ Esa cuenta ya figura como activa (DEPOSITED)."
+    if record["stage"] == STAGE_POST and _strict_validated_id_state(chat_id):
+        return False, "ℹ️ Ese ID ya está validado. No reinicié la Serie B ni sus tiempos."
+
+    try:
+        with Session() as session:
+            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            if not u:
+                return False, "⚠️ Ese usuario no está registrado en el bot."
+            u.binomo_id = trading_id
+            session.commit()
+
+        if not _has_submitted_id_evidence(chat_id, trading_id):
+            _log_event(chat_id, "ID_SUBMITTED", trading_id)
+            _tracking_fire_event(chat_id, "ID_SUBMITTED", trading_id)
+        set_user_stage(chat_id, STAGE_POST)
+        _log_event(chat_id, "ID_VALIDATED", f"ID={trading_id} | ADMIN_MANUAL")
+        _tracking_fire_event(chat_id, "ID_VALIDATED", f"ID={trading_id} | ADMIN_MANUAL")
+        _cancel_jobs_prefix(context, "A", chat_id)
+        schedule_series_b(chat_id, context)
+
+        lang = get_user_lang(chat_id)
+        user_msg = ADMIN_ID_VALIDATED_ES if lang == "es" else ADMIN_ID_VALIDATED_EN
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=support_keyboard(lang))
+        except Exception as e:
+            logging.warning("ID validado manualmente para %s, pero no pude avisarle: %s", chat_id, e)
+        return True, f"✅ ID {trading_id} validado manualmente. Serie A detenida y Serie B activada."
+    except Exception as e:
+        logging.exception("Error validando ID manual de %s", chat_id)
+        return False, f"❌ No pude validar el ID: {e}"
+
+
+async def _admin_activate_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    record = _admin_user_record(chat_id)
+    if not record:
+        return False, "⚠️ Ese usuario no está registrado en el bot."
+    if record["stage"] == STAGE_DEPOSITED:
+        _cancel_jobs_prefix(context, "A", chat_id)
+        _cancel_jobs_prefix(context, "B", chat_id)
+        return False, "ℹ️ Esa cuenta ya está activa (DEPOSITED)."
+
+    current_stage, _ = _repair_inconsistent_stage(chat_id)
+    if current_stage != STAGE_POST or not _strict_validated_id_state(chat_id):
+        return False, "⚠️ Primero debes usar VALIDAR ID para esta persona. Después de confirmar el depósito, usa ACTIVAR CUENTA."
+
+    set_user_stage(chat_id, STAGE_DEPOSITED)
+    _log_event(chat_id, "ACCOUNT_ACTIVATED", "ADMIN_MANUAL")
+    _tracking_fire_event(chat_id, "ACCOUNT_ACTIVATED", "ADMIN_MANUAL")
+    _cancel_jobs_prefix(context, "A", chat_id)
+    _cancel_jobs_prefix(context, "B", chat_id)
+    lang = get_user_lang(chat_id)
+    user_msg = ADMIN_ACCOUNT_ACTIVE_ES if lang == "es" else ADMIN_ACCOUNT_ACTIVE_EN
+    try:
+        await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=build_main_menu(lang))
+    except Exception as e:
+        logging.warning("Cuenta activada manualmente para %s, pero no pude avisarle: %s", chat_id, e)
+    return True, "✅ Cuenta marcada como ACTIVA. A y B canceladas; queda excluida del Marketing Manual."
+
+
+async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    if query.from_user.id != ADMIN_ID:
+        return
+    data = query.data or ""
+
+    if data in ("admin_user_list", "admin_user_panel"):
+        context.user_data.pop("admin_user_lookup_mode", None)
+        context.user_data.pop("admin_user_action", None)
+        if data == "admin_user_panel":
+            await context.bot.send_message(chat_id=ADMIN_ID, text="🔐 PANEL ADMINISTRADOR\n\nElige una opción:", reply_markup=admin_panel_keyboard())
+        else:
+            await _show_admin_user_list(context)
+        return
+
+    if data == "admin_user_search":
+        context.user_data["admin_user_lookup_mode"] = True
+        context.user_data.pop("admin_user_action", None)
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="🔎 Escribe el nombre visible de Telegram o el Telegram ID de la persona.",
+        )
+        return
+
+    m = re.fullmatch(r"admin_user_(open|validate|validate_confirm|activate|activate_confirm):(\d+)", data)
+    if not m:
+        return
+    action, raw_id = m.groups()
+    chat_id = int(raw_id)
+    if not _is_private_user_id(chat_id):
+        await context.bot.send_message(chat_id=ADMIN_ID, text="🛡️ Acción bloqueada: el destino no es un usuario privado.")
+        return
+
+    if action == "open":
+        context.user_data.pop("admin_user_lookup_mode", None)
+        context.user_data.pop("admin_user_action", None)
+        await _show_admin_user(context, chat_id)
+        return
+
+    if action == "validate":
+        record = _admin_user_record(chat_id)
+        if not record:
+            await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ No encontré ese usuario.")
+            return
+        if record["stage"] == STAGE_DEPOSITED:
+            await _show_admin_user(context, chat_id, "ℹ️ Esta persona ya tiene la cuenta activa.")
+            return
+        if record["stage"] == STAGE_POST and _strict_validated_id_state(chat_id):
+            await _show_admin_user(context, chat_id, "ℹ️ El ID ya está validado. No se reinició la Serie B.")
+            return
+        saved_id = record["trading_id"]
+        if saved_id:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    f"✅ VALIDAR ID — {record['nombre']}\n\n"
+                    f"ID guardado: {saved_id}\n\n"
+                    "¿Confirmas que este es el ID correcto que ya validaste?"
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ SÍ, VALIDAR", callback_data=f"admin_user_validate_confirm:{chat_id}")],
+                    [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
+                ]),
+            )
+        else:
+            context.user_data["admin_user_action"] = {"action": "validate_id", "chat_id": chat_id}
+            context.user_data.pop("admin_user_lookup_mode", None)
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"✅ VALIDAR ID — {record['nombre']}\n\nEscribe ahora el ID de trading que ya validaste en tu chat personal (solo números).",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")
+                ]]),
+            )
+        return
+
+    if action == "validate_confirm":
+        record = _admin_user_record(chat_id)
+        if not record or not record["trading_id"]:
+            await _show_admin_user(context, chat_id, "⚠️ Ya no encuentro un ID guardado para validar.")
+            return
+        ok, msg = await _admin_finalize_id_validation(context, chat_id, record["trading_id"])
+        await _show_admin_user(context, chat_id, msg)
+        return
+
+    if action == "activate":
+        record = _admin_user_record(chat_id)
+        if not record:
+            await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ No encontré ese usuario.")
+            return
+        current_stage, _ = _repair_inconsistent_stage(chat_id)
+        if current_stage != STAGE_POST or not _strict_validated_id_state(chat_id):
+            await _show_admin_user(
+                context, chat_id,
+                "⚠️ Primero debes VALIDAR ID. ACTIVAR CUENTA se usa únicamente cuando el depósito ya fue confirmado.",
+            )
+            return
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"🟢 ACTIVAR CUENTA — {record['nombre']}\n\n"
+                "Usa esta opción solo si YA confirmaste el depósito.\n"
+                "Al activarla se cancelarán A y B y quedará fuera del Marketing Manual.\n\n"
+                "¿Confirmas la activación?"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟢 SÍ, ACTIVAR CUENTA", callback_data=f"admin_user_activate_confirm:{chat_id}")],
+                [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
+            ]),
+        )
+        return
+
+    if action == "activate_confirm":
+        ok, msg = await _admin_activate_user(context, chat_id)
+        await _show_admin_user(context, chat_id, msg)
+        return
+
+
+async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Procesa búsqueda/ID manual solo cuando el panel de gestión lo está esperando."""
+    if not update.effective_user or update.effective_user.id != ADMIN_ID or not update.effective_message:
+        return
+    if update.effective_message.reply_to_message:
+        return
+    raw = (update.effective_message.text or "").strip()
+    if not raw:
+        return
+
+    pending = context.user_data.get("admin_user_action") or {}
+    if pending.get("action") == "validate_id":
+        chat_id = int(pending.get("chat_id"))
+        trading_id = re.sub(r"\D", "", raw)
+        if not re.fullmatch(r"\d{6,12}", trading_id):
+            await update.effective_message.reply_text("⚠️ Envíame únicamente el ID de trading (6 a 12 números).")
+            from telegram.ext import ApplicationHandlerStop
+            raise ApplicationHandlerStop
+        context.user_data.pop("admin_user_action", None)
+        ok, msg = await _admin_finalize_id_validation(context, chat_id, trading_id)
+        await _show_admin_user(context, chat_id, msg)
+        from telegram.ext import ApplicationHandlerStop
+        raise ApplicationHandlerStop
+
+    if context.user_data.get("admin_user_lookup_mode"):
+        context.user_data.pop("admin_user_lookup_mode", None)
+        query_text = raw.lstrip("@").strip()
+        rows = []
+        try:
+            with Session() as session:
+                q = session.query(Usuario)
+                if re.fullmatch(r"\d+", query_text):
+                    q = q.filter(Usuario.telegram_id == query_text)
+                else:
+                    q = q.filter(Usuario.nombre.ilike(f"%{query_text}%"))
+                users = q.order_by(Usuario.fecha_registro.desc()).limit(12).all()
+            for u in users:
+                try:
+                    cid = int(u.telegram_id)
+                except Exception:
+                    continue
+                if cid == ADMIN_ID or not _is_private_user_id(cid):
+                    continue
+                rows.append((cid, u.nombre or f"Usuario {cid}", u.stage or STAGE_PRE, u.binomo_id or "", None))
+        except Exception as e:
+            logging.warning("No pude buscar usuario desde panel admin: %s", e)
+
+        if rows:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"🔎 Resultados para: {raw}",
+                reply_markup=_admin_user_list_keyboard(rows),
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"⚠️ No encontré coincidencias para: {raw}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔎 INTENTAR OTRA VEZ", callback_data="admin_user_search")]]),
+            )
+        from telegram.ext import ApplicationHandlerStop
+        raise ApplicationHandlerStop
 
 
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or update.effective_user.id != ADMIN_ID:
         return
+    # Abrir el panel cancela únicamente una búsqueda/entrada manual pendiente de gestión.
+    context.user_data.pop("admin_user_lookup_mode", None)
+    context.user_data.pop("admin_user_action", None)
     await update.effective_message.reply_text(
         "🔐 PANEL ADMINISTRADOR\n\nElige una opción:",
         reply_markup=admin_panel_keyboard(),
@@ -1802,6 +2236,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await marketing_command(update, context)
     elif query.data == "admin_panel_report":
         await context.bot.send_message(chat_id=ADMIN_ID, text=await _daily_report_with_affiliate())
+    elif query.data == "admin_panel_users":
+        await _show_admin_user_list(context)
     elif query.data == "admin_panel_start":
         lang = get_user_lang(ADMIN_ID)
         await context.bot.send_message(
@@ -2309,7 +2745,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
     if lang == "en":
         kb = [
             [InlineKeyboardButton("🚀 CREATE MY ACCOUNT", callback_data="registrarme")],
-            [InlineKeyboardButton("✅ Validate your ID | Questions? DM me", url="https://t.me/Johaaletradervalidacion")],
+            [InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")],
             [InlineKeyboardButton("✅ I already have an account", callback_data="ya_tengo_cuenta")],
             [InlineKeyboardButton("📊 Capital Management", callback_data="gestion_capital_en")],
             [InlineKeyboardButton("🎁 VIP Benefits", callback_data="beneficios_vip")],
@@ -2317,12 +2753,13 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📲 Channel in English", url=CANAL_EN)],
             [InlineKeyboardButton("📊 Results Channel", url=CANAL_RESULTADOS)],
             [InlineKeyboardButton("🌐 Social media", callback_data="redes_sociales")],
+            [InlineKeyboardButton("📩 MY PERSONAL CHAT", url=SUPPORT_URL)],
             [InlineKeyboardButton("🇪🇸 Cambiar a Español", callback_data="set_lang_es")],
         ]
     else:
         kb = [
             [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
-            [InlineKeyboardButton("✅ Valida tu ID | ¿Dudas? Escríbeme", url="https://t.me/Johaaletradervalidacion")],
+            [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
             [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_tengo_cuenta")],
             [InlineKeyboardButton("📊 Gestión de capital", callback_data="gestion_capital")],
             [InlineKeyboardButton("🎁 Beneficios VIP", callback_data="beneficios_vip")],
@@ -2330,6 +2767,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📲 Canal en Español", url=CANAL_ES)],
             [InlineKeyboardButton("📊 Canal de resultados", url=CANAL_RESULTADOS)],
             [InlineKeyboardButton("🌐 Redes sociales", callback_data="redes_sociales")],
+            [InlineKeyboardButton("📩 MI CHAT PERSONAL", url=SUPPORT_URL)],
             [InlineKeyboardButton("🇺🇸 Switch to English", callback_data="set_lang_en")],
         ]
     return InlineKeyboardMarkup(kb)
@@ -2343,10 +2781,12 @@ def build_registration_entry_menu(lang: str = "es") -> InlineKeyboardMarkup:
     if lang == "en":
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 CREATE MY ACCOUNT", callback_data="registrarme")],
+            [InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")],
             [InlineKeyboardButton("🏠 VIEW FULL MENU", callback_data="back_main_menu")],
         ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
+        [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
         [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")],
         [InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_en")],
     ])
@@ -2449,8 +2889,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=ADMIN_ID,
             text=(
                 "📣 Entrada desde publicidad al bot-puerta: "
-                f"@{user.username or 'SinUsername'} (ID: {user.id}) | origen={final_source}."
+                f"{_telegram_display_name(user)} (ID: {user.id}) | origen={final_source}."
             ),
+            reply_markup=admin_user_quick_keyboard(user.id),
         )
         return
 
@@ -2474,13 +2915,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_photo(
                     chat_id=chat_id,
                     photo=InputFile(img),
-                    caption=MENSAJE_BIENVENIDA_ES,
+                    caption=_personalized_welcome(update.effective_user, "es"),
                     reply_markup=entry_keyboard,
                 )
         except FileNotFoundError:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=MENSAJE_BIENVENIDA_ES,
+                text=_personalized_welcome(update.effective_user, "es"),
                 reply_markup=entry_keyboard,
             )
 
@@ -2492,8 +2933,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=ADMIN_ID,
             text=(
                 "🚀 Entrada directa de registro al bot: "
-                f"@{user.username or 'SinUsername'} (ID: {user.id}) | origen={_get_channel_source(chat_id)}."
+                f"{_telegram_display_name(user)} (ID: {user.id}) | origen={_get_channel_source(chat_id)}."
             ),
+            reply_markup=admin_user_quick_keyboard(user.id),
         )
         return
 
@@ -2537,9 +2979,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         mensaje_admin = (
             f"🚀 Llegó al bot desde la bienvenida del {source_label}: "
-            f"@{user.username or 'SinUsername'} (ID: {user.id})."
+            f"{_telegram_display_name(user)} (ID: {user.id})."
         )
-        await context.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=mensaje_admin,
+            reply_markup=admin_user_quick_keyboard(user.id),
+        )
         return
 
     # /start normal: conserva el comportamiento original.
@@ -2547,18 +2993,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Notificar admin
     user = update.effective_user
-    mensaje_admin = f"🚨 El usuario @{user.username or 'SinUsername'} (ID: {user.id}) ejecutó /start (selección de idioma)."
-    await context.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
+    mensaje_admin = f"🚨 El usuario {_telegram_display_name(user)} (ID: {user.id}) ejecutó /start (selección de idioma)."
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=mensaje_admin,
+        reply_markup=admin_user_quick_keyboard(user.id),
+    )
 
 # Enviar bienvenida y menú después de elegir idioma
-async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE):
-    # Bienvenida con imagen si existe
+async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE, telegram_user=None):
+    # Bienvenida con imagen si existe. El saludo usa @username o nombre visible de Telegram.
+    welcome_text = _personalized_welcome(telegram_user, lang)
     try:
         with open(WELCOME_IMG, "rb") as img:
-            await context.bot.send_photo(chat_id=chat_id, photo=InputFile(img),
-                                         caption=(MENSAJE_BIENVENIDA_ES if lang=="es" else MENSAJE_BIENVENIDA_EN))
+            await context.bot.send_photo(chat_id=chat_id, photo=InputFile(img), caption=welcome_text)
     except FileNotFoundError:
-        await context.bot.send_message(chat_id=chat_id, text=(MENSAJE_BIENVENIDA_ES if lang=="es" else MENSAJE_BIENVENIDA_EN))
+        await context.bot.send_message(chat_id=chat_id, text=welcome_text)
 
     # Menú
     await context.bot.send_message(
@@ -2595,6 +3045,16 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if q.data == "ask_here":
+        lang = get_user_lang(chat_id)
+        msg = (
+            "Escribe tu pregunta aquí abajo en este chat 👇"
+            if lang == "es" else
+            "Write your question below in this chat 👇"
+        )
+        await q.message.reply_text(msg)
+        return
+
     # --- Niveles y Planes (informativo) ---
     if q.data == "niveles_planes":
         texto = _personalize_referral_links(respuesta_niveles_es(), chat_id)
@@ -2618,15 +3078,13 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (
                 "Perfecto ✅\n"
                 "Para poder validarlo necesito que me envíes el **ID en texto** (solo el número).\n"
-                "📌 Ábrelo en Stockity o Binomo, cópialo y pégalo aquí.\n\n"
-                "Si prefieres, también puedes escribirme al chat personal 👇"
+                "📌 Ábrelo en Stockity o Binomo, cópialo y pégalo aquí 👇"
             )
             if lang == "es" else
             (
                 "Perfect ✅\n"
                 "To validate it, I need you to send me the **ID as text** (numbers only).\n"
-                "📌 Open your Stockity or Binomo profile, copy the ID and paste it here.\n\n"
-                "If you prefer, you can also message me directly in my personal chat 👇"
+                "📌 Open your Stockity or Binomo profile, copy the ID and paste it here 👇"
             )
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(lang))
@@ -2640,15 +3098,13 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (
                     "Perfecto ✅\n\n"
                     "Recibido. Estoy validando tu depósito ahora mismo.\n"
-                    "Te escribiré de nuevo para confirmar y habilitar tu acceso 🎉\n\n"
-                    "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
+                    "Te escribiré de nuevo para confirmar y habilitar tu acceso 🎉"
                 )
                 if lang == "es" else
                 (
                     "Perfect ✅\n\n"
                     "Received. I’m validating your deposit now.\n"
-                    "I’ll message you again to confirm it and enable your access 🎉\n\n"
-                    "If you prefer, you can also send it to my personal chat using the button below 👇"
+                    "I’ll message you again to confirm it and enable your access 🎉"
                 )
             )
             await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
@@ -2658,14 +3114,12 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             (
                 "Perfecto ✅\n\n"
-                "Recibido. Para continuar, envíame tu **ID de Stockity o Binomo en texto** (solo el número) y lo dejo en validación 👇\n\n"
-                "Si deseas, también puedes enviarlo a mi chat personal tocando el botón 👇"
+                "Recibido. Para continuar, envíame tu **ID de Stockity o Binomo en texto** (solo el número) y lo dejo en validación 👇"
             )
             if lang == "es" else
             (
                 "Perfect ✅\n\n"
-                "Received. To continue, send me your **Stockity or Binomo ID as text** (numbers only) and I’ll leave it for validation 👇\n\n"
-                "If you prefer, you can also send it to my personal chat using the button below 👇"
+                "Received. To continue, send me your **Stockity or Binomo ID as text** (numbers only) and I’ll leave it for validation 👇"
             )
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(lang))
@@ -2676,14 +3130,12 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             (
                 "Listo ✅\n"
-                "Dime qué necesitas exactamente (bono, retiros, ID o horarios).\n"
-                "O escríbeme al chat personal y lo revisamos en 1 minuto 👇"
+                "Dime qué necesitas exactamente (bono, retiros, ID o horarios) y escríbelo aquí abajo 👇"
             )
             if lang == "es" else
             (
                 "Got it ✅\n"
-                "Tell me exactly what you need help with (bonus, withdrawals, ID or schedules).\n"
-                "Or message me directly in my personal chat and I’ll review it with you 👇"
+                "Tell me exactly what you need help with (bonus, withdrawals, ID or schedules) and write it below 👇"
             )
         )
         await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
@@ -2727,12 +3179,12 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "set_lang_es":
         set_user_lang(chat_id, q.from_user.full_name, "es")
         await q.message.reply_text("✅ Idioma cambiado a Español.")
-        await send_welcome_and_menu(chat_id, "es", context)
+        await send_welcome_and_menu(chat_id, "es", context, q.from_user)
         return
     if q.data == "set_lang_en":
         set_user_lang(chat_id, q.from_user.full_name, "en")
         await q.message.reply_text("✅ Language switched to English.")
-        await send_welcome_and_menu(chat_id, "en", context)
+        await send_welcome_and_menu(chat_id, "en", context, q.from_user)
         return
 
     lang = get_user_lang(chat_id)
@@ -2762,7 +3214,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Son objetivos, NO ganancias garantizadas. El trading implica riesgo.\n\n"
             "Si te interesa, escríbeme directamente y te explico condiciones, disponibilidad y proceso 👇"
         )
-        await q.message.reply_text(texto_gestion, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(texto_gestion, reply_markup=personal_chat_keyboard(lang))
 
     elif q.data == "gestion_capital_en":
         texto_gestion = (
@@ -2773,7 +3225,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ These are targets, NOT guaranteed profits. Trading involves risk.\n\n"
             "If you are interested, message me directly so I can explain the current conditions and availability 👇"
         )
-        await q.message.reply_text(texto_gestion, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(texto_gestion, reply_markup=personal_chat_keyboard(lang))
 
     elif q.data == "beneficios_vip":
         await q.message.reply_text(BENEFICIOS_ES if lang=="es" else BENEFICIOS_EN, reply_markup=support_keyboard(lang))
@@ -2898,7 +3350,11 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Botón para responder (solo cuando hay texto visible)
         botones = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Responder", callback_data="responder:{}:{}".format(chat_id, update.message.message_id))]
+            [InlineKeyboardButton("✏️ Responder", callback_data="responder:{}:{}".format(chat_id, update.message.message_id))],
+            [
+                InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}"),
+                InlineKeyboardButton("🟢 ACTIVAR", callback_data=f"admin_user_activate:{chat_id}"),
+            ],
         ])
         try:
             await context.bot.send_message(chat_id=ADMIN_ID, text="Pulsa para responder al usuario:", reply_markup=botones)
@@ -4288,14 +4744,12 @@ def respuesta_next_step_es() -> str:
     return (
         "✅ Perfecto. El **siguiente paso** es validar tu **ID** para confirmar que tu registro quedó bien "
         "**antes de que deposites**.\n\n"
-        "📌 Envíame aquí tu **ID de Stockity o Binomo** (solo el número) y lo dejo en validación.\n\n"
-        "Si prefieres, también puedes escribirme al chat personal 👇"
+        "📌 Envíame aquí tu **ID de Stockity o Binomo** (solo el número) y lo dejo en validación 👇"
     )
 
 def respuesta_where_send_id_es() -> str:
     return (
-        "Sí ✅ Puedes enviarme tu **ID por aquí mismo** (solo el número) y lo dejo en validación.\n\n"
-        "Si prefieres hacerlo directo conmigo, también puedes escribirme al chat personal 👇"
+        "Sí ✅ Puedes enviarme tu **ID por aquí mismo** (solo el número) y lo dejo en validación 👇"
     )
 
 def fallback_johabot_es() -> str:
@@ -4487,7 +4941,8 @@ LÍMITES IMPORTANTES
 - No inventes información, promociones, cupos, resultados ni horarios exactos no confirmados.
 - No prometas ganancias ni resultados garantizados.
 - No confirmes ID, depósito, afiliación, pago ni acceso VIP.
-- Para gestión de capital, menos de 50 USD, VPN/restricción de país, validaciones, comprobantes, bloqueos o revisión de una cuenta específica: deriva directamente a Johanna usando el chat de validación.
+- Para ID y comprobantes: pide que los envíen primero AQUÍ MISMO en este chat para poder continuar el proceso sin sacarlos de la conversación.
+- Para gestión de capital, menos de 50 USD, VPN/restricción de país, bloqueos o casos extraordinarios de una cuenta específica: deriva a Johanna usando el chat de validación.
 - No des instrucciones para evadir KYC, usar identidad/documentos ajenos como si fueran propios, ni saltar restricciones con VPN/proxy.
 - No solicites claves, contraseñas, códigos 2FA, seed phrases ni credenciales.
 - Si falta un dato oficial, dilo con naturalidad y deriva a Johanna; no rellenes huecos.
@@ -5867,6 +6322,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("reportegrupo", report_group_test_command))
     app.add_handler(CommandHandler("version", version_command))
 
+    # Gestión manual de usuarios: solo intercepta texto cuando el panel está esperando
+    # una búsqueda o un ID de trading. Tiene prioridad sobre borradores y respuestas genéricas.
+    app.add_handler(
+        MessageHandler(filters.User(ADMIN_ID) & filters.TEXT & ~filters.COMMAND, admin_user_text_input),
+        group=-5,
+    )
+
     # Captura fotos/texto de borradores antes del manejador normal del admin.
     app.add_handler(
         MessageHandler(filters.User(ADMIN_ID) & (filters.TEXT | filters.PHOTO) & ~filters.COMMAND, admin_draft_capture),
@@ -5883,6 +6345,7 @@ if __name__ == "__main__":
 
     # Panel privado del ADMIN (antes de cualquier callback general).
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel_"))
+    app.add_handler(CallbackQueryHandler(admin_user_callback, pattern="^admin_user_"))
 
     # Confirmación/cancelación LIVE y marketing (antes del callback general).
     app.add_handler(CallbackQueryHandler(live_broadcast_callback, pattern="^(live_broadcast_|live_no_image$)"))
