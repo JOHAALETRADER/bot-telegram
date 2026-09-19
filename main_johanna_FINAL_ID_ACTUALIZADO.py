@@ -55,7 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.24-20260918-ADMIN-DEPOSIT-QUIET"
+BOT_VERSION = "v7.10.26-20260918-PROCESS-BUTTONS-CLEAN"
+# v7.10.26: soporte/menú se reservan para cierres e información;
+# durante pasos operativos se muestra únicamente la acción necesaria para continuar.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
 
 
@@ -473,6 +475,9 @@ VIP_ACCESS_CHANNELS = {
         "name_es": "Divisas Automáticas 24/7 Premium",
         "name_en": "Premium Automatic FX 24/7",
         "url": "https://t.me/+sXmHCpet-kQ2OGFh",
+        # ID real aprendido en prueba Telegram 18/09/2026. Permite reconocer
+        # solicitudes aunque Telegram no entregue invite_link.
+        "chat_id": -1002234063282,
         "levels": (VIP_LEVEL_PRESTIGE,),
         "desc_es": "Señales automáticas de divisas 24/7. La entrada se toma al minuto siguiente de recibir la alerta, expiración de 1 minuto y hasta Martingala 2 opcional.",
         "desc_en": "Automatic currency-pair signals 24/7. Enter on the minute immediately after the alert, with 1-minute expiry and optional Martingale up to level 2.",
@@ -675,10 +680,11 @@ def _broker_flow_set(chat_id: int, *, pending_trading_id=None, pending_deposit_b
 def _broker_selection_keyboard(kind: str, lang: str = "es") -> InlineKeyboardMarkup:
     prefix = "broker_id_select" if kind == "id" else "broker_deposit_select"
     rows = [[
-        InlineKeyboardButton("🔵 BINOMO", callback_data=f"{prefix}:BINOMO"),
-        InlineKeyboardButton("🟣 STOCKITY", callback_data=f"{prefix}:STOCKITY"),
+        # Colores visuales según marca: Binomo amarillo, Stockity azul.
+        InlineKeyboardButton("🟡 BINOMO", callback_data=f"{prefix}:BINOMO"),
+        InlineKeyboardButton("🔵 STOCKITY", callback_data=f"{prefix}:STOCKITY"),
     ]]
-    rows.extend(support_rows(lang))
+    # Paso operativo: no mostramos salidas hasta que el usuario identifique el broker.
     return InlineKeyboardMarkup(rows)
 
 
@@ -782,10 +788,10 @@ def upgrade_conditions_text(lang: str = "es") -> str:
 
 
 def upgrade_info_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
+    """En confirmaciones de depósito muestra solo la información útil del upgrade."""
     label = "ℹ️ VIEW UPGRADE CONDITIONS" if lang == "en" else "ℹ️ VER CONDICIONES DE UPGRADE"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, callback_data="upgrade_conditions")],
-        *support_rows(lang),
     ])
 
 
@@ -916,6 +922,11 @@ VIP_ACCESS_LINK_LOOKUP = {
 VIP_ACCESS_TOKEN_LOOKUP = {
     _invite_token(info["url"]): key for key, info in VIP_ACCESS_CHANNELS.items() if _invite_token(info["url"])
 }
+VIP_ACCESS_CHAT_ID_LOOKUP = {
+    str(info.get("chat_id")): key
+    for key, info in VIP_ACCESS_CHANNELS.items()
+    if info.get("chat_id")
+}
 
 
 VIP_ACCESS_TITLE_ALIASES = {
@@ -925,7 +936,7 @@ VIP_ACCESS_TITLE_ALIASES = {
     "signals_premium": ("SEÑALES PREMIUM +300", "SENALES PREMIUM +300", "PREMIUM +300"),
     "ai_crypto": ("IA PREMIUM AUTOMATICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMÁTICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMATICA CRYPTO IDX 24/7"),
     "module4": ("BINARY TEAMS MODULO 4", "BINARY TEAMS MÓDULO 4", "SMART MONEY CONCEPT"),
-    "fx_auto": ("DIVISAS AUTOMATICAS 24/7 PREMIUM", "DIVISAS AUTOMÁTICAS 24/7 PREMIUM"),
+    "fx_auto": ("DIVISAS AUTOMATICAS 24/7 PREMIUM", "DIVISAS AUTOMÁTICAS 24/7 PREMIUM", "DIVISAS AUTO PREMIUM"),
     "madness": ("MADNESS TRADING AVANZADO", "METODO ALGO Y LIT", "MÉTODO ALGO Y LIT"),
 }
 
@@ -967,6 +978,10 @@ def _vip_access_key_from_request(req) -> str:
 
     chat = getattr(req, "chat", None)
     chat_id = str(getattr(chat, "id", "") or "")
+    if chat_id and chat_id in VIP_ACCESS_CHAT_ID_LOOKUP:
+        key = VIP_ACCESS_CHAT_ID_LOOKUP[chat_id]
+        _vip_learn_channel(key, chat)
+        return key
     if chat_id:
         try:
             with Session() as session:
@@ -1000,7 +1015,8 @@ def _vip_access_keyboard(level: str, lang: str, keys=None) -> InlineKeyboardMark
             continue
         label = info["name_es"] if lang == "es" else info["name_en"]
         rows.append([InlineKeyboardButton(f"🔐 {label}", url=info["url"])])
-    rows.extend(support_rows(lang))
+    # Mientras solicita accesos, solo se muestran los canales pendientes.
+    # Soporte y menú vuelven en la bienvenida final al completar el proceso.
     return InlineKeyboardMarkup(rows)
 
 
@@ -2918,7 +2934,7 @@ async def _admin_finalize_id_validation(context: ContextTypes.DEFAULT_TYPE, chat
         lang = get_user_lang(chat_id)
         user_msg = ADMIN_ID_VALIDATED_ES if lang == "es" else ADMIN_ID_VALIDATED_EN
         try:
-            await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=support_keyboard(lang))
+            await context.bot.send_message(chat_id=chat_id, text=user_msg)
         except Exception as e:
             logging.warning("ID validado manualmente para %s, pero no pude avisarle: %s", chat_id, e)
         return True, f"✅ ID {trading_id} validado manualmente. Serie A detenida y Serie B activada."
@@ -3022,7 +3038,7 @@ async def _admin_apply_deposit_confirmation(context: ContextTypes.DEFAULT_TYPE, 
             set_user_stage(chat_id, STAGE_POST)
         user_msg = _vip_insufficient_message(new_total, lang)
         try:
-            await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=support_keyboard(lang))
+            await context.bot.send_message(chat_id=chat_id, text=user_msg)
         except Exception as e:
             logging.warning("Depósito insuficiente guardado para %s, pero no pude avisarle: %s", chat_id, e)
         missing = VIP_LEVEL_THRESHOLDS_CENTS[VIP_LEVEL_BASIC] - new_total
@@ -3103,7 +3119,6 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await q.message.reply_text(
                 "⚠️ Ya no encuentro un ID pendiente. Envíamelo nuevamente en texto." if lang == "es" else
                 "⚠️ I can no longer find a pending ID. Please send it again as text.",
-                reply_markup=support_keyboard(lang),
             )
             return
 
@@ -3122,7 +3137,7 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             _tracking_fire_event(chat_id, "ID_SUBMITTED", f"BROKER={broker} | ID={trading_id}")
         except Exception:
             logging.exception("No pude guardar ID por broker")
-            await q.message.reply_text("⚠️ No pude guardar ese ID. Intenta nuevamente.", reply_markup=support_keyboard(lang))
+            await q.message.reply_text("⚠️ No pude guardar ese ID. Intenta nuevamente.")
             return
 
         if already_valid:
@@ -3131,7 +3146,7 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 if lang == "es" else
                 f"✅ That {_broker_label(broker)} ID was already validated. You can continue with your deposit or send the proof if you already made it."
             )
-            await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+            await q.message.reply_text(msg)
             return
 
         before_noon = datetime.now(COLOMBIA_TZ).hour < 12
@@ -3143,7 +3158,7 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             msg = f"✅ Tu ID de {_broker_label(broker)} fue recibido y quedó pendiente de validación."
             if before_noon:
                 msg += "\n\nLas validaciones de ID se realizan a partir de las 12:00 p. m. hora Colombia. Recibirás la confirmación por este chat cuando sea revisado."
-        await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(msg)
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
@@ -3169,7 +3184,6 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await q.message.reply_text(
                 f"⚠️ Primero necesito tener validado tu ID de {_broker_label(broker)}. Envíame el ID en texto y selecciónalo como {_broker_label(broker)} antes de revisar este depósito." if lang == "es" else
                 f"⚠️ I first need your {_broker_label(broker)} ID to be validated. Send the ID as text and select {_broker_label(broker)} before this deposit is reviewed.",
-                reply_markup=support_keyboard(lang),
             )
             return
         _broker_flow_set(chat_id, pending_deposit_broker=broker)
@@ -3178,7 +3192,7 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             if lang == "es" else
             f"✅ Perfect. I marked this deposit as {_broker_label(broker)}. I will review it and confirm here."
         )
-        await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(msg)
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
@@ -3226,7 +3240,7 @@ async def _admin_finalize_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id:
             msg = f"✅ Your {_broker_label(broker)} ID has been successfully validated.\n\nYou can now make the deposit in that same trading account. When done, send me the proof here."
         else:
             msg = f"✅ Tu ID de {_broker_label(broker)} fue validado correctamente.\n\nYa puedes realizar el depósito en esa misma cuenta de trading. Cuando lo hagas, envíame aquí el comprobante."
-        await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=support_keyboard(lang))
+        await context.bot.send_message(chat_id=chat_id, text=msg)
         return True, f"✅ ID {_broker_label(broker)} validado: {pending_id}."
     except Exception as e:
         logging.exception("Error validando ID por broker")
@@ -3364,10 +3378,20 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
             disable_web_page_preview=True,
         )
 
-    return True, (
-        f"✅ {_broker_label(broker)}: depósito USD {_usd(preview['amount_cents'])} validado · "
-        f"nivel cuenta {_vip_level_label(broker_level, 'es')} · nivel general {_vip_level_label(new_global, 'es')}."
+    admin_result = (
+        f"✅ DEPÓSITO CONFIRMADO · {_broker_label(broker).upper()}\n\n"
+        f"💰 Monto validado: USD {_usd(preview['amount_cents'])}\n"
+        f"👑 Nivel en {_broker_label(broker)}: {_vip_level_label(broker_level, 'es')}\n"
+        f"⭐ Nivel general JT TRADERS: {_vip_level_label(new_global, 'es')}"
     )
+    if new_keys:
+        admin_result += (
+            f"\n\n🔓 Habilitando {len(new_keys)} acceso(s) correspondiente(s) "
+            f"al nivel {_vip_level_label(new_global, 'es')}."
+        )
+    else:
+        admin_result += "\n\nℹ️ No hay accesos nuevos que habilitar; el nivel general se mantiene."
+    return True, admin_result
 
 
 async def _start_admin_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str):
@@ -3467,9 +3491,10 @@ async def admin_broker_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop("admin_pending_broker_deposit", None)
         context.user_data.pop("admin_user_action", None)
         _, msg = await _admin_apply_broker_deposit(context, chat_id, broker, pending["preview"])
-        # Mantiene limpio el chat administrativo: reutiliza el mensaje de confirmación
-        # y NO despliega la lista de pendientes después de validar un depósito.
-        await _safe_edit_callback_message(query, msg)
+        # Mantiene limpio el chat administrativo: reutiliza la misma tarjeta de
+        # confirmación y NO despliega la lista de pendientes.
+        # IMPORTANTE: este callback usa `q`; `query` no existe en esta función.
+        await _safe_edit_callback_message(q, msg)
         return
 
 
@@ -4779,7 +4804,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📌 Open your Stockity or Binomo profile, copy the ID and paste it here 👇"
             )
         )
-        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
         await send_admin_auto_log(context, update, "IMG_IS_ID", msg)
         return
 
@@ -4799,7 +4824,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "I’ll message you again to confirm it and enable your access 🎉"
                 )
             )
-            await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+            await q.message.reply_text(msg)
             await send_admin_auto_log(context, update, "AUTO_IMG_DEPOSIT_VALIDATING", msg)
             return
 
@@ -4814,7 +4839,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Received. To continue, send me your **Stockity or Binomo ID as text** (numbers only) and I’ll leave it for validation 👇"
             )
         )
-        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
         await send_admin_auto_log(context, update, "AUTO_IMG_DEPOSIT_NEED_ID", msg)
         return
 
@@ -4850,7 +4875,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
         context.user_data["awaiting_deposit_proof"] = True
-        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM_BTN", msg)
         return
 
@@ -4883,15 +4908,14 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "registrarme":
         if lang == "es":
-            await q.message.reply_text(_personalize_referral_links(MENSAJE_REGISTRARME_ES, chat_id), reply_markup=support_keyboard(lang))
+            await q.message.reply_text(_personalize_referral_links(MENSAJE_REGISTRARME_ES, chat_id))
             # Video SOLO en español
             await q.message.reply_video(
                 video="BAACAgEAAxkBAAIBaGhdq0nQXi6B4N8uRwmaOHKkUarbAAIMBgACTgAB8UbIZIU9XTMCzjYE",
                 caption="📹 Paso a paso en el vídeo",
-                reply_markup=support_keyboard(lang),
             )
         else:
-            await q.message.reply_text(_personalize_referral_links(MENSAJE_REGISTRARME_EN, chat_id), reply_markup=support_keyboard(lang))
+            await q.message.reply_text(_personalize_referral_links(MENSAJE_REGISTRARME_EN, chat_id))
 
     elif q.data == "ya_tengo_cuenta":
         _msg_account = MENSAJE_YA_TENGO_CUENTA_ES if lang=="es" else MENSAJE_YA_TENGO_CUENTA_EN
@@ -7110,7 +7134,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == "es" else
                     f"✅ Received. I’m reviewing your {_broker_label(brokers[0])} deposit. I’ll confirm here once it is validated."
                 )
-                await update.message.reply_text(qtxt, reply_markup=support_keyboard(lang))
+                await update.message.reply_text(qtxt)
                 log_intent = f"DEPOSIT_PROOF_{brokers[0]}"
             else:
                 # Usuario de una versión anterior: antes de sumar cualquier depósito
@@ -7138,7 +7162,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("💳 Es mi depósito" if lang == "es" else "💳 This is my deposit", callback_data=f"IMG_IS_DEP|{chat_id}")
                 ],
                 [InlineKeyboardButton("❌ Era otra cosa" if lang == "es" else "❌ Something else", callback_data=f"IMG_IS_OTHER|{chat_id}")],
-                *support_rows(lang),
             ])
             await update.message.reply_text(qtxt, reply_markup=kb)
             await send_admin_auto_log(context, update, "AUTO_IMAGE", qtxt)
@@ -7185,13 +7208,13 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent == "REGISTRO":
         msg = MENSAJE_REGISTRARME_ES if lang == "es" else MENSAJE_REGISTRARME_EN
-        await _send_user_blocks(update, msg, reply_markup=support_keyboard(lang))
+        await _send_user_blocks(update, msg)
         await send_admin_auto_log(context, update, "REGISTRO", msg)
         return
 
     if intent == "YA_REGISTRE":
         msg = _immediate_block("YA_REGISTRE", lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await update.message.reply_text(msg)
         await send_admin_auto_log(context, update, "AUTO_YA_REGISTRE", msg)
         return
 
@@ -7229,7 +7252,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if lang == "es" else
                 "Perfect ✅\n\nSend me your deposit/activation proof and your Stockity/Binomo ID as text so it can be validated and your access enabled."
             )
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await update.message.reply_text(msg)
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM", msg)
         return
 
@@ -7249,7 +7272,13 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent in ("NEXT_STEP", "WHERE_SEND_ID", "NIVELES", "LIVE", "ID", "BENEFICIOS", "SENALES", "BOT_IA"):
         msg = _immediate_block(intent, lang)
         if msg:
-            keyboard = live_keyboard(lang) if intent == "LIVE" else support_keyboard(lang)
+            if intent == "LIVE":
+                keyboard = live_keyboard(lang)
+            elif intent in ("NIVELES", "BENEFICIOS", "SENALES", "BOT_IA"):
+                keyboard = support_keyboard(lang)
+            else:
+                # NEXT_STEP / WHERE_SEND_ID / ID forman parte del flujo de registro.
+                keyboard = None
             await _send_user_blocks(update, msg, reply_markup=keyboard)
             await send_admin_auto_log(context, update, intent, msg)
             return
