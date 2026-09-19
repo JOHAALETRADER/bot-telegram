@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.35-20260919-AI-CONVERSATION-CONTEXT-5MIN"
+BOT_VERSION = "v7.10.38-20260919-CAPITAL-GENERAL-PRIVACY"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -1780,6 +1780,40 @@ Register with my link, send me your ID before depositing, and let me validate yo
 
 When you finish, send me your ID and we will continue."""
 
+# Gestión de capital — texto informativo del BOTÓN del menú.
+# Las consultas libres sobre gestión/VPN siguen escalándose directamente a Johanna.
+GESTION_CAPITAL_BUTTON_ES = """📊 GESTIÓN DE CAPITAL
+
+La gestión de cuenta/capital la manejo personalmente y cada caso se acuerda de forma individual.
+
+🔹 Modalidad 3 meses — desde 200 USD
+Objetivo estimado de 20–30% mensual, sujeto al resultado real de la operativa. Al finalizar el tercer mes se liquida el ciclo según resultados y se devuelve el capital correspondiente.
+
+🔹 Modalidad 2 meses — desde 100 USD
+Estructura orientativa de hasta 30 USD semanales durante 2 meses, sujeta a resultados.
+
+🤝 También podemos acordar otras modalidades según el capital, el plazo, los objetivos y las condiciones de cada caso. Cualquier modalidad adicional se define conmigo directamente antes de iniciar.
+
+⚠️ Estas cifras son objetivos, no ganancias garantizadas. El trading implica riesgo y puede haber pérdidas. Mi compromiso es gestionar con enfoque de preservación del capital, respetar al máximo lo acordado y explicarte claramente las condiciones antes de comenzar.
+
+📩 Para revisar tu caso y acordar la modalidad adecuada, escríbeme directamente en mi chat personal."""
+
+GESTION_CAPITAL_BUTTON_EN = """📊 CAPITAL MANAGEMENT
+
+I handle account/capital management personally, and each case is agreed individually.
+
+🔹 3-month option — from USD 200
+Estimated target of 20–30% per month, subject to actual trading results. At the end of the third month, the cycle is settled according to results and the corresponding capital is returned.
+
+🔹 2-month option — from USD 100
+Indicative structure of up to USD 30 per week for 2 months, subject to results.
+
+🤝 Other arrangements can also be agreed depending on capital, timeframe, objectives and the conditions of each case. Any additional arrangement is defined with me directly before starting.
+
+⚠️ These figures are targets, not guaranteed profits. Trading involves risk and losses can occur. My commitment is to manage with a capital-preservation focus, respect the agreed terms as closely as possible, and explain the conditions clearly before starting.
+
+📩 To review your case and agree on the right arrangement, message me directly in my personal chat."""
+
 # Beneficios (ES/EN)
 BENEFICIOS_ES = """✨ Beneficios JT TRADERS TEAMS ✨
 
@@ -2659,43 +2693,54 @@ async def _vip_finalize_confirmed_membership(
 
 
 async def cleanup_vip_membership_service_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Elimina avisos de altas/bajas de miembros en grupos VIP conocidos.
+    """Protege privacidad en espacios VIP y mantiene vacío el General de Premium +300.
 
-    Telegram publica mensajes de servicio como "Se aceptó a ..." o "... salió del
-    grupo" dentro del tema General. Aunque los miembros estén ocultos, esos avisos
-    pueden exponer nombres/perfiles. Este handler los borra apenas llegan.
+    1) En cualquier grupo VIP conocido elimina avisos de alta/baja que exponen nombres.
+    2) En Señales Premium +300 elimina CUALQUIER mensaje nuevo que Telegram coloque
+       dentro del tema General (thread_id=1), para que ese tema no vuelva a acumular
+       contenido visible. No toca ningún otro tema de señales.
 
-    Solo actúa en chats reconocidos por VIP_ACCESS_CHANNELS/VIPChannelMap. No toca
-    mensajes normales, señales, cursos, temas ni otros grupos del bot.
+    Importante: el Bot API no permite recorrer/borrar de forma retroactiva todo el
+    historial antiguo del tema General; esta rutina evita nueva acumulación.
     """
     msg = update.effective_message
     chat = update.effective_chat
     if not msg or not chat:
         return
 
-    joined = list(getattr(msg, "new_chat_members", None) or [])
-    left = getattr(msg, "left_chat_member", None)
-    if not joined and not left:
-        return
-
     access_key = _vip_access_key_from_chat(chat)
     if not access_key:
+        return
+
+    joined = list(getattr(msg, "new_chat_members", None) or [])
+    left = getattr(msg, "left_chat_member", None)
+    membership_service = bool(joined or left)
+
+    try:
+        thread_id = int(getattr(msg, "message_thread_id", 0) or 0)
+    except Exception:
+        thread_id = 0
+    premium_general = access_key == "signals_premium" and thread_id == 1
+
+    if not membership_service and not premium_general:
         return
 
     try:
         await context.bot.delete_message(chat_id=chat.id, message_id=msg.message_id)
         logging.info(
-            "🧹 Aviso de membresía VIP eliminado: chat=%s access=%s message_id=%s tipo=%s",
+            "🧹 Privacidad VIP: mensaje eliminado chat=%s access=%s thread=%s message_id=%s tipo=%s",
             chat.id,
             access_key,
+            thread_id,
             msg.message_id,
-            "JOIN" if joined else "LEAVE",
+            "GENERAL_PREMIUM" if premium_general else ("JOIN" if joined else "LEAVE"),
         )
     except Exception as e:
         logging.warning(
-            "No pude eliminar aviso de membresía VIP: chat=%s access=%s message_id=%s error=%s",
+            "No pude eliminar mensaje de privacidad VIP: chat=%s access=%s thread=%s message_id=%s error=%s",
             getattr(chat, "id", None),
             access_key,
+            thread_id,
             getattr(msg, "message_id", None),
             e,
         )
@@ -2704,8 +2749,9 @@ async def cleanup_vip_membership_service_message(update: Update, context: Contex
                 chat_id=ADMIN_ID,
                 text=(
                     "⚠️ LIMPIEZA PRIVACIDAD VIP\n\n"
-                    f"No pude borrar un aviso de ingreso/salida en: {getattr(chat, 'title', None) or access_key}\n"
+                    f"No pude borrar un mensaje en: {getattr(chat, 'title', None) or access_key}\n"
                     f"Chat ID: {getattr(chat, 'id', None)}\n"
+                    f"Tema/Thread ID: {thread_id or 'sin thread'}\n"
                     f"Mensaje ID: {getattr(msg, 'message_id', None)}\n\n"
                     "Revisa que JOHAALETRADER_bot conserve el permiso para eliminar mensajes."
                 ),
@@ -3371,15 +3417,14 @@ def _ai_needs_levels_button(question: str) -> bool:
     return any(x in t for x in terms)
 
 
-def ai_context_keyboard(question: str, lang: str = "es") -> InlineKeyboardMarkup:
-    """Añade un CTA de niveles solo cuando la respuesta lo necesita."""
+def ai_context_keyboard(question: str, lang: str = "es"):
+    """CTA contextual mínimo: no añade soporte genérico a cada respuesta de IA."""
     rows = []
     if _ai_needs_levels_button(question):
         label = "📊 VIEW MY COMMUNITY LEVELS" if lang == "en" else "📊 MIRA LOS NIVELES DE MI COMUNIDAD"
         callback = "levels_plans_en" if lang == "en" else "niveles_planes"
         rows.append([InlineKeyboardButton(label, callback_data=callback)])
-    rows.extend(support_rows(lang))
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 def _is_simple_bonus_lookup(texto: str) -> bool:
@@ -5846,26 +5891,12 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(_personalize_referral_links(_msg_account, chat_id), reply_markup=support_keyboard(lang))
 
     elif q.data == "gestion_capital":
-        texto_gestion = (
-            "📊 GESTIÓN DE CAPITAL\n\n"
-            "Tengo dos modalidades disponibles y este proceso lo reviso personalmente contigo.\n\n"
-            "• Modalidad 3 meses: desde 200 USD. Objetivo estimado de 20–30% mensual, sujeto a resultados del trading.\n"
-            "• Modalidad 2 meses: desde 100 USD. La estructura planteada busca generar hasta 30 USD semanales, sujeto a resultados.\n\n"
-            "⚠️ Son objetivos, NO ganancias garantizadas. El trading implica riesgo.\n\n"
-            "Si te interesa, escríbeme directamente y te explico condiciones, disponibilidad y proceso 👇"
-        )
-        await q.message.reply_text(texto_gestion, reply_markup=personal_chat_keyboard(lang))
+        # El botón informa las modalidades y termina siempre en atención personal.
+        await q.message.reply_text(GESTION_CAPITAL_BUTTON_ES, reply_markup=personal_chat_keyboard("es"))
 
     elif q.data == "gestion_capital_en":
-        texto_gestion = (
-            "📊 CAPITAL MANAGEMENT\n\n"
-            "I currently have two options, and I review this process with you personally.\n\n"
-            "• 3-month option: from 200 USD. Estimated target of 20–30% per month, subject to trading results.\n"
-            "• 2-month option: from 100 USD. The structure aims for up to 30 USD per week, subject to results.\n\n"
-            "⚠️ These are targets, NOT guaranteed profits. Trading involves risk.\n\n"
-            "If you are interested, message me directly so I can explain the current conditions and availability 👇"
-        )
-        await q.message.reply_text(texto_gestion, reply_markup=personal_chat_keyboard(lang))
+        # Same rule in English: information + direct personal handoff.
+        await q.message.reply_text(GESTION_CAPITAL_BUTTON_EN, reply_markup=personal_chat_keyboard("en"))
 
     elif q.data == "beneficios_vip":
         await q.message.reply_text(BENEFICIOS_ES if lang=="es" else BENEFICIOS_EN, reply_markup=support_keyboard(lang))
@@ -6220,15 +6251,12 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                 except Exception as _e:
                     logging.info("No pude procesar gatillo de respuesta manual: %s", _e)
 
-                if response_type == "voice" and learned_reply:
+                if response_type == "voice":
+                    # La transcripción, si existe, queda en memoria interna; no se muestra
+                    # en el chat administrativo para evitar ruido visual.
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
-                        text="✅ Audio enviado al usuario y transcrito para aprendizaje de estilo."
-                    )
-                elif response_type == "voice":
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text="✅ Audio enviado al usuario. (La transcripción para aprendizaje no estuvo disponible, pero el envío funcionó correctamente.)"
+                        text="✅ Audio enviado al usuario correctamente."
                     )
                 else:
                     await context.bot.send_message(
@@ -7042,7 +7070,10 @@ def detect_intent_es(texto: str) -> str:
         "gestion de cuenta", "gestión de cuenta", "gestionar mi cuenta", "gestiones mi cuenta",
         "me ayudas a gestionar", "me ayudarías a gestionar", "me ayudarias a gestionar",
         "gestionar con bono", "gestionar con un bono", "manejar mi cuenta", "manejes mi cuenta",
-        "operar mi cuenta", "operes mi cuenta", "administrar mi cuenta", "administres mi cuenta"
+        "operar mi cuenta", "operes mi cuenta", "administrar mi cuenta", "administres mi cuenta",
+        "tu gestionaras", "tú gestionarás", "usted gestionara", "usted gestionará",
+        "vas a gestionar mi cuenta", "me vas a gestionar", "me gestionaras", "me gestionarás",
+        "tu gestionarias", "tú gestionarías", "usted gestionaria", "usted gestionaría"
     ]):
         return "GESTION_CAPITAL"
 
@@ -7190,6 +7221,9 @@ def detect_all_intents(texto: str):
         "me ayudas a gestionar", "me ayudarías a gestionar", "me ayudarias a gestionar",
         "gestionar con bono", "gestionar con un bono", "manejar mi cuenta", "manejes mi cuenta",
         "operar mi cuenta", "operes mi cuenta", "administrar mi cuenta", "administres mi cuenta",
+        "tu gestionaras", "tú gestionarás", "usted gestionara", "usted gestionará",
+        "vas a gestionar mi cuenta", "me vas a gestionar", "me gestionaras", "me gestionarás",
+        "tu gestionarias", "tú gestionarías", "usted gestionaria", "usted gestionaría",
     ]):
         _add_intent(found, "GESTION_CAPITAL")
 
@@ -7714,6 +7748,121 @@ def _organize_ai_registration_links(answer: str, lang: str) -> str:
     return f"{body}\n\n{links_block}".strip() if body else links_block
 
 
+
+def _recent_manual_context_text(chat_id: int, limit: int = 10) -> str:
+    """Texto reciente escrito/dicho realmente por Johanna, solo para validar acuerdos."""
+    parts = []
+    for item in reversed(_load_ai_history(chat_id)):
+        if item.get("role") != "assistant" or str(item.get("source") or "").lower() != "manual":
+            continue
+        content = str(item.get("content") or "").strip()
+        if content:
+            parts.append(content)
+        if len(parts) >= max(1, int(limit)):
+            break
+    return "\n".join(reversed(parts))
+
+
+def _manual_context_supports_management_commitment(chat_id: int) -> bool:
+    """Solo una respuesta REAL y positiva de Johanna puede respaldar un acuerdo de gestión."""
+    t = _norm(_recent_manual_context_text(chat_id, limit=10))
+    if not t:
+        return False
+    negative = (
+        "no voy a gestionar", "no gestiono", "no puedo gestionar", "no manejo cuentas",
+        "no voy a manejar", "no voy a administrar", "no voy a operar", "no creare", "no crearé",
+    )
+    if any(_norm(x) in t for x in negative):
+        return False
+    positive_patterns = (
+        r"\b(?:yo )?(?:voy a|me encargo de|puedo|hare|haré)\b.{0,80}\b(?:gestionar|manejar|administrar|operar|crear)\b",
+        r"\b(?:gestionar|manejar|administrar|operar|crear)\b.{0,80}\b(?:yo lo hago|yo me encargo|conmigo|quedamos|acordamos)\b",
+    )
+    return any(re.search(pat, t, re.IGNORECASE | re.DOTALL) for pat in positive_patterns)
+
+
+def _conversation_evidence_text(chat_id: int) -> str:
+    """Evidencia fiable para afirmaciones: usuario + respuestas manuales reales de Johanna."""
+    parts = []
+    for item in _load_ai_history(chat_id)[-16:]:
+        role = item.get("role")
+        source = str(item.get("source") or "").lower()
+        if role == "user" or (role == "assistant" and source == "manual"):
+            content = str(item.get("content") or "").strip()
+            if content:
+                parts.append(content)
+    return "\n".join(parts)
+
+
+def _ai_answer_context_guard(answer: str, question: str, chat_id: int, lang: str) -> tuple[str, bool]:
+    """Evita que la IA invente acuerdos/acciones personales no respaldados por el historial.
+
+    Devuelve (respuesta, personal_review). Se aplica DESPUÉS del modelo porque una
+    instrucción de prompt por sí sola no basta para impedir todos los falsos acuerdos.
+    """
+    answer = (answer or "").strip()
+    if not answer:
+        return answer, False
+
+    an = _norm(answer)
+    qn = _norm(question or "")
+    reliable_history = _norm(_conversation_evidence_text(chat_id))
+    evidence = f"{qn}\n{reliable_history}"
+
+    # Compromisos sensibles: la IA no puede prometer que Johanna va a gestionar,
+    # administrar, operar o crear una cuenta salvo que Johanna lo haya dicho realmente.
+    commitment_phrases = (
+        "procedere a gestionar", "procederé a gestionar", "voy a gestionar tu cuenta",
+        "gestionare tu cuenta", "gestionaré tu cuenta", "administrare tu cuenta",
+        "administraré tu cuenta", "voy a administrar tu cuenta", "operare tu cuenta",
+        "operaré tu cuenta", "voy a operar tu cuenta", "creare tu cuenta", "crearé tu cuenta",
+        "voy a crear tu cuenta", "yo creare la cuenta", "yo crearé la cuenta",
+    )
+    generic_commitment = bool(re.search(
+        r"\b(?:voy a|procedere a|procederé a|me encargare de|me encargaré de|yo voy a|yo puedo)\b.{0,90}\b(?:gestionar|manejar|administrar|operar|crear)\b",
+        an, re.IGNORECASE | re.DOTALL
+    ))
+    unsupported_management_commitment = (
+        (any(_norm(p) in an for p in commitment_phrases) or generic_commitment)
+        and not _manual_context_supports_management_commitment(chat_id)
+    )
+
+    # No afirmar como hecho que el usuario acaba de completar pasos solo porque el
+    # stage interno diga PRE/POST/DEPOSITED. El estado operativo no sustituye la conversación.
+    status_claims = (
+        "has completado tu registro", "completaste tu registro", "ya completaste tu registro",
+        "al haber completado tu registro", "has realizado el deposito", "has realizado el depósito",
+        "realizaste el deposito", "realizaste el depósito", "ya realizaste el deposito",
+        "ya realizaste el depósito",
+    )
+    status_evidence_terms = (
+        "ya me registre", "ya me registré", "complete el registro", "completé el registro",
+        "ya deposite", "ya deposité", "hice el deposito", "hice el depósito",
+        "deposito confirmado", "depósito confirmado", "registro completado",
+    )
+    unsupported_status_claim = (
+        any(_norm(p) in an for p in status_claims)
+        and not any(_norm(p) in evidence for p in status_evidence_terms)
+    )
+
+    if not (unsupported_management_commitment or unsupported_status_claim):
+        return answer, False
+
+    # Si el historial no respalda ese acuerdo, es preferible una aclaración breve
+    # y humana a inventar un paso del proceso.
+    if lang == "en":
+        safe = (
+            "[[PERSONAL_CHAT]] I understand what you mean 😊 but I don’t want to assume or change what we may have already agreed about account management. "
+            "Before you register again or send an ID, message me directly and I’ll continue from the exact point we left off."
+        )
+    else:
+        safe = (
+            "[[PERSONAL_CHAT]] Entiendo lo que me dices 😊, pero no quiero asumir ni cambiar lo que podamos haber acordado sobre la gestión. "
+            "Antes de volver a registrarte o enviarme un ID, escríbeme directamente y continuamos exactamente desde el punto en que quedamos."
+        )
+    return safe, True
+
+
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
@@ -7771,6 +7920,10 @@ ESTILO DE JOHANNA
 - Una referencia como “no me deja ingresar” debe resolverse usando el contexto inmediato. Si el historial y el estado operativo muestran accesos VIP pendientes, “ingresar” significa entrar al canal de Telegram, no iniciar sesión en un broker.
 - PRIORIDAD MÁXIMA AL CONTEXTO HUMANO: si el historial muestra “JOHANNA (RESPUESTA PERSONAL REAL)”, esa respuesta proviene realmente de Johanna por texto o de una nota de voz transcrita. Continúa desde lo que Johanna y el usuario YA acordaron. No reinicies el flujo, no contradigas acuerdos previos y no conviertas una frase de seguimiento en una FAQ aislada por una sola palabra.
 - Antes de responder una continuación (“entonces”, “mañana”, “listo”, “pero”, “en ese caso”, “no haría falta”, etc.), reconstruye mentalmente las últimas intervenciones USUARIO ↔ JOHANNA y responde a ESA conversación.
+- SI EL MENSAJE DEPENDE DE ALGO ACORDADO ANTES y ese acuerdo NO aparece claramente en el historial, NO lo inventes ni lo completes por intuición. Haz una sola pregunta breve de aclaración o deriva a mi chat personal si se trata de gestión de cuenta.
+- ETAPA/ESTADO INTERNO NO ES CONVERSACIÓN: PRE, POST, DEPOSITED, nivel o depósitos guardados sirven como contexto operativo, pero NO significan que el usuario acaba de registrarse, acaba de depositar o que yo haya aceptado gestionar/crear/operar una cuenta. No afirmes esos hechos como parte de la conversación salvo que el mensaje o historial los confirme de forma explícita.
+- ACUERDOS DE GESTIÓN: jamás prometas “voy a gestionar tu cuenta”, “procederé a gestionar tu cuenta”, “voy a crear tu cuenta”, “voy a operar tu cuenta” o equivalentes por iniciativa propia. Solo puedes continuar un acuerdo así si aparece de forma clara en una “JOHANNA (RESPUESTA PERSONAL REAL)”. Si no aparece, usa [[PERSONAL_CHAT]] y evita confirmar el supuesto.
+- CONVERSACIÓN NATURAL: si el usuario está continuando una charla, responde como continuación humana, normalmente en 1–3 frases. Evita cierres genéricos de atención al cliente como “estoy aquí para ayudarte en todo lo que necesites”, “mucha suerte en esta nueva etapa” o párrafos motivacionales que no respondan al punto concreto.
 - Está PROHIBIDO sugerir “restablecer contraseña” o “ir al sitio del broker” como respuesta a un problema de acceso a canales/enlaces de Telegram.
 - Si preguntan si recomiendo un bono o por sus condiciones/volumen, responde esa situación; no enumeres códigos salvo que pregunten por los códigos/bonos activos.
 - Si preguntan diferencia entre software y bot, explica la diferencia exacta. Software Premium Anticipado = más de 300 señales lun-sáb; bots/IA = alertas automáticas 24/7 según el nivel dentro de mi comunidad.
@@ -7828,6 +7981,10 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             translated = await _translate_to_english(answer)
             if translated:
                 answer = translated
+
+        # Cinturón adicional: el modelo no puede crear acuerdos personales de gestión
+        # ni afirmar pasos completados sin evidencia conversacional explícita.
+        answer, _guard_personal = _ai_answer_context_guard(answer, question, chat_id, lang)
 
         # Presentación estable de links para Telegram: sin Markdown literal y con separación.
         answer = _organize_ai_registration_links(answer, lang)
@@ -8033,11 +8190,13 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
     effective_intents = [i for i in intents if i != "GREETING"] or intents
     handled_operational = []
 
-    if "GESTION_CAPITAL" in effective_intents:
-        msg = _immediate_block("GESTION_CAPITAL", lang)
-        await update.effective_message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
-        await send_admin_auto_log(context, update, "GESTION_CAPITAL", msg)
-        return True
+    # Temas sensibles/personalizados: nunca los resuelve la IA. Se derivan directo a Johanna.
+    for sensitive_intent in ("GESTION_CAPITAL", "VPN", "PAIS"):
+        if sensitive_intent in effective_intents:
+            msg = _immediate_block(sensitive_intent, lang)
+            await update.effective_message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
+            await send_admin_auto_log(context, update, sensitive_intent, msg)
+            return True
 
     if "ID_SUBMIT" in effective_intents:
         _record_submitted_trading_id(chat_id, texto, context)
@@ -8105,20 +8264,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user_audio_transcript:
             # Si la transcripción falla, priorizamos revisión humana y no inventamos contexto.
             return
-        try:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=(
-                    f"📝 TRANSCRIPCIÓN DEL AUDIO DEL USUARIO (ID: {chat_id})\n\n"
-                    f"{user_audio_transcript}"
-                ),
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✏️ Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")],
-                    [InlineKeyboardButton("👤 Gestionar usuario", callback_data=f"admin_user_open:{chat_id}")],
-                ]),
-            )
-        except Exception as e:
-            logging.info("No pude enviar transcripción del usuario al admin: %s", e)
+        # La transcripción se conserva SOLO como contexto interno para la IA.
+        # Johanna ya recibe el audio original mediante notificar_admin(); no duplicamos
+        # el chat administrativo con un segundo mensaje que muestre el texto transcrito.
 
     # Video sin caption se mantiene en revisión humana; no inferimos su contenido.
     if update.message.video and not (update.message.caption or "").strip():
@@ -8216,6 +8364,16 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intents, unknown_parts = _question_analysis(texto)
     meaningful = [i for i in intents if i != "GREETING"]
 
+    # PRIORIDAD ABSOLUTA PARA TEMAS PERSONALES/SENSIBLES.
+    # Incluso si ya existe una conversación manual reciente, gestión de cuenta/capital,
+    # VPN o restricción de país NO pasan a la IA: se derivan directamente a Johanna.
+    for sensitive_intent in ("GESTION_CAPITAL", "VPN", "PAIS"):
+        if sensitive_intent in meaningful:
+            msg = _immediate_block(sensitive_intent, lang)
+            await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
+            await send_admin_auto_log(context, update, sensitive_intent, msg)
+            return
+
     # CONTEXTO HUMANO ACTIVO: si Johanna viene conversando personalmente con este
     # usuario, una frase de seguimiento no debe caer en una FAQ rígida por una sola
     # palabra (ID, bono, cuenta, etc.). La IA espera la ventana normal y responde
@@ -8226,14 +8384,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not any(i in operational_now for i in meaningful):
             schedule_ai_reply(update, context, texto)
             return
-
-    # Gestión de cuenta/capital siempre requiere mi atención personal, incluso si
-    # el mismo mensaje menciona bono u otro tema.
-    if "GESTION_CAPITAL" in meaningful:
-        msg = _immediate_block("GESTION_CAPITAL", lang)
-        await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
-        await send_admin_auto_log(context, update, "GESTION_CAPITAL", msg)
-        return
 
     # MULTI-PREGUNTA GENERAL: una sola respuesta contextual de IA, sin disparar
     # varias fichas genéricas. Flujos operativos mantienen su acuse inmediato.
@@ -8446,9 +8596,8 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
             )
             if voice_text:
                 _save_johanna_example(chat_id, "", voice_text, get_user_lang(chat_id), response_type="voice")
-                await update.message.reply_text("✅ Nota de voz enviada y transcrita para conservar el contexto.")
-            else:
-                await update.message.reply_text("✅ Nota de voz enviada. La transcripción no estuvo disponible.")
+            # La transcripción se usa de forma interna y no se expone en el chat de Johanna.
+            await update.message.reply_text("✅ Nota de voz enviada correctamente.")
             return
 
         # Si no es archivo multimedia, enviar como texto
@@ -9167,6 +9316,53 @@ def _cleanup_non_private_artifacts():
         logging.warning("No pude limpiar residuos no privados: %s", e)
 
 
+async def _lock_signals_premium_general_topic(bot, *, notify_admin: bool = False) -> bool:
+    """Cierra y oculta el tema General de Señales Premium +300 cuando sea posible.
+
+    Telegram fija el tema General con ID 1 y no permite eliminarlo como un tema
+    normal. Esta medida reduce su exposición; la limpieza de mensajes nuevos la
+    realiza cleanup_vip_membership_service_message.
+    """
+    chat_id = _vip_mapped_chat_id("signals_premium")
+    if not chat_id:
+        return False
+
+    ok_any = False
+    errors = []
+    for method_name in ("close_general_forum_topic", "hide_general_forum_topic"):
+        method = getattr(bot, method_name, None)
+        if not method:
+            errors.append(f"{method_name}: no disponible en esta versión de python-telegram-bot")
+            continue
+        try:
+            await method(chat_id=chat_id)
+            ok_any = True
+        except Exception as e:
+            # Telegram puede responder que ya estaba cerrado/oculto; no rompe el bot.
+            msg = str(e)
+            if "not modified" in msg.lower() or "topic_not_modified" in msg.lower():
+                ok_any = True
+            else:
+                errors.append(f"{method_name}: {msg[:300]}")
+
+    if errors:
+        logging.info("Privacidad tema General Premium +300: %s", " | ".join(errors))
+    if notify_admin:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "🔒 PRIVACIDAD GENERAL · SEÑALES PREMIUM +300\n\n"
+                    + ("✅ El tema General quedó cerrado/oculto cuando Telegram lo permitió.\n" if ok_any else "⚠️ No pude cerrar/ocultar el tema General automáticamente.\n")
+                    + "🧹 Los mensajes NUEVOS que aparezcan en General se eliminarán automáticamente.\n\n"
+                    "Nota: Telegram no permite al bot borrar de golpe todo el historial antiguo del tema General."
+                ),
+            )
+        except Exception:
+            pass
+    return ok_any
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
     _cleanup_non_private_artifacts()
@@ -9176,6 +9372,7 @@ async def post_init_app(application):
     # Si el Chat ID de Señales Premium +300 ya fue aprendido en pruebas anteriores,
     # reemplazamos para el BOT el enlace histórico por uno propio con solicitud.
     await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
+    await _lock_signals_premium_general_topic(application.bot, notify_admin=False)
     schedule_daily_report(application)
     try:
         await application.bot.send_message(
