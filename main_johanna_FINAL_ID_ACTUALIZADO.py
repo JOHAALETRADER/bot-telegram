@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.29-20260918-PRESTIGE-FINAL-DIRECT-JOIN-FIX"
+BOT_VERSION = "v7.10.30-20260918-VIP-MEMBERSHIP-CONFIRM-TEXT-FIX"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -791,7 +791,7 @@ def upgrade_conditions_text(lang: str = "es") -> str:
         "• Los primeros 3 depósitos validados de una MISMA cuenta/broker pueden acumularse para subir de nivel.\n"
         "• La ventana de acumulación dura 30 días desde el primer depósito validado.\n"
         "• Para entrar en esa acumulación, el comprobante debe enviarse dentro de las 72 horas posteriores al depósito.\n"
-        "• Después del 3.er depósito validado o una vez vencidos los 30 días, el upgrade requiere UN nuevo depósito que por sí solo alcance el monto mínimo completo del nuevo nivel.\n"
+        "• Después del tercer depósito validado o una vez vencidos los 30 días, el upgrade requiere UN nuevo depósito que por sí solo alcance el monto mínimo completo del nuevo nivel.\n"
         "• Binomo y Stockity se gestionan por separado y sus depósitos nunca se suman entre sí.\n"
         "• Solo se contabilizan depósitos reportados y validados por este chat."
     )
@@ -944,7 +944,7 @@ VIP_ACCESS_TITLE_ALIASES = {
     "vip_main": ("JT TRADERS TEAMS", "JT TRADERS TEAMS VIP", "JT TRADERS VIP", "VIP PRINCIPAL"),
     "crypto_basic": ("CANAL DE SEÑALES CRYPTOIDX", "SEÑALES CRYPTO IDX", "CRYPTO IDX BASICO", "CRYPTO IDX BÁSICO"),
     "module3": ("BINARY TEAMS MODULO 3", "BINARY TEAMS MÓDULO 3", "BINARY TEAMS 3", "INTRODUCCION AL ANALISIS BURSATIL", "INTRODUCCIÓN AL ANÁLISIS BURSÁTIL"),
-    "signals_premium": ("SEÑALES PREMIUM +300", "SENALES PREMIUM +300", "PREMIUM +300"),
+    "signals_premium": ("SEÑALES PREMIUM +300", "SENALES PREMIUM +300", "SEÑALES PREMIUM", "SENALES PREMIUM", "PREMIUM +300"),
     "ai_crypto": ("IA PREMIUM AUTOMATICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMÁTICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMATICA CRYPTO IDX 24/7"),
     "module4": ("BINARY TEAMS MODULO 4", "BINARY TEAMS MÓDULO 4", "BINARY TEAMS 4", "SMART MONEY CONCEPT"),
     "fx_auto": ("DIVISAS AUTOMATICAS 24/7 PREMIUM", "DIVISAS AUTOMÁTICAS 24/7 PREMIUM", "DIVISAS AUTO PREMIUM"),
@@ -2182,8 +2182,170 @@ def _channel_join_source_metrics(start_utc: datetime, end_utc: datetime):
     return all_ids, ads_ids, all_ids - ads_ids
 
 
+def _vip_mapped_chat_id(access_key: str):
+    """Devuelve el chat_id conocido de un acceso VIP (estático o aprendido)."""
+    info = VIP_ACCESS_CHANNELS.get(access_key) or {}
+    if info.get("chat_id"):
+        try:
+            return int(info["chat_id"])
+        except Exception:
+            pass
+    try:
+        with Session() as session:
+            row = session.get(VIPChannelMap, access_key)
+            if row and row.chat_id:
+                return int(row.chat_id)
+    except Exception as e:
+        logging.warning("No pude leer chat_id VIP aprendido para %s: %s", access_key, e)
+    return None
+
+
+def _vip_is_active_member_status(status: str) -> bool:
+    return str(status or "").lower() in {"member", "administrator", "creator", "restricted"}
+
+
+async def _vip_reconcile_known_memberships(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Quita de pendientes accesos en los que el usuario ya es miembro.
+
+    Esto evita que una prueba/reingreso se quede congelada en un canal que el
+    usuario ya había obtenido antes. Solo consulta canales cuyo chat_id ya es
+    conocido por configuración o por una solicitud previa.
+    """
+    welcomed = False
+    while True:
+        pending = _vip_pending_keys(chat_id)
+        if not pending:
+            return welcomed
+        access_key = pending[0]
+        channel_id = _vip_mapped_chat_id(access_key)
+        if not channel_id:
+            return welcomed
+        try:
+            member_state = await context.bot.get_chat_member(chat_id=channel_id, user_id=chat_id)
+            status = getattr(member_state, "status", "")
+        except Exception as e:
+            logging.info("No pude verificar membresía existente %s/%s: %s", chat_id, access_key, e)
+            return welcomed
+
+        if not _vip_is_active_member_status(status):
+            return welcomed
+
+        _log_event(chat_id, "VIP_ACCESS_ALREADY_MEMBER", access_key)
+        _tracking_fire_event(chat_id, "VIP_ACCESS_ALREADY_MEMBER", access_key)
+        level, should_welcome = _vip_mark_access_approved(chat_id, access_key)
+        welcomed = welcomed or should_welcome
+        logging.info(
+            "♻️ Acceso VIP ya existente reconciliado: %s / %s / nivel=%s",
+            chat_id, access_key, level
+        )
+
+
+async def _vip_send_next_or_welcome(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    level: str,
+    lang: str,
+    *,
+    just_completed: str = "",
+    should_welcome: bool = False,
+):
+    """Continúa el flujo VIP con UN solo botón o cierra con bienvenida."""
+    reconciled_welcome = await _vip_reconcile_known_memberships(context, chat_id)
+    should_welcome = should_welcome or reconciled_welcome
+    remaining = _vip_pending_keys(chat_id)
+
+    if remaining:
+        next_key = remaining[0]
+        next_info = VIP_ACCESS_CHANNELS.get(next_key) or {}
+        next_name = next_info.get("name_es") if lang == "es" else next_info.get("name_en")
+        if not next_name:
+            next_name = next_key
+        text_value = (
+            f"✅ Acceso confirmado. Ahora solicita el siguiente: {next_name}."
+            if lang == "es" else
+            f"✅ Access confirmed. Now request the next one: {next_name}."
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text_value,
+                reply_markup=_vip_access_keyboard(level, lang, keys=[next_key]),
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logging.warning(
+                "No pude enviar el siguiente acceso VIP a %s tras %s: %s",
+                chat_id, just_completed or "(sin clave)", e
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "⚠️ FLUJO VIP DETENIDO\n\n"
+                        f"Usuario ID: {chat_id}\n"
+                        f"Acceso completado: {just_completed or '(sin clave)'}\n"
+                        f"Siguiente acceso: {next_key}\n"
+                        f"Error: {str(e)[:700]}"
+                    ),
+                )
+            except Exception:
+                pass
+        return
+
+    # Si acabamos de retirar el último pendiente, enviamos cierre aunque el
+    # welcome_level hubiese quedado marcado en una prueba anterior.
+    if just_completed or should_welcome:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=_vip_final_welcome_text(level, lang),
+                reply_markup=support_keyboard(lang),
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logging.warning("Accesos VIP completos para %s, pero no pude enviar bienvenida: %s", chat_id, e)
+
+
+async def _vip_finalize_confirmed_membership(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    access_key: str,
+    *,
+    source: str,
+):
+    """Marca un acceso únicamente cuando Telegram confirma membresía real.
+
+    Es idempotente: si el canal ya no estaba pendiente no avanza dos veces.
+    """
+    pending_before = _vip_pending_keys(chat_id)
+    if access_key not in pending_before:
+        logging.info(
+            "ℹ️ Membresía VIP ya procesada/no pendiente: %s / %s / source=%s",
+            chat_id, access_key, source
+        )
+        return False
+
+    event_name = "VIP_ACCESS_APPROVED" if source == "join_request" else "VIP_ACCESS_DIRECT_JOIN"
+    _log_event(chat_id, event_name, access_key)
+    _tracking_fire_event(chat_id, event_name, access_key)
+    level, should_welcome = _vip_mark_access_approved(chat_id, access_key)
+    logging.info(
+        "✅ Membresía VIP confirmada: %s / %s / nivel=%s / source=%s",
+        chat_id, access_key, level, source
+    )
+    await _vip_send_next_or_welcome(
+        context,
+        chat_id,
+        level,
+        get_user_lang(chat_id),
+        just_completed=access_key,
+        should_welcome=should_welcome,
+    )
+    return True
+
+
 async def tracking_channel_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gestiona altas directas VIP y conserva el tracking del canal informativo ES."""
+    """Confirma membresías VIP reales y conserva el tracking del canal informativo ES."""
     change = getattr(update, "chat_member", None)
     chat = update.effective_chat
     if not change or not chat:
@@ -2191,24 +2353,19 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
 
     old_status = str(getattr(getattr(change, "old_chat_member", None), "status", "") or "").lower()
     new_status = str(getattr(getattr(change, "new_chat_member", None), "status", "") or "").lower()
-    active_statuses = {"member", "administrator", "restricted"}
-    if new_status not in active_statuses or old_status in active_statuses:
+    if not _vip_is_active_member_status(new_status) or _vip_is_active_member_status(old_status):
         return
 
     member = getattr(getattr(change, "new_chat_member", None), "user", None)
     if not member or not _is_private_user_id(getattr(member, "id", None)):
         return
 
-    # 1) VIP: algunos enlaces antiguos pueden admitir al usuario directamente sin
-    # producir ChatJoinRequest. En ese caso detectamos la entrada, la marcamos como
-    # completada y enviamos el siguiente acceso del flujo secuencial.
+    # 1) VIP: este evento es la confirmación definitiva de que el usuario YA
+    # pertenece al canal. Funciona tanto tras aprobar una solicitud como en un
+    # ingreso directo. No dependemos de via_join_request, porque Telegram puede
+    # omitir/variar ese indicador según el tipo de enlace.
     access_key = _vip_access_key_from_chat(chat)
     if access_key:
-        # Cuando Telegram confirma que vino de una solicitud de ingreso, el handler
-        # ChatJoinRequest ya se encarga; evitamos duplicar mensajes.
-        if bool(getattr(change, "via_join_request", False)):
-            return
-
         chat_id = int(member.id)
         stage = get_user_stage(chat_id)
         state = _vip_get_state(chat_id, create=False)
@@ -2222,57 +2379,47 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
                     text=(
-                        "⚠️ INGRESO VIP DIRECTO NO AUTORIZADO\n\n"
+                        "⚠️ INGRESO VIP NO AUTORIZADO\n\n"
                         f"Canal: {getattr(chat, 'title', None) or access_key}\n"
                         f"Chat ID: {getattr(chat, 'id', None)}\n"
                         f"Usuario: {_telegram_display_name(member)} (ID: {chat_id})\n\n"
-                        "El enlace permitió entrada directa. Revisa ese enlace de invitación si quieres que siempre requiera aprobación."
+                        "Telegram confirmó que el usuario ya es miembro, pero ese canal no corresponde a su nivel activo."
                     ),
                 )
             except Exception:
                 pass
-            logging.warning("⚠️ Ingreso VIP directo no autorizado: %s / %s", chat_id, access_key)
+            logging.warning("⚠️ Membresía VIP no autorizada: %s / %s", chat_id, access_key)
             return
 
-        # Solo avanza si ese canal estaba realmente pendiente en el flujo actual.
-        pending_before = _vip_pending_keys(chat_id)
-        if access_key not in pending_before:
-            logging.info("ℹ️ Alta VIP directa ya procesada/no pendiente: %s / %s", chat_id, access_key)
-            return
+        await _vip_finalize_confirmed_membership(
+            context,
+            chat_id,
+            access_key,
+            source="member_update",
+        )
+        return
 
-        _log_event(chat_id, "VIP_ACCESS_DIRECT_JOIN", access_key)
-        _tracking_fire_event(chat_id, "VIP_ACCESS_DIRECT_JOIN", access_key)
-        level, should_welcome = _vip_mark_access_approved(chat_id, access_key)
-        logging.info("✅ Acceso VIP directo detectado: %s / %s / nivel=%s", chat_id, access_key, level)
-
-        lang = get_user_lang(chat_id)
-        remaining = _vip_pending_keys(chat_id)
-        if remaining:
-            next_info = VIP_ACCESS_CHANNELS.get(remaining[0]) or {}
-            next_name = next_info.get("name_es") if lang == "es" else next_info.get("name_en")
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        f"✅ Acceso detectado. Ahora continúa con el siguiente: {next_name}."
-                        if lang == "es" else
-                        f"✅ Access detected. Now continue with the next one: {next_name}."
-                    ),
-                    reply_markup=_vip_access_keyboard(level, lang, keys=remaining),
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                logging.warning("Detecté acceso directo %s para %s, pero no pude enviar el siguiente: %s", access_key, chat_id, e)
-        elif should_welcome:
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=_vip_final_welcome_text(level, lang),
-                    reply_markup=support_keyboard(lang),
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                logging.warning("Accesos VIP directos completos para %s, pero no pude enviar bienvenida: %s", chat_id, e)
+    # Si el usuario está en pleno flujo VIP y Telegram confirma un alta en un
+    # canal que aún no reconocemos, avisamos al admin en vez de fallar en silencio.
+    pending_user = _vip_pending_keys(int(member.id))
+    if pending_user and not _is_tracking_info_channel(chat):
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "⚠️ ALTA VIP NO MAPEADA\n\n"
+                    f"Canal: {getattr(chat, 'title', None) or '(sin título)'}\n"
+                    f"Chat ID: {getattr(chat, 'id', None)}\n"
+                    f"Usuario: {_telegram_display_name(member)} (ID: {member.id})\n"
+                    f"Pendientes esperados: {', '.join(pending_user)}"
+                ),
+            )
+        except Exception:
+            pass
+        logging.warning(
+            "⚠️ Alta VIP no mapeada durante flujo: chat=%s title=%s user=%s",
+            getattr(chat, "id", None), getattr(chat, "title", None), member.id
+        )
         return
 
     # 2) TRACKING DEL CANAL INFORMATIVO ES — comportamiento anterior intacto.
@@ -2313,7 +2460,7 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
 
 
 async def tracking_channel_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Aprueba accesos VIP autorizados y conserva el tracking del canal informativo ES."""
+    """Aprueba solicitudes VIP; el flujo avanza al confirmar membresía real."""
     req = getattr(update, "chat_join_request", None)
     if not req:
         return
@@ -2331,10 +2478,17 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
         access_info = VIP_ACCESS_CHANNELS.get(access_key) or {}
         access_name = access_info.get("name_es", access_key)
 
-        # Usuarios nuevos: autorización estricta por nivel persistido.
-        # Cuentas DEPOSITED anteriores a esta versión pueden entrar automáticamente
-        # a los dos espacios comunes; los accesos específicos quedan pendientes para
-        # revisión manual hasta migrar su total/nivel desde REVISAR DEPÓSITO.
+        # Guardamos siempre el ID real del canal recibido por Telegram. Así, desde
+        # la primera solicitud ya no dependemos del texto del título ni del token.
+        _vip_learn_channel(access_key, getattr(req, "chat", None))
+        logging.info(
+            "🔎 Solicitud VIP mapeada: user=%s access=%s chat_id=%s title=%s",
+            chat_id,
+            access_key,
+            getattr(getattr(req, "chat", None), "id", None),
+            getattr(getattr(req, "chat", None), "title", None),
+        )
+
         if state:
             authorized = stage == STAGE_DEPOSITED and _vip_channel_allowed(state.get("level"), access_key)
             legacy_manual = False
@@ -2348,7 +2502,7 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
                 text=(
                     f"⚠️ Solicitud VIP de cuenta antigua: {_telegram_display_name(member)} (ID: {chat_id}).\n"
                     f"Canal: {access_name}.\n"
-                    "La cuenta está DEPOSITED pero aún no tiene nivel migrado en v7.10.21. "
+                    "La cuenta está DEPOSITED pero aún no tiene nivel migrado. "
                     "La solicitud quedó pendiente para revisión manual; usa GESTIONAR USUARIO → REVISAR DEPÓSITO para registrar el total/nivel."
                 ),
                 reply_markup=admin_user_quick_keyboard(chat_id),
@@ -2389,41 +2543,41 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
                 pass
             return
 
-        _log_event(chat_id, "VIP_ACCESS_APPROVED", access_key)
-        _tracking_fire_event(chat_id, "VIP_ACCESS_APPROVED", access_key)
-        level, should_welcome = _vip_mark_access_approved(chat_id, access_key)
-        logging.info("✅ Acceso VIP automático aprobado: %s / %s / nivel=%s", chat_id, access_key, level)
+        # No damos por completado el acceso únicamente porque approveChatJoinRequest
+        # devolvió True. Primero comprobamos si Telegram ya convirtió al usuario en
+        # miembro. Si todavía muestra “Unirme al canal”, dejamos el acceso pendiente
+        # hasta recibir ChatMemberUpdated al completar realmente el ingreso.
+        active_now = False
+        try:
+            member_state = await context.bot.get_chat_member(chat_id=req.chat.id, user_id=chat_id)
+            active_now = _vip_is_active_member_status(getattr(member_state, "status", ""))
+        except Exception as e:
+            logging.info(
+                "Solicitud VIP aprobada %s/%s; no pude verificar membresía inmediata: %s",
+                chat_id, access_key, e
+            )
 
-        # Flujo secuencial: después de aprobar un canal, entrega el siguiente.
-        # Reduce ráfagas de solicitudes y el error de Telegram "demasiados intentos".
-        lang = get_user_lang(chat_id)
-        remaining = _vip_pending_keys(chat_id)
-        if remaining:
+        if active_now:
+            await _vip_finalize_confirmed_membership(
+                context,
+                chat_id,
+                access_key,
+                source="join_request",
+            )
+        else:
+            lang = get_user_lang(chat_id)
             try:
-                next_info = VIP_ACCESS_CHANNELS.get(remaining[0]) or {}
-                next_name = next_info.get("name_es") if lang == "es" else next_info.get("name_en")
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"✅ Acceso aprobado. Ahora solicita el siguiente: {next_name}."
+                        "✅ Tu solicitud fue aprobada. Si Telegram te muestra el botón «Unirme al canal», tócalo para completar el ingreso. En cuanto Telegram confirme que ya entraste, te enviaré automáticamente el siguiente acceso."
                         if lang == "es" else
-                        f"✅ Access approved. Now request the next one: {next_name}."
+                        "✅ Your request was approved. If Telegram shows “Join Channel”, tap it to complete the join. As soon as Telegram confirms you are inside, I’ll automatically send your next access."
                     ),
-                    reply_markup=_vip_access_keyboard(level, lang, keys=remaining),
                     disable_web_page_preview=True,
                 )
             except Exception as e:
-                logging.warning("Aprobé %s para %s, pero no pude enviar el siguiente acceso: %s", access_key, chat_id, e)
-        elif should_welcome:
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=_vip_final_welcome_text(level, lang),
-                    reply_markup=support_keyboard(lang),
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                logging.warning("Accesos VIP completos para %s, pero no pude enviar bienvenida: %s", chat_id, e)
+                logging.warning("Solicitud VIP aprobada para %s, pero no pude avisar al usuario: %s", chat_id, e)
         return
 
     # 2) TRACKING DEL CANAL INFORMATIVO ES — comportamiento anterior intacto.
@@ -5694,7 +5848,7 @@ BROKERS Y REGLAS DE UPGRADE
 - Los primeros 3 depósitos validados de una misma cuenta/broker pueden acumularse para subir de nivel.
 - Esa ventana de acumulación dura 30 días desde el primer depósito validado.
 - Para entrar en la acumulación, el comprobante debe enviarse dentro de las 72 horas posteriores al depósito.
-- Al completarse el 3.er depósito o vencer los 30 días, los depósitos posteriores ya no se suman: un upgrade exige un nuevo depósito único que por sí solo alcance el monto mínimo completo del nuevo nivel.
+- Al completarse el tercer depósito o vencer los 30 días, los depósitos posteriores ya no se suman: un upgrade exige un nuevo depósito único que por sí solo alcance el monto mínimo completo del nuevo nivel.
 - Solo cuentan depósitos que el usuario reportó y Johanna validó.
 - No bombardees al usuario con cálculos de cuánto le falta. Si pregunta por estas reglas, explícalas de forma breve y remite al botón «ℹ️ VER CONDICIONES DE UPGRADE».
 
