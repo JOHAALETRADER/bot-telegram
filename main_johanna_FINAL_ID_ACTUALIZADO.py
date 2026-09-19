@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.41-20260919-AI-PENDING-STATE-ISOLATION"
+BOT_VERSION = "v7.10.42-20260919-AI-NATURALITY-SEMANTIC-GUARDS"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -6458,7 +6458,9 @@ SOPORTE DE ACCESOS VIP EN TELEGRAM
 
 DIFERENCIA ENTRE SOFTWARE PREMIUM Y BOTS AUTOMÁTICOS
 - El Software Premium Anticipado genera más de 300 señales de lunes a sábado. En Premium/Prestige esas señales cubren CRYPTO IDX, pares de divisas, índices sintéticos y Forex y se reciben por Telegram; la entrada se toma en el minuto exacto indicado.
-- Los bots/IA automáticos trabajan 24/7. En IA Premium Automática CRYPTO IDX, la entrada se toma en el minuto siguiente al aviso; Prestige añade Divisas Automáticas 24/7.
+- Los bots/IA automáticos trabajan 24/7 GENERANDO Y ENVIANDO ALERTAS automáticamente. En IA Premium Automática CRYPTO IDX, la alerta indica una entrada para el minuto siguiente; Prestige añade alertas de Divisas Automáticas 24/7.
+- IMPORTANTE: “automático” NO significa que el sistema abra operaciones por el usuario ni ejecute las entradas en su cuenta. Las entradas se realizan MANUALMENTE por el usuario después de recibir la alerta, para respetar gestión de riesgo, control de capital y su plan de trading.
+- Si preguntan “¿es totalmente automático?”, “¿opera solo?”, “¿toma las entradas solo?” o equivalente, responde con claridad: NO es ejecución automática. Las ALERTAS llegan automáticamente 24/7, pero el usuario decide y toma manualmente cada entrada.
 - La interfaz visual que uso en mis lives es privada/interna; el usuario NO necesita instalarla. Recibe las señales correspondientes directamente en Telegram.
 - Si preguntan la diferencia entre software y bot, responde SOLO esa diferencia de forma breve. No despliegues todos los niveles salvo que también lo pidan.
 - Si hablas de disponibilidad, di “depende del nivel que elijas dentro de mi comunidad JT TRADERS TEAMS”. Nunca digas que es un nivel del broker.
@@ -8168,6 +8170,41 @@ def _ai_answer_context_guard(answer: str, question: str, chat_id: int, lang: str
     return safe, True
 
 
+def _is_reaction_only_message(text_value: str) -> bool:
+    """True para mensajes breves formados solo por emojis/reacciones, sin palabras ni números."""
+    value = (text_value or "").strip()
+    if not value or len(value) > 40:
+        return False
+    if re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9]", value):
+        return False
+    emoji_like = 0
+    for ch in value:
+        if ch.isspace() or ch in "!?¿¡.,;:()[]{}'\"-_+*=~/\\|":
+            continue
+        cat = unicodedata.category(ch)
+        code = ord(ch)
+        if cat in ("So", "Sk", "Mn", "Cf") or code >= 0x1F000:
+            emoji_like += 1
+            continue
+        return False
+    return emoji_like > 0
+
+
+def _strip_redundant_ai_greeting(answer: str, question: str, history_text: str, lang: str) -> str:
+    """Evita que la IA vuelva a saludar en cada turno de una conversación ya iniciada."""
+    value = (answer or "").strip()
+    if not value or not (history_text or "").strip():
+        return value
+    qn = _norm(question or "")
+    if re.match(r"^(hola|holi|hello|hey|buenas|buenos|buen dia|buenas tardes|buenas noches|hi)\b", qn):
+        return value
+    if lang == "en":
+        value = re.sub(r"^\s*(?:hello|hi|hey)\s*[!,.]?\s*(?:[👋😊🙂✨]+\s*)?", "", value, count=1, flags=re.I)
+    else:
+        value = re.sub(r"^\s*¡?(?:hola|holi|buenas)\s*[!,.]?\s*(?:[👋😊🙂✨]+\s*)?", "", value, count=1, flags=re.I)
+    return value.strip()
+
+
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
@@ -8213,6 +8250,9 @@ ESTILO DE JOHANNA
 - PRIORIDAD: respuestas cortas que la gente sí lea. Pregunta simple: aprox. 60–120 palabras. Varias dudas: aprox. 120–220 palabras, solo lo necesario para responderlas todas.
 - Normalmente 2 a 4 párrafos cortos. Si hay varias preguntas, usa bloques breves o numeración clara. Evita introducciones largas, repetir la pregunta o explicar dos veces lo mismo.
 - Usa algunos emojis para hacer la respuesta atractiva, sin saturar.
+- SALUDOS: NO empieces cada respuesta con “Hola”, “¡Hola!”, “Hello” o “Hi”. Saluda solamente si el MENSAJE PENDIENTE actual contiene un saludo real o si verdaderamente es el primer intercambio. Si ya existe conversación, continúa directamente desde el punto anterior.
+- REACCIONES/EMOJIS: si el MENSAJE PENDIENTE contiene únicamente emojis o una reacción breve sin texto (por ejemplo 🙏🙏🙏, 👍, ❤️), NO inventes emociones, intenciones ni entusiasmo. Responde, como máximo, con una reacción breve y natural; no repitas recomendaciones, niveles, enlaces ni CTA.
+- NO REPITAS CTA/ENLACES: si en el historial reciente ya se enviaron enlaces de registro o una invitación a registrarse, no los repitas en cada respuesta. Solo vuelve a mostrarlos si el usuario los solicita, pregunta cómo registrarse o realmente necesita ese siguiente paso.
 - Contesta primero lo que preguntaron y termina, cuando corresponda, con un CTA claro y motivador hacia el siguiente paso: registro → ID → depósito → acceso.
 - Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer CTA comercial.
 - Si preguntan EN GENERAL por niveles/planes, puedes mostrar Básico/Premium/Prestige. Pero si preguntan por un MONTO CONCRETO (por ejemplo 300 USD), responde SOLO el nivel que corresponde a ese monto y sus herramientas; NO despliegues todos los niveles. 50–199.99 = Básico, 200–499.99 = Premium, 500+ = Prestige. 300 USD SIEMPRE corresponde a Premium.
@@ -8232,7 +8272,7 @@ ESTILO DE JOHANNA
 - CONVERSACIÓN NATURAL: si el usuario está continuando una charla, responde como continuación humana, normalmente en 1–3 frases. Evita cierres genéricos de atención al cliente como “estoy aquí para ayudarte en todo lo que necesites”, “mucha suerte en esta nueva etapa” o párrafos motivacionales que no respondan al punto concreto.
 - Está PROHIBIDO sugerir “restablecer contraseña” o “ir al sitio del broker” como respuesta a un problema de acceso a canales/enlaces de Telegram.
 - Si preguntan si recomiendo un bono o por sus condiciones/volumen, responde esa situación; no enumeres códigos salvo que pregunten por los códigos/bonos activos.
-- Si preguntan diferencia entre software y bot, explica la diferencia exacta. Software Premium Anticipado = más de 300 señales lun-sáb; bots/IA = alertas automáticas 24/7 según el nivel dentro de mi comunidad.
+- Si preguntan diferencia entre software y bot, explica la diferencia exacta. Software Premium Anticipado = más de 300 señales lun-sáb; bots/IA = ALERTAS automáticas 24/7 según el nivel dentro de mi comunidad. NUNCA digas que el bot ejecuta operaciones automáticamente: el usuario toma cada entrada manualmente para aplicar gestión de riesgo, control de capital y plan de trading.
 - Si el tema es gestión de cuenta/capital, incluso si menciona bono, comienza EXACTAMENTE con [[PERSONAL_CHAT]] y responde en primera persona indicando que lo manejo personalmente.
 - Si el caso realmente necesita revisión personal de Johanna porque es una excepción de cuenta, restricción, bloqueo o falta un dato que solo ella puede verificar, comienza tu respuesta EXACTAMENTE con [[PERSONAL_CHAT]]. No uses esa marca en preguntas normales que puedas resolver con la información disponible.
 
@@ -8291,6 +8331,10 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         # Cinturón adicional: el modelo no puede crear acuerdos personales de gestión
         # ni afirmar pasos completados sin evidencia conversacional explícita.
         answer, _guard_personal = _ai_answer_context_guard(answer, question, chat_id, lang)
+
+        # Conversación natural: si ya existía historial y el usuario no saludó en este turno,
+        # evitamos el “Hola” repetitivo típico de una respuesta aislada.
+        answer = _strip_redundant_ai_greeting(answer, question, history_text, lang)
 
         # Presentación estable de links para Telegram: sin Markdown literal y con separación.
         answer = _organize_ai_registration_links(answer, lang)
@@ -8368,15 +8412,21 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         _clear_pending_ai_db(chat_id)
         return
 
-    # ÚLTIMO CINTURÓN DE SEGURIDAD ANTES DE OPENAI. Aunque un mensaje sensible
-    # hubiera quedado programado por cualquier ruta antigua o tras un reinicio,
-    # gestión/VPN/país/caso particular de cuenta nunca se entrega al modelo.
-    personal_intent = _personal_escalation_intent(question)
-    personal_review = bool(personal_intent)
-    if personal_intent:
-        answer = _immediate_block(personal_intent, lang)
+    # Reacciones/emojis solos: no inventamos intención ni repetimos una respuesta comercial.
+    # Se conserva la espera de 5 minutos para dar prioridad a una respuesta personal de Johanna.
+    if _is_reaction_only_message(question):
+        personal_review = False
+        answer = "🙏💜"
     else:
-        answer = await openai_answer(question, chat_id, lang, stage, answered_topics)
+        # ÚLTIMO CINTURÓN DE SEGURIDAD ANTES DE OPENAI. Aunque un mensaje sensible
+        # hubiera quedado programado por cualquier ruta antigua o tras un reinicio,
+        # gestión/VPN/país/caso particular de cuenta nunca se entrega al modelo.
+        personal_intent = _personal_escalation_intent(question)
+        personal_review = bool(personal_intent)
+        if personal_intent:
+            answer = _immediate_block(personal_intent, lang)
+        else:
+            answer = await openai_answer(question, chat_id, lang, stage, answered_topics)
 
     if not answer:
         personal_review = True
