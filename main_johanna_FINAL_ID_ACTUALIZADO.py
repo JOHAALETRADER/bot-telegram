@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.38-20260919-CAPITAL-GENERAL-PRIVACY"
+BOT_VERSION = "v7.10.39-20260919-HARD-PERSONAL-ESCALATION"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -7042,8 +7042,90 @@ def _is_explicit_where_send_id_query(texto: str) -> bool:
     return any(re.search(p, t) for p in explicit_send)
 
 
+def _personal_escalation_intent(texto: str):
+    """Detecta temas que deben salir de la IA y pasar directo a Johanna.
+
+    Está deliberadamente por encima de las FAQs y de la IA diferida. Incluye
+    formas naturales/abreviadas de hablar de gestión ("me interesa la gestión",
+    "hacer gestión", "tu gestión"), además de VPN/restricción de país y casos
+    particulares de cuenta que requieren revisión real.
+
+    No confunde "gestión de riesgo" con gestión de cuenta/capital.
+    """
+    t = _norm(texto or "")
+    if not t:
+        return None
+
+    # VPN / proxy: siempre revisión personal; nunca instrucciones para evadir restricciones.
+    if re.search(r"\b(vpn|proxy)\b", t):
+        return "VPN"
+
+    # Restricciones/disponibilidad por país.
+    country_patterns = (
+        r"\b(?:restriccion|restricciones|bloqueo|error|problema)\b.{0,35}\b(?:pais|country)\b",
+        r"\b(?:pais|country)\b.{0,35}\b(?:restringido|restriccion|bloqueado|no disponible|no soportado|no permitido|unsupported|not available)\b",
+        r"\b(?:no disponible|no esta disponible|no esta habilitado|no funciona|esta bloqueado|esta restringido|not available|unsupported)\b.{0,40}\b(?:pais|country)\b",
+    )
+    if any(re.search(p, t) for p in country_patterns):
+        return "PAIS"
+
+    # Casos particulares de cuenta que necesitan comprobar un estado real.
+    account_review_patterns = (
+        r"\b(?:revisar|revisa|revises|verificar|verifica|chequear|chequea)\b.{0,30}\bmi cuenta\b",
+        r"\bmi cuenta\b.{0,35}\b(?:bloqueada|bloqueado|suspendida|suspendido|restringida|restringido|cerrada|cerrado)\b",
+        r"\b(?:bloquearon|suspendieron|cerraron|restringieron)\b.{0,30}\bmi cuenta\b",
+        r"\b(?:problema|caso|inconveniente)\b.{0,25}\b(?:con|de)\b.{0,15}\bmi cuenta\b",
+        r"\bmi cuenta\b.{0,25}\b(?:no funciona|no abre|no me deja|tiene un problema|tiene problema)\b",
+    )
+    if any(re.search(p, t) for p in account_review_patterns):
+        return "CUENTA_PERSONAL"
+
+    # Gestión de riesgo es una consulta educativa normal, no una gestión de cuenta.
+    risk_management = any(x in t for x in (
+        "gestion de riesgo", "gestion del riesgo", "manejo de riesgo",
+        "gestionar riesgo", "gestionar el riesgo", "risk management",
+    ))
+
+    # Frases inequívocas de gestión de capital/cuenta.
+    strong_management = (
+        "gestion de capital", "gestionar capital", "manejo de capital",
+        "gestion de cuenta", "gestionar mi cuenta", "gestiones mi cuenta",
+        "manejo de cuenta", "manejar mi cuenta", "manejes mi cuenta",
+        "operar mi cuenta", "operes mi cuenta", "administrar mi cuenta", "administres mi cuenta",
+        "inversion contigo", "enviarte capital", "capital management", "manage my capital",
+        "investment with you", "gestion conmigo", "gestion contigo", "gestionar contigo",
+        "me ayudas a gestionar", "me ayudarias a gestionar", "gestionar con bono",
+        "tu gestionaras", "usted gestionara", "vas a gestionar mi cuenta", "me vas a gestionar",
+        "me gestionaras", "tu gestionarias", "usted gestionaria",
+    )
+    if any(x in t for x in strong_management):
+        return "GESTION_CAPITAL"
+
+    # Formas naturales que usan simplemente "la gestión" porque el contexto ya está claro.
+    # Ej.: "Cuéntame, me interesa la gestión", "no sé si registrarme o hacer gestión".
+    generic_management_signal = bool(re.search(
+        r"\b(?:gestion|gestionar|gestionarme|gestionas|gestiones|gestionaria|gestionarias|gestionara|gestionaras)\b",
+        t,
+    ))
+    generic_context = any(x in t for x in (
+        "me interesa", "interesa la gestion", "quiero gestion", "quiero la gestion",
+        "hacer gestion", "sobre la gestion", "de la gestion", "tu gestion",
+        "como funciona la gestion", "como es la gestion", "cuentame", "explicame",
+        "modalidad", "modalidades", "acordar", "acuerdo", "contigo", "mi cuenta", "capital",
+    ))
+    if generic_management_signal and generic_context and not risk_management:
+        return "GESTION_CAPITAL"
+
+    return None
+
+
 def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
+
+    # Los temas personales/sensibles tienen prioridad incluso sobre "tengo una duda".
+    personal_intent = _personal_escalation_intent(texto)
+    if personal_intent:
+        return personal_intent
 
     # ---- SALUDOS (intuitivo) ----
     # Detecta saludos aunque vengan con "cómo estás", "qué tal", etc.
@@ -7207,6 +7289,13 @@ def detect_all_intents(texto: str):
     """
     t = _norm(texto)
     found = []
+
+    # Escalamiento personal tiene prioridad semántica. Se añade además de otros
+    # temas para que cualquier pregunta mixta (registro + gestión, ID + gestión,
+    # etc.) termine directamente en el chat personal de Johanna.
+    personal_intent = _personal_escalation_intent(texto)
+    if personal_intent:
+        _add_intent(found, personal_intent)
 
     # ID numérico: solo si el mensaje realmente parece un envío de ID.
     # Evita confundir capitales, montos, fechas u otros números con un ID de trading.
@@ -7468,9 +7557,15 @@ def _immediate_block(intent: str, lang: str):
         )
     if intent == "GESTION_CAPITAL":
         return (
-            "📊 La gestión de cuenta la manejo personalmente porque depende de cada caso. Antes de continuar, escríbeme a mi chat personal y te explico cómo funciona, qué modalidad aplica y resolvemos tus dudas directamente."
+            "📊 Este tema prefiero hablarlo directamente contigo porque cada gestión depende del caso. Escríbeme a mi chat personal y lo revisamos juntos. 👇"
             if lang == "es" else
-            "📊 I handle account-management cases personally because each case is different. Before continuing, message me in my personal chat and I’ll explain how it works, which option applies, and we’ll review your questions directly."
+            "📊 I prefer to discuss this directly with you because each management case is different. Message me in my personal chat and we’ll review it together. 👇"
+        )
+    if intent == "CUENTA_PERSONAL":
+        return (
+            "🔐 Este caso necesito revisarlo personalmente contigo porque depende del estado real de tu cuenta. Escríbeme a mi chat personal y lo vemos directamente. 👇"
+            if lang == "es" else
+            "🔐 I need to review this personally with you because it depends on the real status of your account. Message me in my personal chat and we’ll check it directly. 👇"
         )
     return None
 
@@ -8049,8 +8144,17 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
 
     lang = get_user_lang(chat_id)
     stage = get_user_stage(chat_id)
-    answer = await openai_answer(question, chat_id, lang, stage, pending.get("answered_topics") or [])
-    personal_review = False
+
+    # ÚLTIMO CINTURÓN DE SEGURIDAD ANTES DE OPENAI. Aunque un mensaje sensible
+    # hubiera quedado programado por cualquier ruta antigua o tras un reinicio,
+    # gestión/VPN/país/caso particular de cuenta nunca se entrega al modelo.
+    personal_intent = _personal_escalation_intent(question)
+    personal_review = bool(personal_intent)
+    if personal_intent:
+        answer = _immediate_block(personal_intent, lang)
+    else:
+        answer = await openai_answer(question, chat_id, lang, stage, pending.get("answered_topics") or [])
+
     if not answer:
         personal_review = True
         answer = (
@@ -8191,7 +8295,7 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
     handled_operational = []
 
     # Temas sensibles/personalizados: nunca los resuelve la IA. Se derivan directo a Johanna.
-    for sensitive_intent in ("GESTION_CAPITAL", "VPN", "PAIS"):
+    for sensitive_intent in ("GESTION_CAPITAL", "CUENTA_PERSONAL", "VPN", "PAIS"):
         if sensitive_intent in effective_intents:
             msg = _immediate_block(sensitive_intent, lang)
             await update.effective_message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
@@ -8365,14 +8469,15 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     meaningful = [i for i in intents if i != "GREETING"]
 
     # PRIORIDAD ABSOLUTA PARA TEMAS PERSONALES/SENSIBLES.
-    # Incluso si ya existe una conversación manual reciente, gestión de cuenta/capital,
-    # VPN o restricción de país NO pasan a la IA: se derivan directamente a Johanna.
-    for sensitive_intent in ("GESTION_CAPITAL", "VPN", "PAIS"):
-        if sensitive_intent in meaningful:
-            msg = _immediate_block(sensitive_intent, lang)
-            await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
-            await send_admin_auto_log(context, update, sensitive_intent, msg)
-            return
+    # Se evalúa sobre el texto completo, no solo por frases exactas del detector.
+    # Así expresiones naturales como “me interesa la gestión” o “hacer gestión”
+    # jamás llegan a la IA, aunque también mencionen registro, ID u otro tema.
+    personal_intent = _personal_escalation_intent(texto)
+    if personal_intent:
+        msg = _immediate_block(personal_intent, lang)
+        await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
+        await send_admin_auto_log(context, update, personal_intent, msg)
+        return
 
     # CONTEXTO HUMANO ACTIVO: si Johanna viene conversando personalmente con este
     # usuario, una frase de seguimiento no debe caer en una FAQ rígida por una sola
@@ -8471,7 +8576,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, "ID_SUBMIT_PENDING_BROKER", msg)
         return
 
-    if intent in ("GESTION_CAPITAL", "VPN", "PAIS"):
+    if intent in ("GESTION_CAPITAL", "CUENTA_PERSONAL", "VPN", "PAIS"):
         msg = _immediate_block(intent, lang)
         await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
         await send_admin_auto_log(context, update, intent, msg)
