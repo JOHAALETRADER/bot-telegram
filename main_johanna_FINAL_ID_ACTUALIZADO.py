@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.30-20260918-VIP-MEMBERSHIP-CONFIRM-TEXT-FIX"
+BOT_VERSION = "v7.10.31-20260918-VIP-ORDER-SAFE-LINK-COMPLETION-NOTICE"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -320,6 +320,15 @@ class VIPChannelMap(Base):
     updated_at = Column(DateTime, default=utcnow_naive, index=True)
 
 
+class VIPInviteOverride(Base):
+    """Enlaces VIP seguros creados por el propio bot (persisten entre deploys)."""
+    __tablename__ = "vip_invite_override"
+    access_key = Column(String, primary_key=True)
+    invite_url = Column(Text)
+    chat_id    = Column(String, index=True)
+    updated_at = Column(DateTime, default=utcnow_naive, index=True)
+
+
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
@@ -500,11 +509,12 @@ VIP_ACCESS_CHANNELS = {
     },
 }
 
+# Orden de entrega y bienvenida: VIP principal -> educación -> señales/bots.
 VIP_LEVEL_CHANNEL_KEYS = {
     VIP_LEVEL_NONE: [],
-    VIP_LEVEL_BASIC: ["vip_main", "crypto_basic", "module3"],
-    VIP_LEVEL_PREMIUM: ["vip_main", "module3", "signals_premium", "ai_crypto", "module4"],
-    VIP_LEVEL_PRESTIGE: ["vip_main", "module3", "signals_premium", "ai_crypto", "module4", "fx_auto", "madness"],
+    VIP_LEVEL_BASIC: ["vip_main", "module3", "crypto_basic"],
+    VIP_LEVEL_PREMIUM: ["vip_main", "module3", "module4", "signals_premium", "ai_crypto"],
+    VIP_LEVEL_PRESTIGE: ["vip_main", "module3", "module4", "madness", "signals_premium", "ai_crypto", "fx_auto"],
 }
 
 
@@ -909,6 +919,85 @@ def _vip_channel_keys_for_level(level: str):
     return list(VIP_LEVEL_CHANNEL_KEYS.get(level, []))
 
 
+def _vip_invite_override(access_key: str) -> str:
+    try:
+        with Session() as session:
+            row = session.get(VIPInviteOverride, access_key)
+            return (row.invite_url or "").strip() if row else ""
+    except Exception as e:
+        logging.warning("No pude leer override de enlace VIP %s: %s", access_key, e)
+        return ""
+
+
+def _vip_effective_invite_url(access_key: str) -> str:
+    override = _vip_invite_override(access_key)
+    if override:
+        return override
+    return ((VIP_ACCESS_CHANNELS.get(access_key) or {}).get("url") or "").strip()
+
+
+def _vip_store_invite_override(access_key: str, chat_id: int, invite_url: str) -> bool:
+    invite_url = (invite_url or "").strip()
+    if not invite_url:
+        return False
+    try:
+        with Session() as session:
+            row = session.get(VIPInviteOverride, access_key)
+            if not row:
+                row = VIPInviteOverride(access_key=access_key)
+                session.add(row)
+            row.invite_url = invite_url
+            row.chat_id = str(chat_id)
+            row.updated_at = utcnow_naive()
+            session.commit()
+        return True
+    except Exception as e:
+        logging.warning("No pude guardar enlace VIP seguro %s: %s", access_key, e)
+        return False
+
+
+async def _vip_ensure_request_link(bot, access_key: str, *, notify_admin: bool = False) -> str:
+    """Crea una sola vez un enlace del BOT que siempre requiera aprobación.
+
+    Se usa especialmente para Señales Premium +300, cuyo enlace histórico se
+    comportó como ingreso directo en Telegram. No revoca enlaces de otros admins.
+    """
+    existing = _vip_invite_override(access_key)
+    if existing:
+        return existing
+    channel_id = _vip_mapped_chat_id(access_key)
+    if not channel_id:
+        return ""
+    info = VIP_ACCESS_CHANNELS.get(access_key) or {}
+    name = ("JT " + (info.get("name_es") or access_key))[:32]
+    try:
+        link = await bot.create_chat_invite_link(
+            chat_id=channel_id,
+            name=name,
+            creates_join_request=True,
+        )
+        invite_url = (getattr(link, "invite_link", None) or "").strip()
+        if invite_url and _vip_store_invite_override(access_key, channel_id, invite_url):
+            logging.info("🔐 Enlace VIP con solicitud creado por el bot: %s / %s", access_key, channel_id)
+            if notify_admin:
+                try:
+                    await bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=(
+                            "🔐 ENLACE VIP SEGURO CREADO\n\n"
+                            f"Canal: {info.get('name_es') or access_key}\n"
+                            f"Chat ID: {channel_id}\n\n"
+                            "Desde ahora el bot usará un enlace propio que exige solicitud de acceso."
+                        ),
+                    )
+                except Exception:
+                    pass
+            return invite_url
+    except Exception as e:
+        logging.warning("No pude crear enlace VIP con solicitud para %s/%s: %s", access_key, channel_id, e)
+    return ""
+
+
 def _vip_new_channel_keys(old_level: str, new_level: str):
     old = set(_vip_channel_keys_for_level(old_level))
     return [k for k in _vip_channel_keys_for_level(new_level) if k not in old]
@@ -1036,7 +1125,7 @@ def _vip_access_keyboard(level: str, lang: str, keys=None) -> InlineKeyboardMark
         info = VIP_ACCESS_CHANNELS.get(key)
         if info:
             label = info["name_es"] if lang == "es" else info["name_en"]
-            rows.append([InlineKeyboardButton(f"🔐 {label}", url=info["url"])])
+            rows.append([InlineKeyboardButton(f"🔐 {label}", url=_vip_effective_invite_url(key))])
     return InlineKeyboardMarkup(rows)
 
 def _vip_access_intro(level: str, lang: str, upgrade: bool = False) -> str:
@@ -1066,18 +1155,31 @@ def _vip_access_intro(level: str, lang: str, upgrade: bool = False) -> str:
     )
 
 def _vip_level_summary(level: str, lang: str) -> str:
-    lines = []
-    for key in _vip_channel_keys_for_level(level):
+    keys = _vip_channel_keys_for_level(level)
+    education_keys = [k for k in ("module3", "module4", "madness") if k in keys]
+    signal_keys = [k for k in ("crypto_basic", "signals_premium", "ai_crypto", "fx_auto") if k in keys]
+
+    def item(key):
         info = VIP_ACCESS_CHANNELS[key]
         name = info["name_es"] if lang == "es" else info["name_en"]
         desc = info["desc_es"] if lang == "es" else info["desc_en"]
-        lines.append(f"• {name}\n  {desc}")
+        return f"• {name}\n  {desc}"
+
+    blocks = []
+    if "vip_main" in keys:
+        blocks.append(("👑 VIP PRINCIPAL" if lang == "es" else "👑 MAIN VIP") + "\n" + item("vip_main"))
+    if education_keys:
+        blocks.append(("🎓 EDUCACIÓN" if lang == "es" else "🎓 EDUCATION") + "\n" + "\n".join(item(k) for k in education_keys))
+    if signal_keys:
+        blocks.append(("📊 SEÑALES Y AUTOMATIZACIÓN" if lang == "es" else "📊 SIGNALS & AUTOMATION") + "\n" + "\n".join(item(k) for k in signal_keys))
     if level == VIP_LEVEL_PRESTIGE:
-        if lang == "es":
-            lines.append("• Beneficios Prestige adicionales\n  Mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo. Forex automático: en construcción.")
-        else:
-            lines.append("• Additional Prestige benefits\n  Private mentoring, closer guidance and funded-account preparation. Automatic Forex: under development.")
-    return "\n\n".join(lines)
+        extra = (
+            "⭐ BENEFICIOS PRESTIGE ADICIONALES\n• Mentorías privadas\n• Acompañamiento cercano\n• Preparación para cuentas de fondeo\n• Forex automático: en construcción."
+            if lang == "es" else
+            "⭐ ADDITIONAL PRESTIGE BENEFITS\n• Private mentoring\n• Closer guidance\n• Funded-account preparation\n• Automatic Forex: under development."
+        )
+        blocks.append(extra)
+    return "\n\n".join(blocks)
 
 
 def _vip_final_welcome_text(level: str, lang: str) -> str:
@@ -2240,6 +2342,34 @@ async def _vip_reconcile_known_memberships(context: ContextTypes.DEFAULT_TYPE, c
         )
 
 
+async def _vip_notify_admin_completed(context: ContextTypes.DEFAULT_TYPE, chat_id: int, level: str):
+    """Avisa a Johanna cuando el usuario completó TODOS los accesos de su nivel."""
+    try:
+        display = str(chat_id)
+        username = ""
+        try:
+            chat = await context.bot.get_chat(chat_id)
+            full_name = " ".join(x for x in [getattr(chat, "first_name", None), getattr(chat, "last_name", None)] if x).strip()
+            username = (getattr(chat, "username", None) or "").strip()
+            display = (f"@{username}" if username else full_name) or str(chat_id)
+        except Exception:
+            pass
+        keys = _vip_channel_keys_for_level(level)
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "✅ INGRESO VIP COMPLETADO\n\n"
+                f"Usuario: {display}\n"
+                f"Telegram ID: {chat_id}\n"
+                f"Nivel JT TRADERS TEAMS: {_vip_level_label(level, 'es')}\n"
+                f"Accesos completados: {len(keys)}/{len(keys)}\n\n"
+                "🎉 El usuario ya completó todos los accesos y recibió su mensaje final de bienvenida."
+            ),
+        )
+    except Exception as e:
+        logging.warning("No pude avisar al admin del ingreso VIP completo de %s: %s", chat_id, e)
+
+
 async def _vip_send_next_or_welcome(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
@@ -2302,6 +2432,7 @@ async def _vip_send_next_or_welcome(
                 reply_markup=support_keyboard(lang),
                 disable_web_page_preview=True,
             )
+            await _vip_notify_admin_completed(context, chat_id, level)
         except Exception as e:
             logging.warning("Accesos VIP completos para %s, pero no pude enviar bienvenida: %s", chat_id, e)
 
@@ -2367,6 +2498,11 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
     access_key = _vip_access_key_from_chat(chat)
     if access_key:
         chat_id = int(member.id)
+        # Señales Premium +300 mostró comportamiento de ingreso directo con el
+        # enlace histórico. Al conocer el chat_id real, creamos y persistimos un
+        # enlace propio del bot que SIEMPRE exige solicitud para futuros usuarios.
+        if access_key == "signals_premium":
+            await _vip_ensure_request_link(context.bot, access_key, notify_admin=True)
         stage = get_user_stage(chat_id)
         state = _vip_get_state(chat_id, create=False)
         if state:
@@ -2375,6 +2511,21 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
             authorized = stage == STAGE_DEPOSITED and access_key in ("vip_main", "module3")
 
         if not authorized:
+            removed = False
+            remove_error = ""
+            try:
+                # Si alguien usa un enlace viejo/compartido que permite entrada directa,
+                # retiramos el acceso. Unban inmediato permite que luego pueda solicitar
+                # correctamente si llega a tener el nivel correspondiente.
+                await context.bot.ban_chat_member(chat_id=chat.id, user_id=chat_id)
+                try:
+                    await context.bot.unban_chat_member(chat_id=chat.id, user_id=chat_id, only_if_banned=True)
+                except Exception:
+                    pass
+                removed = True
+            except Exception as e:
+                remove_error = str(e)[:500]
+                logging.warning("No pude retirar ingreso VIP no autorizado %s/%s: %s", chat_id, access_key, e)
             try:
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
@@ -2383,7 +2534,12 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
                         f"Canal: {getattr(chat, 'title', None) or access_key}\n"
                         f"Chat ID: {getattr(chat, 'id', None)}\n"
                         f"Usuario: {_telegram_display_name(member)} (ID: {chat_id})\n\n"
-                        "Telegram confirmó que el usuario ya es miembro, pero ese canal no corresponde a su nivel activo."
+                        + (
+                            "🛡️ El bot retiró automáticamente al usuario del canal."
+                            if removed else
+                            "⚠️ No pude retirarlo automáticamente. Revisa el permiso de expulsar/restringir usuarios del bot."
+                        )
+                        + (f"\nError: {remove_error}" if remove_error else "")
                     ),
                 )
             except Exception:
@@ -2481,6 +2637,8 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
         # Guardamos siempre el ID real del canal recibido por Telegram. Así, desde
         # la primera solicitud ya no dependemos del texto del título ni del token.
         _vip_learn_channel(access_key, getattr(req, "chat", None))
+        if access_key == "signals_premium":
+            await _vip_ensure_request_link(context.bot, access_key, notify_admin=True)
         logging.info(
             "🔎 Solicitud VIP mapeada: user=%s access=%s chat_id=%s title=%s",
             chat_id,
@@ -8476,6 +8634,9 @@ async def post_init_app(application):
     _cleanup_non_private_artifacts()
     await recover_pending_ai_jobs(application)
     await recover_pending_campaign_jobs(application)
+    # Si el Chat ID de Señales Premium +300 ya fue aprendido en pruebas anteriores,
+    # reemplazamos para el BOT el enlace histórico por uno propio con solicitud.
+    await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
     schedule_daily_report(application)
     try:
         await application.bot.send_message(
