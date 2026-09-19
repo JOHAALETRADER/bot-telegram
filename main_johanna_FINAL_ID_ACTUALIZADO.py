@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.39-20260919-HARD-PERSONAL-ESCALATION"
+BOT_VERSION = "v7.10.41-20260919-AI-PENDING-STATE-ISOLATION"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -2676,6 +2676,9 @@ async def _vip_finalize_confirmed_membership(
     event_name = "VIP_ACCESS_APPROVED" if source == "join_request" else "VIP_ACCESS_DIRECT_JOIN"
     _log_event(chat_id, event_name, access_key)
     _tracking_fire_event(chat_id, event_name, access_key)
+    _prune_pending_ai_after_operation(
+        context, chat_id, ["VIP_ACCESS"], reason=f"acceso VIP confirmado: {access_key}"
+    )
     level, should_welcome = _vip_mark_access_approved(chat_id, access_key)
     logging.info(
         "✅ Membresía VIP confirmada: %s / %s / nivel=%s / source=%s",
@@ -3886,6 +3889,9 @@ async def _admin_apply_deposit_confirmation(context: ContextTypes.DEFAULT_TYPE, 
     )
     _log_event(chat_id, "DEPOSIT_VALIDATED", detail)
     _tracking_fire_event(chat_id, "DEPOSIT_VALIDATED", detail)
+    _prune_pending_ai_after_operation(
+        context, chat_id, ["DEPOSITO"], reason="depósito validado / nivel actualizado"
+    )
     lang = get_user_lang(chat_id)
 
     # Todavía no llega al mínimo de Básico: conserva POST y no habilita ningún acceso.
@@ -4097,6 +4103,9 @@ async def _admin_finalize_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id:
             session.commit()
         _log_event(chat_id, "ID_VALIDATED", f"BROKER={broker} | ID={pending_id}")
         _tracking_fire_event(chat_id, "ID_VALIDATED", f"BROKER={broker} | ID={pending_id}")
+        _prune_pending_ai_after_operation(
+            context, chat_id, ["ID_SUBMIT"], reason=f"ID {broker} validado"
+        )
         stage = get_user_stage(chat_id)
         if stage == STAGE_PRE:
             set_user_stage(chat_id, STAGE_POST)
@@ -4129,6 +4138,9 @@ async def _admin_reject_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id: i
             row.pending_trading_id = None; row.updated_at = utcnow_naive(); session.commit()
         _log_event(chat_id, "ID_REJECTED", f"BROKER={broker} | ID={pending_id}")
         _tracking_fire_event(chat_id, "ID_REJECTED", f"BROKER={broker} | ID={pending_id}")
+        _prune_pending_ai_after_operation(
+            context, chat_id, ["ID_SUBMIT"], reason=f"ID {broker} rechazado"
+        )
         stage = get_user_stage(chat_id)
         if stage != STAGE_DEPOSITED and not _broker_validated_brokers(chat_id):
             if stage == STAGE_POST:
@@ -4230,6 +4242,9 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
     detail = f"BROKER={broker} | USD={preview['amount_cents']/100:.2f} | COUNT={preview['new_count']} | TIMELY={preview['timely']} | LEVEL={preview['new_level']}"
     _log_event(chat_id, "DEPOSIT_VALIDATED", detail)
     _tracking_fire_event(chat_id, "DEPOSIT_VALIDATED", detail)
+    _prune_pending_ai_after_operation(
+        context, chat_id, ["DEPOSITO"], reason=f"depósito {broker} validado / upgrade evaluado"
+    )
     _broker_flow_set(chat_id, pending_deposit_broker="")
 
     if new_global != VIP_LEVEL_NONE:
@@ -6908,6 +6923,171 @@ def _cancel_pending_ai(
     return pending_text
 
 
+def _pending_ai_question_tail(text_value: str) -> str:
+    """Extrae una duda conversacional que venga pegada a una acción operativa.
+
+    Ejemplo: ``Te envío mi ID 123456789 y cuánto tarda la validación`` ->
+    ``cuánto tarda la validación``. Si no hay una duda reconocible, devuelve vacío.
+    """
+    raw = (text_value or "").strip()
+    if not raw:
+        return ""
+    # Preferimos el último marcador interrogativo para evitar devolver de nuevo el
+    # prefijo operativo (ID, depósito, solicitud de acceso, etc.).
+    patterns = (
+        r"(?:^|[;,.!\n]\s*|\s+y\s+)(¿?\s*(?:qué|que|cómo|como|cuánto|cuanto|cuándo|cuando|dónde|donde|por\s+qué|por\s+que)\b.*)$",
+        r"(?:^|[;,.!\n]\s*|\s+y\s+)(¿?\s*(?:puedo|podría|podria|debo|tengo\s+que|quiero\s+saber|me\s+gustaría\s+saber|me\s+gustaria\s+saber)\b.*)$",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, raw, re.IGNORECASE | re.DOTALL)
+        if m:
+            tail = (m.group(1) or "").strip(" ,.;:-")
+            if len(_norm(tail)) >= 4:
+                return tail
+    return ""
+
+
+def _clean_ai_text_after_operations(text_value: str, resolved_topics=None) -> str:
+    """Quita de una IA pendiente solo acciones operativas YA atendidas.
+
+    Conserva preguntas reales del usuario aunque hayan llegado en el mismo mensaje.
+    Esta función NO decide estados ni valida nada: solo evita que OpenAI vuelva a
+    contestar un ID, depósito o acceso que el motor del bot ya procesó.
+    """
+    raw = (text_value or "").strip()
+    if not raw:
+        return ""
+    topics = {str(x).upper() for x in (resolved_topics or []) if str(x).strip()}
+    if not topics:
+        return raw
+
+    units = [x.strip() for x in re.split(r"\n+", raw) if x.strip()] or [raw]
+    kept = []
+    for unit in units:
+        norm = _norm(unit)
+        tail = _pending_ai_question_tail(unit)
+
+        # ID ya recibido/validado: elimina número y frases de entrega/registro,
+        # pero conserva una duda pegada al mismo texto.
+        if "ID_SUBMIT" in topics:
+            candidate = _extract_candidate_trading_id(unit)
+            id_action = bool(candidate) and (
+                unit.strip().isdigit()
+                or any(k in norm for k in (
+                    "te envio mi id", "te mando mi id", "te paso mi id", "aqui esta mi id",
+                    "este es mi id", "mi id es", "ya me registre", "ya me registré",
+                    "me registre", "me registré", "ya hice el registro",
+                ))
+            )
+            pure_registered = norm in {
+                "ya me registre", "me registre", "ya estoy registrado", "ya estoy registrada",
+                "ya hice el registro", "ya realice el registro",
+            }
+            if id_action or pure_registered:
+                if tail:
+                    kept.append(tail)
+                continue
+
+        # Depósito/redepósito ya atendido por el motor.
+        if "DEPOSITO" in topics and _is_deposit_report_intent(unit):
+            if tail:
+                kept.append(tail)
+            continue
+
+        # Acceso VIP ya confirmado. Solo elimina afirmaciones operativas claras,
+        # nunca preguntas sobre canales, señales o funcionamiento del VIP.
+        if "VIP_ACCESS" in topics:
+            access_done = any(k in norm for k in (
+                "ya entre al canal", "ya entré al canal", "ya me uni", "ya me uní",
+                "ya solicite acceso", "ya solicité acceso", "mande la solicitud",
+                "mandé la solicitud", "acceso listo", "ya pude entrar",
+            ))
+            if access_done:
+                if tail:
+                    kept.append(tail)
+                continue
+
+        kept.append(unit)
+
+    # Deduplica sin alterar el orden natural.
+    cleaned = []
+    seen = set()
+    for item in kept:
+        key = _norm(item)
+        if key and key not in seen:
+            seen.add(key)
+            cleaned.append(item.strip())
+    return "\n".join(cleaned).strip()
+
+
+def _prune_pending_ai_after_operation(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    resolved_topics,
+    reason: str = "",
+):
+    """Limpia residuos operativos sin borrar preguntas conversacionales pendientes.
+
+    Mantiene el vencimiento original de 5 minutos. Si queda una pregunta válida,
+    reprograma la misma IA para el tiempo que faltaba; si solo quedaba la acción
+    operativa ya resuelta, elimina el pendiente por completo.
+    """
+    pending = _get_pending_ai(chat_id)
+    if not pending:
+        return ""
+
+    topics = [str(x).upper() for x in (resolved_topics or []) if str(x).strip()]
+    cleaned_messages = []
+    changed = False
+    for original in pending.get("messages") or []:
+        cleaned = _clean_ai_text_after_operations(original, topics)
+        if cleaned != (original or "").strip():
+            changed = True
+        if cleaned:
+            cleaned_messages.append(cleaned)
+
+    if not changed:
+        return (pending.get("text") or "").strip()
+
+    _cancel_ai_job(context, chat_id)
+    if not cleaned_messages:
+        _clear_pending_ai_db(chat_id)
+        logging.info(
+            "🧹 IA pendiente operativa eliminada para %s · topics=%s · %s",
+            chat_id, ",".join(topics), reason or "sin motivo",
+        )
+        return ""
+
+    answered = list(pending.get("answered_topics") or []) + topics
+    due_at = pending.get("due_at") or (utcnow_naive() + timedelta(seconds=AI_WAIT_SECONDS))
+    message_id = str(pending.get("message_id") or "")
+    try:
+        with Session() as session:
+            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            if u:
+                u.ai_pending_text = _encode_pending_payload(cleaned_messages, answered)
+                u.ai_pending_message_id = message_id or u.ai_pending_message_id
+                u.ai_pending_due_at = due_at
+                session.commit()
+    except Exception as e:
+        logging.warning("No pude depurar IA pendiente de %s: %s", chat_id, e)
+        return "\n".join(cleaned_messages).strip()
+
+    if context.job_queue:
+        delay = max(2, int((due_at - utcnow_naive()).total_seconds()))
+        context.job_queue.run_once(
+            delayed_ai_reply,
+            when=delay,
+            data={"chat_id": chat_id, "message_id": message_id},
+            name=f"AI_REPLY_{chat_id}",
+        )
+    logging.info(
+        "🧠 IA pendiente depurada para %s · conserva pregunta · topics=%s · %s",
+        chat_id, ",".join(topics), reason or "sin motivo",
+    )
+    return "\n".join(cleaned_messages).strip()
+
+
 LIVE_HORARIOS_ES = (
     "📅 **HORARIOS DE MIS LIVES**\n\n"
     "🗓 **Normalmente de lunes a sábado**\n"
@@ -7119,6 +7299,39 @@ def _personal_escalation_intent(texto: str):
     return None
 
 
+def _is_deposit_report_intent(texto: str) -> bool:
+    """Reconoce que el usuario YA realizó un depósito, incluido un redepósito.
+
+    Cubre lenguaje natural como "hice otro depósito", "hice un nuevo depósito",
+    "volví a depositar", "deposité otra vez" y errores ortográficos frecuentes
+    como "hise otro deposito". No confunde preguntas/futuros del tipo
+    "¿puedo hacer otro depósito?" o "voy a depositar" con un depósito ya hecho.
+    """
+    t = _norm(texto or "")
+    if not t:
+        return False
+
+    completed_patterns = (
+        # Primer depósito o redepósito expresado como acción ya realizada.
+        r"\b(?:ya\s+)?(?:hice|hise|ise|realice|realize|efectue)\b.{0,28}\b(?:otro|nuevo|adicional|un\s+nuevo)?\s*(?:deposito|pago)\b",
+        r"\b(?:ya\s+)?(?:deposite|depositamos)\b(?:.{0,22}\b(?:otra\s+vez|de\s+nuevo|otro|adicional|nuevo))?\b",
+        r"\b(?:volvi|volvimos)\s+a\s+(?:depositar|hacer\s+un\s+deposito)\b",
+        r"\b(?:acabo|acabamos)\s+de\s+(?:depositar|hacer\s+(?:otro|un\s+nuevo|un)?\s*deposito)\b",
+        r"\b(?:otro|nuevo|adicional)\s+(?:deposito|pago)\b.{0,18}\b(?:listo|hecho|realizado|enviado)\b",
+        r"\b(?:ya\s+)?(?:pague|pago\s+hecho)\b",
+    )
+    if any(re.search(p, t) for p in completed_patterns):
+        return True
+
+    # Frases históricas ya soportadas.
+    return any(k in t for k in (
+        "ya deposite", "ya hice el deposito", "deposito listo", "ya esta el deposito",
+        "ya me llego el deposito", "ya me llego el pago", "i deposited",
+        "deposit done", "i made the deposit", "i made another deposit",
+        "i deposited again", "another deposit done",
+    ))
+
+
 def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
 
@@ -7188,11 +7401,10 @@ def detect_intent_es(texto: str) -> str:
     ]):
         return "MIN_50"
 
-    # ---- Ya deposité / acceso VIP ----
-    if any(k in t for k in [
-        "ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito",
-        "ya pague", "ya pagué", "deposito listo", "depósito listo", "ya esta el deposito", "ya está el depósito",
-        "ya me llego el deposito", "ya me llegó el depósito", "ya me llego el pago", "ya me llegó el pago",
+    # ---- Depósito realizado / redepósito / acceso VIP ----
+    # Un usuario ya activo que diga "hice otro depósito" debe entrar al flujo
+    # operativo de depósito adicional, nunca esperar a la IA diferida.
+    if _is_deposit_report_intent(texto) or any(k in t for k in [
         "ya me activaron", "ya active", "ya activé", "activacion lista", "activación lista",
         "dame acceso", "darme acceso", "acceso al vip", "acceso vip", "habilitar acceso", "habilita mi acceso",
         "para que me des acceso", "para que me des acceso al vip", "para que me des acceso al VIP",
@@ -7333,10 +7545,8 @@ def detect_all_intents(texto: str):
     ]):
         _add_intent(found, "MIN_50")
 
-    if any(k in t for k in [
-        "ya deposite", "ya deposité", "ya hice el deposito", "ya hice el depósito", "deposito listo", "depósito listo",
-        "ya pague", "ya pagué", "ya active", "ya activé", "dame acceso", "habilitar acceso", "acceso vip",
-        "i deposited", "deposit done", "i made the deposit",
+    if _is_deposit_report_intent(texto) or any(k in t for k in [
+        "ya active", "ya activé", "dame acceso", "habilitar acceso", "acceso vip",
     ]):
         _add_intent(found, "DEPOSITO")
 
@@ -8017,6 +8227,7 @@ ESTILO DE JOHANNA
 - Antes de responder una continuación (“entonces”, “mañana”, “listo”, “pero”, “en ese caso”, “no haría falta”, etc.), reconstruye mentalmente las últimas intervenciones USUARIO ↔ JOHANNA y responde a ESA conversación.
 - SI EL MENSAJE DEPENDE DE ALGO ACORDADO ANTES y ese acuerdo NO aparece claramente en el historial, NO lo inventes ni lo completes por intuición. Haz una sola pregunta breve de aclaración o deriva a mi chat personal si se trata de gestión de cuenta.
 - ETAPA/ESTADO INTERNO NO ES CONVERSACIÓN: PRE, POST, DEPOSITED, nivel o depósitos guardados sirven como contexto operativo, pero NO significan que el usuario acaba de registrarse, acaba de depositar o que yo haya aceptado gestionar/crear/operar una cuenta. No afirmes esos hechos como parte de la conversación salvo que el mensaje o historial los confirme de forma explícita.
+- EL ESTADO ACTUAL MANDA SOBRE PASOS ANTIGUOS: si el contexto operativo dice POST, no vuelvas a pedir ni validar un ID ya procesado; si dice DEPOSITED, no reinicies registro/ID/primer depósito. Responde únicamente la duda pendiente desde el punto REAL en el que está el usuario.
 - ACUERDOS DE GESTIÓN: jamás prometas “voy a gestionar tu cuenta”, “procederé a gestionar tu cuenta”, “voy a crear tu cuenta”, “voy a operar tu cuenta” o equivalentes por iniciativa propia. Solo puedes continuar un acuerdo así si aparece de forma clara en una “JOHANNA (RESPUESTA PERSONAL REAL)”. Si no aparece, usa [[PERSONAL_CHAT]] y evita confirmar el supuesto.
 - CONVERSACIÓN NATURAL: si el usuario está continuando una charla, responde como continuación humana, normalmente en 1–3 frases. Evita cierres genéricos de atención al cliente como “estoy aquí para ayudarte en todo lo que necesites”, “mucha suerte en esta nueva etapa” o párrafos motivacionales que no respondan al punto concreto.
 - Está PROHIBIDO sugerir “restablecer contraseña” o “ir al sitio del broker” como respuesta a un problema de acceso a canales/enlaces de Telegram.
@@ -8145,6 +8356,18 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_lang(chat_id)
     stage = get_user_stage(chat_id)
 
+    # AISLAMIENTO FINAL DE ESTADO: si el motor ya contestó/procesó una parte
+    # operativa de este paquete, OpenAI recibe solo la pregunta conversacional.
+    # Esto impide que un ID o depósito viejo reaparezca después de cambiar PRE ->
+    # POST -> DEPOSITED. Las preguntas reales se conservan.
+    answered_topics = list(pending.get("answered_topics") or [])
+    cleaned_question = _clean_ai_text_after_operations(question, answered_topics)
+    if cleaned_question != question:
+        question = cleaned_question
+    if not question:
+        _clear_pending_ai_db(chat_id)
+        return
+
     # ÚLTIMO CINTURÓN DE SEGURIDAD ANTES DE OPENAI. Aunque un mensaje sensible
     # hubiera quedado programado por cualquier ruta antigua o tras un reinicio,
     # gestión/VPN/país/caso particular de cuenta nunca se entrega al modelo.
@@ -8153,7 +8376,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
     if personal_intent:
         answer = _immediate_block(personal_intent, lang)
     else:
-        answer = await openai_answer(question, chat_id, lang, stage, pending.get("answered_topics") or [])
+        answer = await openai_answer(question, chat_id, lang, stage, answered_topics)
 
     if not answer:
         personal_review = True
@@ -8289,7 +8512,12 @@ async def _send_user_blocks(update: Update, text_value: str, reply_markup=None):
 
 
 async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, lang: str, intents, unknown_parts):
-    """Flujos operativos inmediatos; dudas naturales reciben una sola respuesta IA contextual."""
+    """Separa acciones operativas de preguntas reales antes de usar la IA.
+
+    Un ID/depósito se atiende de inmediato por el motor; solo la parte conversacional
+    restante puede quedar esperando IA. Así una etapa ya resuelta nunca vuelve a
+    mezclarse con una pregunta posterior.
+    """
     chat_id = update.effective_chat.id
     effective_intents = [i for i in intents if i != "GREETING"] or intents
     handled_operational = []
@@ -8303,12 +8531,21 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
             return True
 
     if "ID_SUBMIT" in effective_intents:
+        # Limpia únicamente residuos antiguos de entrega de ID; conserva cualquier
+        # pregunta legítima que ya estuviera esperando a Johanna/IA.
+        _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="nuevo ID operativo")
         _record_submitted_trading_id(chat_id, texto, context)
         block = _id_pending_review_message(lang)
         await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
         handled_operational.append("ID_SUBMIT")
+        # Estas intenciones quedan materialmente resueltas por recibir el ID. No
+        # deben volver a provocar una respuesta IA del mismo mensaje.
+        for covered in ("YA_REGISTRE", "WHERE_SEND_ID", "NEXT_STEP"):
+            if covered in effective_intents and covered not in handled_operational:
+                handled_operational.append(covered)
 
     if "DEPOSITO" in effective_intents:
+        _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="nuevo depósito operativo")
         _log_event(chat_id, "DEPOSIT_REPORTED", texto)
         _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
         stage_now = get_user_stage(chat_id)
@@ -8334,8 +8571,9 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
         handled_operational.append("DEPOSITO")
 
     non_operational = [i for i in effective_intents if i not in handled_operational]
-    if non_operational or unknown_parts or not handled_operational:
-        schedule_ai_reply(update, context, texto.strip(), answered_topics=handled_operational)
+    ai_text = _clean_ai_text_after_operations(texto.strip(), handled_operational)
+    if ai_text and (non_operational or unknown_parts or not handled_operational):
+        schedule_ai_reply(update, context, ai_text, answered_topics=handled_operational)
     return True
 
 # Nueva función para manejar mensajes de usuarios (texto o media)
@@ -8383,6 +8621,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = (update.message.caption or "").strip()
         current_stage = get_user_stage(chat_id)
         if current_stage in (STAGE_POST, STAGE_DEPOSITED):
+            _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="comprobante de depósito recibido")
             _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
             _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
             brokers = _broker_validated_brokers(chat_id)
@@ -8544,6 +8783,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "DEPOSITO":
+        _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="depósito reconocido inmediatamente")
         _log_event(chat_id, "DEPOSIT_REPORTED", texto)
         _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
         stage_now = get_user_stage(chat_id)
@@ -8570,6 +8810,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "ID_SUBMIT":
+        _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="ID reconocido inmediatamente")
         _record_submitted_trading_id(chat_id, texto, context)
         msg = _id_pending_review_message(lang)
         await update.message.reply_text(msg, reply_markup=_broker_selection_keyboard("id", lang))
