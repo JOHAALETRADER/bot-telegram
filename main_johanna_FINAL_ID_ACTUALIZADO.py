@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.31-20260918-VIP-ORDER-SAFE-LINK-COMPLETION-NOTICE"
+BOT_VERSION = "v7.10.34-20260919-VIP-PRIVACY-SERVICE-CLEANUP"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -329,6 +329,15 @@ class VIPInviteOverride(Base):
     updated_at = Column(DateTime, default=utcnow_naive, index=True)
 
 
+class VIPAccessPause(Base):
+    """Pausa persistente entre tandas de accesos para evitar límites de Telegram."""
+    __tablename__ = "vip_access_pause"
+    telegram_id = Column(String, primary_key=True)
+    level       = Column(String, default="NONE", index=True)
+    due_at      = Column(DateTime, index=True)
+    updated_at  = Column(DateTime, default=utcnow_naive, index=True)
+
+
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
@@ -516,6 +525,17 @@ VIP_LEVEL_CHANNEL_KEYS = {
     VIP_LEVEL_PREMIUM: ["vip_main", "module3", "module4", "signals_premium", "ai_crypto"],
     VIP_LEVEL_PRESTIGE: ["vip_main", "module3", "module4", "madness", "signals_premium", "ai_crypto", "fx_auto"],
 }
+
+# Para evitar el mensaje de Telegram "demasiados intentos", el flujo hace una
+# pausa automática tras 4 accesos confirmados consecutivos y luego continúa.
+try:
+    VIP_ACCESS_BATCH_SIZE = max(1, int(os.getenv("VIP_ACCESS_BATCH_SIZE", "4")))
+except Exception:
+    VIP_ACCESS_BATCH_SIZE = 4
+try:
+    VIP_ACCESS_PAUSE_MINUTES = max(1, int(os.getenv("VIP_ACCESS_PAUSE_MINUTES", "5")))
+except Exception:
+    VIP_ACCESS_PAUSE_MINUTES = 5
 
 
 # Chat personal / validación (URL del botón de soporte)
@@ -1234,6 +1254,124 @@ def _vip_pending_keys(chat_id: int):
     except Exception as e:
         logging.warning("No pude leer accesos VIP pendientes de %s: %s", chat_id, e)
         return []
+
+
+def _vip_get_pause(chat_id: int):
+    try:
+        with Session() as session:
+            row = session.get(VIPAccessPause, str(chat_id))
+            if not row or not row.due_at:
+                return None
+            return {"level": row.level or VIP_LEVEL_NONE, "due_at": row.due_at}
+    except Exception as e:
+        logging.warning("No pude leer pausa VIP de %s: %s", chat_id, e)
+        return None
+
+
+def _vip_set_pause(chat_id: int, level: str, due_at: datetime):
+    try:
+        with Session() as session:
+            row = session.get(VIPAccessPause, str(chat_id))
+            if not row:
+                row = VIPAccessPause(telegram_id=str(chat_id))
+                session.add(row)
+            row.level = level or VIP_LEVEL_NONE
+            row.due_at = due_at
+            row.updated_at = utcnow_naive()
+            session.commit()
+        return True
+    except Exception as e:
+        logging.warning("No pude guardar pausa VIP de %s: %s", chat_id, e)
+        return False
+
+
+def _vip_clear_pause(chat_id: int):
+    try:
+        with Session() as session:
+            row = session.get(VIPAccessPause, str(chat_id))
+            if row:
+                session.delete(row)
+                session.commit()
+    except Exception as e:
+        logging.warning("No pude limpiar pausa VIP de %s: %s", chat_id, e)
+
+
+def _vip_pause_keyboard(lang: str) -> InlineKeyboardMarkup:
+    label = "▶️ CONTINUAR MIS ACCESOS" if lang == "es" else "▶️ CONTINUE MY ACCESS"
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="vip_continue_access")]])
+
+
+def _vip_schedule_resume(context: ContextTypes.DEFAULT_TYPE, chat_id: int, due_at: datetime):
+    if not context.job_queue:
+        return
+    name = f"VIP_ACCESS_RESUME_{chat_id}"
+    try:
+        for job in context.job_queue.get_jobs_by_name(name):
+            job.schedule_removal()
+    except Exception:
+        pass
+    delay = max(1, int((due_at - utcnow_naive()).total_seconds()))
+    context.job_queue.run_once(
+        _vip_resume_access_job,
+        when=delay,
+        data={"chat_id": int(chat_id)},
+        name=name,
+    )
+
+
+async def _vip_resume_access_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = int(data.get("chat_id") or 0)
+    if not _is_private_user_id(chat_id):
+        return
+    pause = _vip_get_pause(chat_id)
+    if not pause:
+        return
+    due_at = pause.get("due_at")
+    if due_at and due_at > utcnow_naive() + timedelta(seconds=1):
+        _vip_schedule_resume(context, chat_id, due_at)
+        return
+    _vip_clear_pause(chat_id)
+    state = _vip_get_state(chat_id, create=False) or {}
+    level = state.get("level") or pause.get("level") or VIP_LEVEL_NONE
+    if level == VIP_LEVEL_NONE:
+        return
+    await _vip_send_next_or_welcome(
+        context,
+        chat_id,
+        level,
+        get_user_lang(chat_id),
+        just_completed="",
+        should_welcome=False,
+        bypass_pause=True,
+    )
+
+
+async def recover_pending_vip_access_pauses(application):
+    """Recupera pausas VIP después de un redeploy de Railway."""
+    try:
+        with Session() as session:
+            rows = session.query(VIPAccessPause).filter(VIPAccessPause.due_at.isnot(None)).all()
+            pending = [(int(r.telegram_id), r.due_at) for r in rows if _is_private_user_id(r.telegram_id)]
+    except Exception as e:
+        logging.warning("No pude recuperar pausas VIP: %s", e)
+        return
+    for chat_id, due_at in pending:
+        if due_at <= utcnow_naive():
+            due_at = utcnow_naive() + timedelta(seconds=2)
+        try:
+            # application.job_queue expone la misma interfaz usada por Context.job_queue.
+            name = f"VIP_ACCESS_RESUME_{chat_id}"
+            for job in application.job_queue.get_jobs_by_name(name):
+                job.schedule_removal()
+            application.job_queue.run_once(
+                _vip_resume_access_job,
+                when=max(1, int((due_at - utcnow_naive()).total_seconds())),
+                data={"chat_id": chat_id},
+                name=name,
+            )
+        except Exception as e:
+            logging.warning("No pude reprogramar pausa VIP de %s: %s", chat_id, e)
 
 
 def _vip_activation_message(level: str, total_cents: int, lang: str, upgraded: bool = False) -> str:
@@ -2378,13 +2516,57 @@ async def _vip_send_next_or_welcome(
     *,
     just_completed: str = "",
     should_welcome: bool = False,
+    bypass_pause: bool = False,
 ):
-    """Continúa el flujo VIP con UN solo botón o cierra con bienvenida."""
+    """Continúa el flujo VIP con UN solo botón, pausa anti-flood o bienvenida."""
     reconciled_welcome = await _vip_reconcile_known_memberships(context, chat_id)
     should_welcome = should_welcome or reconciled_welcome
     remaining = _vip_pending_keys(chat_id)
 
     if remaining:
+        # Tras una tanda de accesos consecutivos hacemos una pausa persistente.
+        # Esto reduce el riesgo de que Telegram responda "demasiados intentos".
+        all_keys = _vip_channel_keys_for_level(level)
+        completed_count = max(0, len(all_keys) - len(remaining))
+        should_pause_now = (
+            not bypass_pause
+            and bool(just_completed)
+            and len(all_keys) > VIP_ACCESS_BATCH_SIZE
+            and completed_count == VIP_ACCESS_BATCH_SIZE
+        )
+        if should_pause_now:
+            due_at = utcnow_naive() + timedelta(minutes=VIP_ACCESS_PAUSE_MINUTES)
+            _vip_set_pause(chat_id, level, due_at)
+            _vip_schedule_resume(context, chat_id, due_at)
+            wait_text = (
+                f"✅ Ya tienes {completed_count} accesos confirmados.\n\n"
+                f"⏳ Telegram puede limitar varias incorporaciones consecutivas. Para evitar que te aparezca «demasiados intentos», haré una pausa de {VIP_ACCESS_PAUSE_MINUTES} minutos y luego te enviaré automáticamente el siguiente acceso.\n\n"
+                "Si vuelves más tarde, puedes usar el botón CONTINUAR MIS ACCESOS y retomarás exactamente desde donde quedaste."
+                if lang == "es" else
+                f"✅ You already have {completed_count} confirmed accesses.\n\n"
+                f"⏳ Telegram may temporarily limit several consecutive joins. To reduce the chance of a “too many attempts” message, I’ll pause for {VIP_ACCESS_PAUSE_MINUTES} minutes and then automatically send your next access.\n\n"
+                "If you come back later, use CONTINUE MY ACCESS and you’ll resume exactly where you left off."
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=wait_text,
+                    reply_markup=_vip_pause_keyboard(lang),
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logging.warning("No pude avisar pausa VIP a %s: %s", chat_id, e)
+            return
+
+        # Si existe una pausa aún vigente por una ejecución anterior, no mandamos
+        # otro enlace hasta que venza o el usuario use CONTINUAR después del plazo.
+        if not bypass_pause:
+            pause = _vip_get_pause(chat_id)
+            if pause and pause.get("due_at") and pause["due_at"] > utcnow_naive():
+                _vip_schedule_resume(context, chat_id, pause["due_at"])
+                return
+
+        _vip_clear_pause(chat_id)
         next_key = remaining[0]
         next_info = VIP_ACCESS_CHANNELS.get(next_key) or {}
         next_name = next_info.get("name_es") if lang == "es" else next_info.get("name_en")
@@ -2422,6 +2604,7 @@ async def _vip_send_next_or_welcome(
                 pass
         return
 
+    _vip_clear_pause(chat_id)
     # Si acabamos de retirar el último pendiente, enviamos cierre aunque el
     # welcome_level hubiese quedado marcado en una prueba anterior.
     if just_completed or should_welcome:
@@ -2473,6 +2656,62 @@ async def _vip_finalize_confirmed_membership(
         should_welcome=should_welcome,
     )
     return True
+
+
+async def cleanup_vip_membership_service_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Elimina avisos de altas/bajas de miembros en grupos VIP conocidos.
+
+    Telegram publica mensajes de servicio como "Se aceptó a ..." o "... salió del
+    grupo" dentro del tema General. Aunque los miembros estén ocultos, esos avisos
+    pueden exponer nombres/perfiles. Este handler los borra apenas llegan.
+
+    Solo actúa en chats reconocidos por VIP_ACCESS_CHANNELS/VIPChannelMap. No toca
+    mensajes normales, señales, cursos, temas ni otros grupos del bot.
+    """
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+
+    joined = list(getattr(msg, "new_chat_members", None) or [])
+    left = getattr(msg, "left_chat_member", None)
+    if not joined and not left:
+        return
+
+    access_key = _vip_access_key_from_chat(chat)
+    if not access_key:
+        return
+
+    try:
+        await context.bot.delete_message(chat_id=chat.id, message_id=msg.message_id)
+        logging.info(
+            "🧹 Aviso de membresía VIP eliminado: chat=%s access=%s message_id=%s tipo=%s",
+            chat.id,
+            access_key,
+            msg.message_id,
+            "JOIN" if joined else "LEAVE",
+        )
+    except Exception as e:
+        logging.warning(
+            "No pude eliminar aviso de membresía VIP: chat=%s access=%s message_id=%s error=%s",
+            getattr(chat, "id", None),
+            access_key,
+            getattr(msg, "message_id", None),
+            e,
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "⚠️ LIMPIEZA PRIVACIDAD VIP\n\n"
+                    f"No pude borrar un aviso de ingreso/salida en: {getattr(chat, 'title', None) or access_key}\n"
+                    f"Chat ID: {getattr(chat, 'id', None)}\n"
+                    f"Mensaje ID: {getattr(msg, 'message_id', None)}\n\n"
+                    "Revisa que JOHAALETRADER_bot conserve el permiso para eliminar mensajes."
+                ),
+            )
+        except Exception:
+            pass
 
 
 async def tracking_channel_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3171,6 +3410,90 @@ def _is_simple_levels_lookup(texto: str) -> bool:
     if any(x in t for x in contextual):
         return False
     return any(x in t for x in ("que niveles", "qué niveles", "niveles disponibles", "planes disponibles")) or t.strip() in {"niveles", "planes"}
+
+
+def _is_vip_access_rate_limit_query(texto: str, vip_flow_active: bool = False) -> bool:
+    """Detecta el límite de Telegram sin confundirlo con login de un broker.
+
+    Si el usuario está en pleno flujo VIP, frases ambiguas como “no me deja
+    ingresar, demasiados intentos” se interpretan usando ese contexto real.
+    """
+    t = _norm(texto or "")
+    limit_terms = (
+        "demasiados intentos", "muchos intentos", "demasiado intentos",
+        "intentalo mas tarde", "inténtalo más tarde", "intente mas tarde",
+        "try again later", "too many attempts", "too many tries",
+    )
+    if not any(_norm(x) in t for x in limit_terms):
+        return False
+
+    strong_access_terms = (
+        "telegram", "canal", "canales", "acceso", "accesos", "enlace", "enlaces",
+        "unirme", "unir", "solicitud", "solicitar", "vip", "grupo", "grupos",
+    )
+    if any(x in t for x in strong_access_terms):
+        return True
+
+    # Evita secuestrar un error explícito de login/contraseña del broker.
+    broker_terms = (
+        "binomo", "stockity", "broker", "contraseña", "contrasena", "password",
+        "correo", "email", "iniciar sesion", "inicio de sesion", "login",
+    )
+    if any(x in t for x in broker_terms):
+        return False
+
+    ambiguous_join_terms = ("ingresar", "entrar", "no me deja", "intentar", "intento")
+    return bool(vip_flow_active and any(x in t for x in ambiguous_join_terms))
+
+
+def _vip_rate_limit_message(lang: str = "es") -> str:
+    if lang == "en":
+        return (
+            "⏳ That ‘too many attempts’ notice is coming from Telegram after several channel joins or access requests in a short period. "
+            "It is not related to your Binomo/Stockity password or your broker account.\n\n"
+            f"Your confirmed accesses are not lost. I’ll pause the remaining access flow for about {VIP_ACCESS_PAUSE_MINUTES} minutes and then continue from the next pending channel automatically. "
+            "If Telegram still shows the same notice after the pause, wait a little longer before trying again.\n\n"
+            "You can also use CONTINUE MY ACCESS after the pause to resume exactly where you left off. ✅"
+        )
+    return (
+        "⏳ Ese aviso de «demasiados intentos» viene de Telegram cuando se hacen varias solicitudes o ingresos a canales en poco tiempo. "
+        "No tiene relación con tu contraseña ni con tu cuenta de Binomo o Stockity.\n\n"
+        f"Tus accesos ya confirmados no se pierden. Voy a pausar los accesos restantes aproximadamente {VIP_ACCESS_PAUSE_MINUTES} minutos y después continuaré automáticamente desde el siguiente canal pendiente. "
+        "Si Telegram todavía muestra el mismo aviso al terminar la pausa, espera un poco más antes de volver a intentarlo.\n\n"
+        "También puedes usar CONTINUAR MIS ACCESOS después de la pausa para retomar exactamente donde quedaste. ✅"
+    )
+
+
+def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
+    """Contexto operativo real para que la IA no cambie de tema ni invente pasos.
+
+    Solo expone estado del flujo dentro del propio bot: etapa, nivel JT, accesos
+    pendientes y pausa de Telegram. No modifica ningún dato.
+    """
+    lines = [f"Etapa del bot: {get_user_stage(chat_id)}"]
+    try:
+        state = _vip_get_state(chat_id, create=False) or {}
+        level = state.get("level") or VIP_LEVEL_NONE
+        if level != VIP_LEVEL_NONE:
+            lines.append(f"Nivel JT TRADERS TEAMS activo: {_vip_level_label(level, lang)}")
+            pending = _vip_pending_keys(chat_id)
+            if pending:
+                names = []
+                for key in pending:
+                    info = VIP_ACCESS_CHANNELS.get(key) or {}
+                    name = info.get("name_en") if lang == "en" else info.get("name_es")
+                    names.append(name or key)
+                lines.append("Accesos VIP pendientes: " + "; ".join(names))
+            else:
+                lines.append("Accesos VIP pendientes: ninguno")
+            pause = _vip_get_pause(chat_id)
+            if pause and pause.get("due_at") and pause["due_at"] > utcnow_naive():
+                seconds_left = max(1, int((pause["due_at"] - utcnow_naive()).total_seconds()))
+                minutes_left = max(1, (seconds_left + 59) // 60)
+                lines.append(f"Pausa anti-límite de Telegram activa: aproximadamente {minutes_left} min restantes")
+    except Exception as e:
+        logging.info("No pude construir contexto operativo IA para %s: %s", chat_id, e)
+    return "\n".join(lines)
 
 
 def remarketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
@@ -5317,6 +5640,43 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(upgrade_conditions_text(lang), reply_markup=support_keyboard(lang))
         return
 
+    if q.data == "vip_continue_access":
+        lang = get_user_lang(chat_id)
+        state = _vip_get_state(chat_id, create=False) or {}
+        level = state.get("level") or VIP_LEVEL_NONE
+        remaining = _vip_pending_keys(chat_id)
+        if level == VIP_LEVEL_NONE or not remaining:
+            await q.message.reply_text(
+                "✅ No tienes accesos VIP pendientes." if lang == "es" else "✅ You have no pending VIP access.",
+                reply_markup=support_keyboard(lang),
+            )
+            return
+        pause = _vip_get_pause(chat_id)
+        if pause and pause.get("due_at") and pause["due_at"] > utcnow_naive():
+            seconds_left = max(1, int((pause["due_at"] - utcnow_naive()).total_seconds()))
+            minutes_left = max(1, (seconds_left + 59) // 60)
+            await q.message.reply_text(
+                (
+                    f"⏳ Aún estamos dentro de la pausa de seguridad de Telegram. Espera aproximadamente {minutes_left} min y te enviaré automáticamente el siguiente acceso."
+                    if lang == "es" else
+                    f"⏳ We are still inside Telegram’s safety pause. Wait about {minutes_left} min and I’ll automatically send the next access."
+                ),
+                reply_markup=_vip_pause_keyboard(lang),
+            )
+            _vip_schedule_resume(context, chat_id, pause["due_at"])
+            return
+        _vip_clear_pause(chat_id)
+        await _vip_send_next_or_welcome(
+            context,
+            chat_id,
+            level,
+            lang,
+            just_completed="",
+            should_welcome=False,
+            bypass_pause=True,
+        )
+        return
+
     # Notificar interacción
     await notificar_interaccion(update, context)
 
@@ -5957,11 +6317,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 # Modelo recomendado para transcribir respuestas de voz de Johanna.
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
-# 5 minutos de prioridad para Johanna. Puede cambiarse en Railway con AI_WAIT_MINUTES.
+# 3 minutos de prioridad para Johanna. Puede cambiarse en Railway con AI_WAIT_MINUTES.
 try:
-    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "5")))
+    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "3")))
 except Exception:
-    AI_WAIT_MINUTES = 5
+    AI_WAIT_MINUTES = 3
 AI_WAIT_SECONDS = AI_WAIT_MINUTES * 60
 AI_HISTORY_MAX_MESSAGES = 16
 
@@ -6039,6 +6399,13 @@ SEÑALES — CANALES DE TELEGRAM
 - Premium/Prestige: IA Premium Automática CRYPTO IDX 24/7. La entrada se toma en el minuto inmediatamente siguiente al minuto en que llega la alerta, con expiración de 1 minuto.
 - Prestige: Divisas Automáticas 24/7 Premium. La entrada se toma en el minuto inmediatamente siguiente a la alerta, con expiración de 1 minuto.
 - Nunca presentes Martingala como garantía de recuperación ni de ganancia.
+
+SOPORTE DE ACCESOS VIP EN TELEGRAM
+- Si un miembro está entrando a los canales/enlaces VIP y Telegram muestra “demasiados intentos”, “inténtalo más tarde” o equivalente, interpreta el problema COMO UN LÍMITE TEMPORAL DE TELEGRAM por varias solicitudes/ingresos consecutivos. NO lo conviertas en un problema de broker, contraseña, correo, inicio de sesión o KYC.
+- En ese caso, explica que los accesos ya confirmados no se pierden. El bot hace una pausa aproximada de {VIP_ACCESS_PAUSE_MINUTES} minutos para reducir el límite y luego continúa desde el siguiente acceso pendiente. Si Telegram sigue limitando después de la pausa, recomienda esperar un poco más antes de reintentar.
+- NUNCA sugieras restablecer la contraseña, entrar al sitio del broker, cambiar correo, recuperar cuenta de Binomo/Stockity ni realizar un nuevo registro cuando la conversación está hablando de enlaces, canales, solicitudes de unión o accesos VIP de Telegram.
+- Si el usuario menciona “CONTINUAR MIS ACCESOS”, se refiere al flujo de canales VIP de Telegram. El proceso debe retomar desde el siguiente canal pendiente, sin repetir accesos ya confirmados.
+- Si un canal muestra “Unirme” en vez de “Solicitar acceso”, sigue siendo un asunto de acceso al canal de Telegram; no cambies de dominio ni inventes soluciones de broker.
 
 DIFERENCIA ENTRE SOFTWARE PREMIUM Y BOTS AUTOMÁTICOS
 - El Software Premium Anticipado genera más de 300 señales de lunes a sábado. En Premium/Prestige esas señales cubren CRYPTO IDX, pares de divisas, índices sintéticos y Forex y se reciben por Telegram; la entrada se toma en el minuto exacto indicado.
@@ -6157,7 +6524,7 @@ def _johanna_examples_as_text(question: str = "", limit: int = 28, lang: str | N
             recent = (
                 recent_query
                 .order_by(JohannaExample.created_at.desc())
-                .limit(max(8, limit // 2))
+                .limit(max(3, min(5, limit // 2)))
                 .all()
             )
 
@@ -6171,14 +6538,27 @@ def _johanna_examples_as_text(question: str = "", limit: int = 28, lang: str | N
                 relevant_query = session.query(JohannaExample).filter(or_(*conditions))
                 if lang in ("es", "en"):
                     relevant_query = relevant_query.filter(JohannaExample.lang == lang)
-                relevant = (
+                candidates = (
                     relevant_query
                     .order_by(JohannaExample.created_at.desc())
-                    .limit(limit)
+                    .limit(max(40, limit * 4))
                     .all()
                 )
+                # Un solo término genérico (por ejemplo “ingresar”) no basta para
+                # arrastrar una respuesta de otro tema. Exigimos coincidencia más
+                # fuerte cuando la pregunta aporta varios términos útiles.
+                threshold = 2 if len(keywords) >= 3 else 1
+                scored = []
+                for row in candidates:
+                    hay = _norm(f"{row.user_text or ''} {row.response_text or ''}")
+                    score = sum(1 for kw in keywords if _norm(kw) in hay)
+                    if score >= threshold:
+                        scored.append((score, row))
+                scored.sort(key=lambda item: item[0], reverse=True)
+                relevant = [row for _score, row in scored[:limit]]
 
-        # Primero los ejemplos relacionados; completamos con estilo reciente.
+        # Primero los ejemplos realmente relacionados; completamos con pocos ejemplos
+        # recientes SOLO para estilo, para no contaminar el tema de la respuesta.
         rows = []
         seen = set()
         for r in relevant + recent:
@@ -7273,7 +7653,8 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
 - El usuario seleccionó ESPAÑOL en el bot.
 - Escribe TODA la respuesta final en español natural.
 """.strip()
-        real_examples = _johanna_examples_as_text(question=question, limit=28, lang=lang)
+        real_examples = _johanna_examples_as_text(question=question, limit=12, lang=lang)
+        runtime_context = _ai_runtime_context(chat_id, lang)
         already_answered = already_answered or []
         answered_note = ", ".join(already_answered) if already_answered else ("none" if lang == "en" else "ninguno")
         system = f"""
@@ -7304,8 +7685,11 @@ ESTILO DE JOHANNA
 - Habla siempre de “nivel dentro de mi comunidad JT TRADERS TEAMS”. Nunca llames “nivel de Stockity” o “nivel de Binomo” al nivel de comunidad.
 - Si preguntan cuánto es el mínimo, con cuánto recomiendo empezar, si 50 USD está bien o cuál es la diferencia entre 50 y 200: explica claramente que 50 USD corresponde al Básico y habilita VIP principal + Módulo 3 + 30–50 señales CRYPTO IDX diarias de lunes a viernes. La recomendación habitual es 200 USD o más si está dentro de sus posibilidades porque Premium habilita +300 señales Premium de lunes a sábado, IA Automática CRYPTO IDX 24/7 y Módulo 4 Smart Money Concept. Puedes añadir que un capital mayor da más margen para gestión de riesgo, pero NUNCA lo presentes como garantía de mejores resultados o ganancias.
 - FORMATO DE ENLACES: nunca uses Markdown tipo [texto](URL). Si incluyes Stockity/Binomo, usa EXACTAMENTE bloques separados. En español: "🔗 Stockity — opción principal:" + URL en la línea siguiente, una línea en blanco, luego "🔗 Binomo — opción secundaria:" + URL en la línea siguiente. En inglés: "🔗 Stockity — primary option:" + URL, línea en blanco, luego "🔗 Binomo — secondary option:" + URL. Stockity siempre primero y Binomo después.
-- Los ejemplos reales de Johanna sirven para aprender vocabulario, ritmo y conocimiento. No generalices una excepción claramente individual.
+- Los ejemplos reales de Johanna sirven PRINCIPALMENTE para aprender tono, vocabulario y ritmo. La BASE DE CONOCIMIENTO OFICIAL y el CONTEXTO OPERATIVO REAL mandan sobre cualquier ejemplo. Nunca importes de un ejemplo un problema, broker, contraseña, procedimiento o dato que no corresponda al mensaje actual.
 - PRIORIDAD SEMÁNTICA: entiende la pregunta completa antes de usar una ficha predefinida. Una palabra como “bono”, “nivel”, “bot”, “software” o “señales” NO autoriza por sí sola a soltar una lista genérica.
+- ANCLAJE DE CONTEXTO: identifica primero DE QUÉ SISTEMA habla el usuario y permanece en ese dominio. Si habla de Telegram, canales, enlaces, solicitudes, “unirme”, accesos VIP o “demasiados intentos” al entrar a canales, responde sobre el flujo VIP de Telegram. NO introduzcas Binomo, Stockity, contraseñas, correo, KYC, depósitos o recuperación de cuenta salvo que el mensaje actual los mencione explícitamente.
+- Una referencia como “no me deja ingresar” debe resolverse usando el contexto inmediato. Si el historial y el estado operativo muestran accesos VIP pendientes, “ingresar” significa entrar al canal de Telegram, no iniciar sesión en un broker.
+- Está PROHIBIDO sugerir “restablecer contraseña” o “ir al sitio del broker” como respuesta a un problema de acceso a canales/enlaces de Telegram.
 - Si preguntan si recomiendo un bono o por sus condiciones/volumen, responde esa situación; no enumeres códigos salvo que pregunten por los códigos/bonos activos.
 - Si preguntan diferencia entre software y bot, explica la diferencia exacta. Software Premium Anticipado = más de 300 señales lun-sáb; bots/IA = alertas automáticas 24/7 según el nivel dentro de mi comunidad.
 - Si el tema es gestión de cuenta/capital, incluso si menciona bono, comienza EXACTAMENTE con [[PERSONAL_CHAT]] y responde en primera persona indicando que lo manejo personalmente.
@@ -7322,6 +7706,9 @@ LÍMITES IMPORTANTES
 - Si falta un dato oficial, dilo con naturalidad y deriva a Johanna; no rellenes huecos.
 
 ETAPA ACTUAL DEL USUARIO: {stage}
+
+CONTEXTO OPERATIVO REAL DEL USUARIO EN ESTE BOT:
+{runtime_context}
 
 BASE DE CONOCIMIENTO OFICIAL:
 {JOHA_KNOWLEDGE}
@@ -7693,6 +8080,32 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     texto = update.message.text or update.message.caption or ""
     if not texto.strip():
+        return
+
+    # Soporte operativo conocido: si Telegram limita varias incorporaciones
+    # consecutivas, respondemos de forma exacta y mantenemos al usuario dentro
+    # del flujo VIP. Nunca permitimos que una IA lo convierta en un problema de
+    # contraseña/broker. Además iniciamos una pausa desde el momento del aviso.
+    state_for_access = _vip_get_state(chat_id, create=False) or {}
+    level_for_access = state_for_access.get("level") or VIP_LEVEL_NONE
+    pending_for_access = _vip_pending_keys(chat_id) if level_for_access != VIP_LEVEL_NONE else []
+    if _is_vip_access_rate_limit_query(texto, vip_flow_active=bool(pending_for_access)):
+        level = level_for_access
+        pending = pending_for_access
+        if pending:
+            pause = _vip_get_pause(chat_id)
+            if not (pause and pause.get("due_at") and pause["due_at"] > utcnow_naive()):
+                due_at = utcnow_naive() + timedelta(minutes=VIP_ACCESS_PAUSE_MINUTES)
+                _vip_set_pause(chat_id, level, due_at)
+                _vip_schedule_resume(context, chat_id, due_at)
+            elif pause.get("due_at"):
+                _vip_schedule_resume(context, chat_id, pause["due_at"])
+        msg = _vip_rate_limit_message(lang)
+        await update.message.reply_text(
+            msg,
+            reply_markup=_vip_pause_keyboard(lang) if pending else support_keyboard(lang),
+        )
+        await send_admin_auto_log(context, update, "VIP_TELEGRAM_RATE_LIMIT", msg)
         return
 
     intents, unknown_parts = _question_analysis(texto)
@@ -8634,6 +9047,7 @@ async def post_init_app(application):
     _cleanup_non_private_artifacts()
     await recover_pending_ai_jobs(application)
     await recover_pending_campaign_jobs(application)
+    await recover_pending_vip_access_pauses(application)
     # Si el Chat ID de Señales Premium +300 ya fue aprendido en pruebas anteriores,
     # reemplazamos para el BOT el enlace histórico por uno propio con solicitud.
     await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
@@ -8669,6 +9083,14 @@ if __name__ == "__main__":
     app.add_handler(
         CommandHandler("reportid", report_id_command, filters=filters.User(ADMIN_ID)),
         group=-110,
+    )
+
+    # PRIVACIDAD VIP: elimina inmediatamente mensajes de servicio que exponen
+    # quién entró o salió (por ejemplo: "Se aceptó a ...") en grupos VIP.
+    # Corre antes del bloqueo global; solo borra avisos de membresía en chats VIP conocidos.
+    app.add_handler(
+        MessageHandler(~filters.ChatType.PRIVATE, cleanup_vip_membership_service_message),
+        group=-105,
     )
 
     # BLOQUEO GLOBAL: el VIP/grupos/temas/canales son solo destinos de salida.
