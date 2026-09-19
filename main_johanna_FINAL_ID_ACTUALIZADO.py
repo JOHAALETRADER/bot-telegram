@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.42-20260919-AI-NATURALITY-SEMANTIC-GUARDS"
+BOT_VERSION = "v7.10.43-20260919-AI-NATURAL-KNOWLEDGE-PROMO-ADMIN"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -338,9 +338,233 @@ class VIPAccessPause(Base):
     updated_at  = Column(DateTime, default=utcnow_naive, index=True)
 
 
+class PromoCodeConfig(Base):
+    """Códigos promocionales editables desde el panel administrador.
+
+    Se mantiene en una tabla independiente para no tocar el esquema histórico de
+    usuarios. Los recordatorios enviados también quedan persistidos para evitar
+    duplicados después de un redeploy de Railway.
+    """
+    __tablename__ = "promo_code_config"
+    config_key          = Column(String, primary_key=True)
+    code_100            = Column(String, default="TOP1_JOHATRADER")
+    code_70             = Column(String, default="TOP_1JOHAALE")
+    expires_on          = Column(String, default="2026-09-30")
+    reminder_3d_for     = Column(String)
+    reminder_expiry_for = Column(String)
+    updated_at          = Column(DateTime, default=utcnow_naive, index=True)
+
+
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
+
+# === CÓDIGOS PROMOCIONALES DINÁMICOS ===
+PROMO_CONFIG_KEY = "ACTIVE"
+PROMO_DEFAULT_100 = "TOP1_JOHATRADER"
+PROMO_DEFAULT_70 = "TOP_1JOHAALE"
+PROMO_DEFAULT_EXPIRY = "2026-09-30"
+
+
+def _promo_get_config():
+    """Devuelve la configuración promocional vigente y la crea si aún no existe."""
+    try:
+        with Session() as session:
+            row = session.get(PromoCodeConfig, PROMO_CONFIG_KEY)
+            if not row:
+                row = PromoCodeConfig(
+                    config_key=PROMO_CONFIG_KEY,
+                    code_100=PROMO_DEFAULT_100,
+                    code_70=PROMO_DEFAULT_70,
+                    expires_on=PROMO_DEFAULT_EXPIRY,
+                )
+                session.add(row)
+                session.commit()
+            return {
+                "code_100": (row.code_100 or PROMO_DEFAULT_100).strip(),
+                "code_70": (row.code_70 or PROMO_DEFAULT_70).strip(),
+                "expires_on": (row.expires_on or PROMO_DEFAULT_EXPIRY).strip(),
+                "reminder_3d_for": (row.reminder_3d_for or "").strip(),
+                "reminder_expiry_for": (row.reminder_expiry_for or "").strip(),
+            }
+    except Exception as e:
+        logging.warning("No pude leer códigos promocionales dinámicos: %s", e)
+        return {
+            "code_100": PROMO_DEFAULT_100,
+            "code_70": PROMO_DEFAULT_70,
+            "expires_on": PROMO_DEFAULT_EXPIRY,
+            "reminder_3d_for": "",
+            "reminder_expiry_for": "",
+        }
+
+
+def _promo_set_config(*, code_100=None, code_70=None, expires_on=None):
+    """Actualiza solo los campos indicados y reinicia avisos al cambiar vencimiento."""
+    with Session() as session:
+        row = session.get(PromoCodeConfig, PROMO_CONFIG_KEY)
+        if not row:
+            row = PromoCodeConfig(
+                config_key=PROMO_CONFIG_KEY,
+                code_100=PROMO_DEFAULT_100,
+                code_70=PROMO_DEFAULT_70,
+                expires_on=PROMO_DEFAULT_EXPIRY,
+            )
+            session.add(row)
+        if code_100 is not None:
+            row.code_100 = str(code_100).strip()
+        if code_70 is not None:
+            row.code_70 = str(code_70).strip()
+        if expires_on is not None:
+            new_expiry = str(expires_on).strip()
+            if new_expiry != (row.expires_on or "").strip():
+                row.reminder_3d_for = None
+                row.reminder_expiry_for = None
+            row.expires_on = new_expiry
+        row.updated_at = utcnow_naive()
+        session.commit()
+
+
+def _promo_parse_expiry(value: str):
+    raw = (value or "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except Exception:
+            pass
+    return None
+
+
+def _promo_expiry_display(value: str) -> str:
+    d = _promo_parse_expiry(value)
+    return d.strftime("%d/%m/%Y") if d else (value or "Sin fecha")
+
+
+def _promo_ai_context(lang: str = "es") -> str:
+    cfg = _promo_get_config()
+    expiry_date = _promo_parse_expiry(cfg["expires_on"])
+    expiry = _promo_expiry_display(cfg["expires_on"])
+    today = datetime.now(COLOMBIA_TZ).date() if "COLOMBIA_TZ" in globals() else datetime.now().date()
+    expired = bool(expiry_date and expiry_date < today)
+    if lang == "en":
+        if expired:
+            return (
+                f"PROMO STATUS: configured codes expired on {expiry}. DO NOT present them as active. "
+                "Tell the user the promotion needs to be confirmed/updated before providing a code."
+            )
+        return (
+            "CURRENT PROMOTIONAL CODES (authoritative, override old examples):\n"
+            f"- 100% first-deposit bonus: {cfg['code_100']} (first deposit only, one-time use).\n"
+            f"- 70% subsequent-deposit bonus: {cfg['code_70']} (subsequent deposits).\n"
+            f"- Current expiry date: {expiry}."
+        )
+    if expired:
+        return (
+            f"ESTADO PROMO: los códigos configurados vencieron el {expiry}. NO los presentes como activos. "
+            "Indica que la promoción debe confirmarse/actualizarse antes de entregar un código."
+        )
+    return (
+        "CÓDIGOS PROMOCIONALES ACTUALES (fuente autoritativa, manda sobre ejemplos antiguos):\n"
+        f"- Bono 100% primer depósito: {cfg['code_100']} (solo primer depósito, un solo uso).\n"
+        f"- Bono 70% depósitos posteriores: {cfg['code_70']}.\n"
+        f"- Fecha de vencimiento vigente: {expiry}."
+    )
+
+
+def _contains_active_promo_code(texto: str) -> bool:
+    t = _norm(texto or "") if "_norm" in globals() else str(texto or "").lower()
+    cfg = _promo_get_config()
+    return any((code and str(code).lower() in t) for code in (cfg.get("code_100"), cfg.get("code_70")))
+
+
+def _promo_admin_text() -> str:
+    cfg = _promo_get_config()
+    return (
+        "🎟 CÓDIGOS PROMOCIONALES\n\n"
+        f"💯 100% primer depósito: {cfg['code_100']}\n"
+        f"🔥 70% depósitos posteriores: {cfg['code_70']}\n"
+        f"📅 Vencimiento: {_promo_expiry_display(cfg['expires_on'])}\n\n"
+        "Puedes cambiar los códigos o la fecha sin desplegar un MAIN nuevo."
+    )
+
+
+def _promo_admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ CAMBIAR CÓDIGO 100%", callback_data="admin_panel_promo_code100")],
+        [InlineKeyboardButton("✏️ CAMBIAR CÓDIGO 70%", callback_data="admin_panel_promo_code70")],
+        [InlineKeyboardButton("📅 CAMBIAR VENCIMIENTO", callback_data="admin_panel_promo_expiry")],
+        [InlineKeyboardButton("↩️ VOLVER AL PANEL", callback_data="admin_panel_promo_back")],
+    ])
+
+
+def _promo_mark_reminder(field: str, expiry_key: str):
+    if field not in {"reminder_3d_for", "reminder_expiry_for"}:
+        return
+    try:
+        with Session() as session:
+            row = session.get(PromoCodeConfig, PROMO_CONFIG_KEY)
+            if not row:
+                return
+            setattr(row, field, expiry_key)
+            row.updated_at = utcnow_naive()
+            session.commit()
+    except Exception as e:
+        logging.warning("No pude marcar recordatorio promo: %s", e)
+
+
+async def _check_promo_expiry_reminders(bot):
+    """Avisa a Johanna 3 días antes y el día exacto, una sola vez por vencimiento."""
+    cfg = _promo_get_config()
+    expiry = _promo_parse_expiry(cfg.get("expires_on"))
+    if not expiry:
+        return
+    today = datetime.now(COLOMBIA_TZ).date() if "COLOMBIA_TZ" in globals() else datetime.now().date()
+    days = (expiry - today).days
+    expiry_key = expiry.isoformat()
+    if days == 3 and cfg.get("reminder_3d_for") != expiry_key:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "⚠️ RECORDATORIO DE CÓDIGOS PROMOCIONALES\n\n"
+                    f"Tus códigos promocionales vencen en 3 días, el {_promo_expiry_display(expiry_key)}.\n"
+                    "Prepara los nuevos códigos y luego actualízalos desde ⚙️ MENÚ ADMIN → 🎟 CÓDIGOS PROMO."
+                ),
+            )
+            _promo_mark_reminder("reminder_3d_for", expiry_key)
+        except Exception as e:
+            logging.warning("No pude enviar recordatorio promo 3 días: %s", e)
+    elif days == 0 and cfg.get("reminder_expiry_for") != expiry_key:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "🚨 CÓDIGOS PROMOCIONALES · VENCEN HOY\n\n"
+                    f"La fecha configurada es {_promo_expiry_display(expiry_key)}. Crea los nuevos códigos y actualízalos desde el panel administrador."
+                ),
+            )
+            _promo_mark_reminder("reminder_expiry_for", expiry_key)
+        except Exception as e:
+            logging.warning("No pude enviar recordatorio promo de vencimiento: %s", e)
+
+
+async def promo_expiry_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    await _check_promo_expiry_reminders(context.bot)
+
+
+def schedule_promo_expiry_reminder(application):
+    if not application.job_queue:
+        return
+    try:
+        for job in application.job_queue.get_jobs_by_name("PROMO_EXPIRY_REMINDER"):
+            job.schedule_removal()
+    except Exception:
+        pass
+    application.job_queue.run_daily(
+        promo_expiry_reminder_job,
+        time=dt_time(hour=9, minute=0, tzinfo=COLOMBIA_TZ),
+        name="PROMO_EXPIRY_REMINDER",
+    )
+
 
 # --- Migración robusta de la columna lang (sin acceso manual a SQL) ---
 try:
@@ -476,8 +700,8 @@ VIP_ACCESS_CHANNELS = {
         # Enlace reconfirmado por Johanna el 18/09/2026.
         "url": "https://t.me/+fe5N2iolLGk0ZjBh",
         "levels": (VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE),
-        "desc_es": "+300 señales de lunes a sábado entre CRYPTO IDX, pares de divisas, índices sintéticos y Forex. Entrada en el minuto exacto indicado, expiración de 1 minuto y hasta Martingala 2 opcional.",
-        "desc_en": "300+ signals Monday to Saturday across CRYPTO IDX, currency pairs, synthetic indices and Forex. Enter at the exact indicated minute, 1-minute expiry, with optional Martingale up to level 2.",
+        "desc_es": "+300 señales AL DÍA de lunes a sábado entre CRYPTO IDX, pares de divisas, índices sintéticos y Forex. Entrada en el minuto exacto indicado, expiración de 1 minuto y hasta Martingala 2 opcional.",
+        "desc_en": "300+ signals PER DAY Monday to Saturday across CRYPTO IDX, currency pairs, synthetic indices and Forex. Enter at the exact indicated minute, 1-minute expiry, with optional Martingale up to level 2.",
     },
     "ai_crypto": {
         "name_es": "IA Premium Automática CRYPTO IDX 24/7",
@@ -1499,7 +1723,7 @@ Ahora solo falta activar tu cuenta con el depósito correspondiente a tu nivel p
 
 🚀 Haz tu depósito y escríbeme Ya deposité. Yo continúo contigo para habilitar tu acceso."""
 
-MENSAJE_B_3H_ES = """💰 Si este será tu primer depósito, tienes disponible un bono del 100% con el código TOP1_JOHATRADER.
+MENSAJE_B_3H_ES = """💰 Si este será tu primer depósito, tienes disponible un bono promocional del 100%.
 
 Tu registro ya está validado: estás a un solo paso de activar tu acceso. Aprovecha tu depósito, completa la activación y empieza con formación, señales y herramientas según tu nivel.
 
@@ -1525,7 +1749,7 @@ Now you only need to fund your account according to your selected level to unloc
 
 🚀 Make your deposit and message me I deposited so I can continue with your activation."""
 
-MENSAJE_B_3H_EN = """💰 If this is your first deposit, you currently have a 100% bonus available with code TOP1_JOHATRADER.
+MENSAJE_B_3H_EN = """💰 If this is your first deposit, a 100% promotional bonus is currently available.
 
 Your registration is already validated. Complete your deposit and start accessing the education, signals and tools included in your level.
 
@@ -1634,41 +1858,13 @@ MENSAJE_REGISTRARME_EN = f"""It’s very simple. Open your trading account using
 
 I’ll be waiting for you! 🚀"""
 
-MENSAJE_YA_TENGO_CUENTA_ES = f"""Si ya tienes una cuenta de Stockity o Binomo y NO fue registrada con mi enlace, primero revisamos cómo dejar correctamente vinculada una nueva cuenta.
+MENSAJE_YA_TENGO_CUENTA_ES = """Si ya tienes una cuenta, primero envíame el ID para verificar si quedó registrada correctamente con mi enlace.
 
-✅ Si tu cuenta actual tiene saldo, retíralo primero si la plataforma y las condiciones de tu cuenta lo permiten. Si tienes un bono activo, revisa antes sus condiciones de retiro.
+No hagas un depósito nuevo hasta que te confirme la validación. Si la cuenta no está vinculada conmigo, te indico el registro correcto de una nueva cuenta."""
 
-✅ Si la plataforma permite crear una nueva cuenta, haz el registro con mi enlace usando un correo diferente que nunca hayas usado en esa plataforma y datos reales/verificables del titular.
+MENSAJE_YA_TENGO_CUENTA_EN = """If you already have an account, first send me the account ID so I can verify whether it was correctly registered through my link.
 
-✅ Si la cuenta pertenece a un familiar, debe ser realmente la cuenta de esa persona: sus propios datos, documento y medios de depósito/retiro a su nombre.
-
-❗ No uses VPN para saltar restricciones de país. Si tienes un problema de disponibilidad o país, escríbeme directamente para revisar tu caso.
-
-🔗 Stockity — opción principal:
-{ENLACE_REFERIDO_STOCKITY}
-
-🔗 Binomo — opción secundaria:
-{ENLACE_REFERIDO}
-
-📌 SUPER IMPORTANTE: envíame el nuevo ID antes de depositar para validarlo."""
-
-MENSAJE_YA_TENGO_CUENTA_EN = f"""If you already have a Stockity or Binomo account and it was NOT registered through my link, the first step is to review how to correctly link a new account.
-
-✅ If your current account has funds, withdraw them first if the platform and your account conditions allow it. If you have an active bonus, review its withdrawal conditions first.
-
-✅ If the platform allows a new account, register through my link using a different email that has never been used on that platform and the account holder’s real, verifiable information.
-
-✅ If the account belongs to a family member, it must genuinely be that person’s account: their own information, identity document, and deposit/withdrawal methods in their name.
-
-❗ Do not use a VPN to bypass country restrictions. If you have a country/availability issue, message me directly so I can review your case.
-
-🔗 Stockity — primary option:
-{ENLACE_REFERIDO_STOCKITY}
-
-🔗 Binomo — secondary option:
-{ENLACE_REFERIDO}
-
-📌 VERY IMPORTANT: send me the new ID before depositing so I can validate it."""
+Do not make a new deposit until I confirm the validation. If the account is not linked to me, I’ll explain the correct process for registering a new one."""
 
 # Recordatorios (ES) — tiempos internos; los mensajes no mencionan cuánto tiempo pasó
 MENSAJE_1H_ES = f"""🚀 Si quieres empezar, el primer paso es mucho más sencillo de lo que parece.
@@ -1817,24 +2013,22 @@ Indicative structure of up to USD 30 per week for 2 months, subject to results.
 # Beneficios (ES/EN)
 BENEFICIOS_ES = """✨ Beneficios JT TRADERS TEAMS ✨
 
-✅ Todos los niveles: acceso al VIP principal con educación/metodología completa + Binary Teams Módulo 3 (Introducción al Análisis Bursátil).
-✅ Básico — desde 50 USD: 30–50 señales CRYPTO IDX por día, de lunes a viernes.
-✅ Premium — desde 200 USD: +300 señales Premium de lunes a sábado, IA automática CRYPTO IDX 24/7 y Módulo 4 Smart Money Concept.
-✅ Prestige — desde 500 USD: todo Premium + Divisas Automáticas 24/7, Madness Trading Avanzado ALGO & LIT, mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo. Forex automático: en construcción.
+✅ Básico — desde 50 USD: formación Binary Teams Módulos 1 al 3 + VIP principal + 30–50 señales CRYPTO IDX diarias de lunes a viernes.
+✅ Premium — desde 200 USD: formación completa Binary Teams Módulos 1 al 4 (Módulo 4 Smart Money Concept), material de apoyo, sesiones/acompañamiento, Software Premium Anticipado con +300 señales AL DÍA de lunes a sábado e IA CRYPTO IDX 24/7.
+✅ Prestige — desde 500 USD: todo Premium + Madness Trading Avanzado ALGO & LIT + bot IA de pares de divisas 24/7 + mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.
 
 ⚡️ La comunidad es GRATUITA: el dinero se deposita directamente en TU propia cuenta de trading. Las herramientas habilitadas dependen del nivel alcanzado.
-⚠️ Las señales se operan con gestión de riesgo; Martingala 1/2 es opcional y aumenta la exposición.
+⚠️ Las entradas se realizan manualmente con gestión de riesgo; MG1/MG2 son opcionales.
 """
 
 BENEFICIOS_EN = """✨ JT TRADERS TEAMS Benefits ✨
 
-✅ Every level: access to the main VIP with complete education/methodology + Binary Teams Module 3 (Introduction to Market Analysis).
-✅ Basic — from USD 50: 30–50 CRYPTO IDX signals per day, Monday to Friday.
-✅ Premium — from USD 200: 300+ Premium signals Monday to Saturday, automatic CRYPTO IDX AI 24/7 and Module 4 Smart Money Concept.
-✅ Prestige — from USD 500: everything in Premium + Automatic FX 24/7, Madness Advanced Trading ALGO & LIT, private mentoring, closer guidance and funded-account preparation. Automatic Forex: under development.
+✅ Basic — from USD 50: Binary Teams Modules 1–3 + main VIP + 30–50 CRYPTO IDX signals per day, Monday to Friday.
+✅ Premium — from USD 200: complete Binary Teams Modules 1–4 (Module 4 Smart Money Concept), support materials, live sessions/guidance, Premium Anticipated Software with 300+ signals PER DAY Monday to Saturday, and CRYPTO IDX AI 24/7.
+✅ Prestige — from USD 500: everything in Premium + Madness Advanced Trading ALGO & LIT + 24/7 currency-pair AI bot + private mentoring, closer guidance and funded-account preparation.
 
 ⚡️ The community is FREE: funds are deposited directly into YOUR own trading account. Enabled tools depend on the level reached.
-⚠️ Signals should be used with risk management; Martingale 1/2 is optional and increases exposure.
+⚠️ Entries are taken manually with risk management; MG1/MG2 are optional.
 """
 
 # === FUNCIONES DE MENSAJES PROGRAMADOS (usa lang por usuario) ===
@@ -3411,13 +3605,25 @@ def personal_chat_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     ])
 
 def _ai_needs_levels_button(question: str) -> bool:
+    """Muestra niveles solo cuando realmente ayudan a la duda actual.
+
+    Una simple mención de Premium/Prestige dentro de una conversación (p. ej.
+    "mañana veo, creo que Premium me sirve") no debe volver a empujar el botón.
+    """
     t = _norm(question or "")
-    terms = (
-        "nivel", "niveles", "premium", "prestige", "basico", "básico", "plan", "planes",
-        "fondeando", "depositando", "con 50", "con 100", "con 200", "con 300", "con 500",
-        "acceso al bot", "acceso a las señales", "acceso a las senales", "que incluye", "qué incluye",
+    if not t:
+        return False
+    direct = (
+        "nivel", "niveles", "plan", "planes", "que incluye", "qué incluye",
+        "que recibo", "qué recibo", "diferencia", "cuanto necesito", "cuánto necesito",
+        "cuanto cuesta", "cuánto cuesta", "cuanto debo depositar", "cuánto debo depositar",
+        "acceso al bot", "quiero el bot", "puedo tener el bot", "bot es posible",
+        "acceso a las señales", "acceso a las senales",
+        "con 50", "con 100", "con 200", "con 300", "con 500",
     )
-    return any(x in t for x in terms)
+    if any(x in t for x in direct):
+        return True
+    return t.strip() in {"basico", "básico", "premium", "prestige"}
 
 
 def ai_context_keyboard(question: str, lang: str = "es"):
@@ -3443,9 +3649,8 @@ def _is_simple_bonus_lookup(texto: str) -> bool:
     simple = (
         "que bonos", "qué bonos", "bonos activos", "bono activo", "codigo de bono", "código de bono",
         "codigo bono", "código bono", "cual es el bono", "cuál es el bono", "bono 100", "bono 70",
-        "top1_johatrader", "top_1johaale",
     )
-    return any(x in t for x in simple) or t.strip() in {"bono", "bonos", "bonus"}
+    return any(x in t for x in simple) or t.strip() in {"bono", "bonos", "bonus"} or _contains_active_promo_code(texto)
 
 
 def _is_simple_levels_lookup(texto: str) -> bool:
@@ -3578,6 +3783,7 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔴 /live — Aviso LIVE", callback_data="admin_panel_live")],
         [InlineKeyboardButton("📣 /marketing — Marketing manual", callback_data="admin_panel_marketing")],
         [InlineKeyboardButton("📊 /reporte — Reporte del día", callback_data="admin_panel_report")],
+        [InlineKeyboardButton("🎟 CÓDIGOS PROMO", callback_data="admin_panel_promos")],
         [InlineKeyboardButton("👤 GESTIONAR USUARIO", callback_data="admin_panel_users")],
         [InlineKeyboardButton("🏠 /start — Inicio", callback_data="admin_panel_start")],
     ])
@@ -4665,6 +4871,29 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
     if not raw:
         return
 
+    promo_edit = context.user_data.get("admin_promo_edit")
+    if promo_edit:
+        if promo_edit in ("code100", "code70"):
+            if not re.fullmatch(r"[A-Za-z0-9_-]{3,64}", raw):
+                await update.effective_message.reply_text("⚠️ Código inválido. Usa solo letras, números, guion o guion bajo, sin espacios.")
+                from telegram.ext import ApplicationHandlerStop
+                raise ApplicationHandlerStop
+            if promo_edit == "code100":
+                _promo_set_config(code_100=raw)
+            else:
+                _promo_set_config(code_70=raw)
+        elif promo_edit == "expiry":
+            expiry = _promo_parse_expiry(raw)
+            if not expiry:
+                await update.effective_message.reply_text("⚠️ Fecha inválida. Usa DD/MM/AAAA o AAAA-MM-DD. Ejemplo: 30/09/2026")
+                from telegram.ext import ApplicationHandlerStop
+                raise ApplicationHandlerStop
+            _promo_set_config(expires_on=expiry.isoformat())
+        context.user_data.pop("admin_promo_edit", None)
+        await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Configuración promocional actualizada.\n\n" + _promo_admin_text(), reply_markup=_promo_admin_keyboard())
+        from telegram.ext import ApplicationHandlerStop
+        raise ApplicationHandlerStop
+
     pending = context.user_data.get("admin_user_action") or {}
     if pending.get("action") == "broker_deposit_amount":
         chat_id = int(pending.get("chat_id"))
@@ -4851,6 +5080,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("admin_user_lookup_mode", None)
     context.user_data.pop("admin_user_action", None)
     context.user_data.pop("admin_pending_deposit", None)
+    context.user_data.pop("admin_promo_edit", None)
     await update.effective_message.reply_text(
         "🔐 PANEL ADMINISTRADOR\n\nElige una opción:",
         reply_markup=admin_panel_keyboard(),
@@ -4878,6 +5108,21 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await marketing_command(update, context)
     elif query.data == "admin_panel_report":
         await context.bot.send_message(chat_id=ADMIN_ID, text=await _daily_report_with_affiliate())
+    elif query.data == "admin_panel_promos":
+        context.user_data.pop("admin_promo_edit", None)
+        await context.bot.send_message(chat_id=ADMIN_ID, text=_promo_admin_text(), reply_markup=_promo_admin_keyboard())
+    elif query.data == "admin_panel_promo_code100":
+        context.user_data["admin_promo_edit"] = "code100"
+        await context.bot.send_message(chat_id=ADMIN_ID, text="✏️ Escribe el NUEVO código del bono 100% (primer depósito).")
+    elif query.data == "admin_panel_promo_code70":
+        context.user_data["admin_promo_edit"] = "code70"
+        await context.bot.send_message(chat_id=ADMIN_ID, text="✏️ Escribe el NUEVO código del bono 70% (depósitos posteriores).")
+    elif query.data == "admin_panel_promo_expiry":
+        context.user_data["admin_promo_edit"] = "expiry"
+        await context.bot.send_message(chat_id=ADMIN_ID, text="📅 Escribe la nueva fecha de vencimiento. Formato: DD/MM/AAAA (ejemplo 30/09/2026).")
+    elif query.data == "admin_panel_promo_back":
+        context.user_data.pop("admin_promo_edit", None)
+        await context.bot.send_message(chat_id=ADMIN_ID, text="🔐 PANEL ADMINISTRADOR\n\nElige una opción:", reply_markup=admin_panel_keyboard())
     elif query.data == "admin_panel_users":
         await _show_admin_user_list(context)
     elif query.data == "admin_panel_start":
@@ -4900,9 +5145,28 @@ CAMPAIGN_OFFSETS = {
 def _campaign_text_pair(series: str, step: str):
     """Devuelve (ES, EN) para un paso persistente de campaña."""
     if series == "B":
+        if step == "3h":
+            cfg = _promo_get_config()
+            expiry = _promo_parse_expiry(cfg.get("expires_on"))
+            today = datetime.now(COLOMBIA_TZ).date()
+            promo_active = not expiry or expiry >= today
+            if promo_active:
+                return (
+                    f"💰 Si este será tu primer depósito, tienes disponible un bono del 100% con el código {cfg['code_100']}.\n\n"
+                    "Tu registro ya está validado: estás a un solo paso de activar tu acceso. Aprovecha tu depósito, completa la activación y empieza con formación, señales y herramientas según tu nivel.\n\n"
+                    "✅ Cuando lo hagas, escríbeme Ya deposité y continuamos de inmediato.",
+                    f"💰 If this is your first deposit, you currently have a 100% bonus available with code {cfg['code_100']}.\n\n"
+                    "Your registration is already validated. Complete your deposit and start accessing the education, signals and tools included in your level.\n\n"
+                    "✅ Once done, message me I deposited and we will continue immediately.",
+                )
+            return (
+                "💰 Tu registro ya está validado: estás a un solo paso de activar tu acceso. Completa tu depósito y empieza con formación, señales y herramientas según tu nivel.\n\n"
+                "✅ Cuando lo hagas, escríbeme Ya deposité y continuamos de inmediato.",
+                "💰 Your registration is already validated. Complete your deposit to activate the education, signals and tools included in your level.\n\n"
+                "✅ Once done, message me I deposited and we will continue immediately.",
+            )
         mapping = {
             "1h": (MENSAJE_B_1H_ES, MENSAJE_B_1H_EN),
-            "3h": (MENSAJE_B_3H_ES, MENSAJE_B_3H_EN),
             "24h": (MENSAJE_B_24H_ES, MENSAJE_B_24H_EN),
             "48h": (MENSAJE_B_48H_ES, MENSAJE_B_48H_EN),
         }
@@ -5200,7 +5464,8 @@ async def mensaje_B_1h(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def mensaje_B_3h(context: ContextTypes.DEFAULT_TYPE):
-    await _send_job_message_B(context, MENSAJE_B_3H_ES, MENSAJE_B_3H_EN)
+    es, en = _campaign_text_pair("B", "3h")
+    await _send_job_message_B(context, es, en)
 
 
 async def mensaje_B_24h(context: ContextTypes.DEFAULT_TYPE):
@@ -5903,7 +6168,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif q.data == "ya_tengo_cuenta":
         _msg_account = MENSAJE_YA_TENGO_CUENTA_ES if lang=="es" else MENSAJE_YA_TENGO_CUENTA_EN
-        await q.message.reply_text(_personalize_referral_links(_msg_account, chat_id), reply_markup=support_keyboard(lang))
+        await q.message.reply_text(_personalize_referral_links(_msg_account, chat_id))
 
     elif q.data == "gestion_capital":
         # El botón informa las modalidades y termina siempre en atención personal.
@@ -6377,120 +6642,142 @@ except Exception:
 JOHA_KNOWLEDGE = os.getenv("JOHA_KNOWLEDGE", "").strip() or f"""
 INFORMACIÓN OFICIAL DE JOHAALETRADER / JT TRADERS TEAMS
 
-IDENTIDAD Y FORMA DE RESPONDER
-- Responde SIEMPRE en primera persona como Johanna / JOHAALETRADER. Nunca te presentes como Johabot ni como una IA.
-- Nunca hables de Johanna en tercera persona frente al usuario: NO digas “Johanna maneja”, “ella revisa”, “contacta a Johanna”. Di “yo manejo”, “yo reviso”, “escríbeme”, “conmigo”, “mi chat personal”.
-- Puedes atender tanto prospectos que quieren entrar a la comunidad como miembros que ya están dentro.
-- Mantén respuestas MUY fáciles de leer en Telegram: normalmente 2 a 4 párrafos cortos; una pregunta simple debe resolverse en pocas líneas.
-- Sé muy positiva, motivadora, persuasiva y orientada a acción, sin sonar robótica ni repetir información.
-- Usa algunos emojis con moderación y cierra con un llamado a la acción claro cuando corresponda: registro → envío de ID → depósito → activación/acceso.
-- No presiones de forma engañosa y no inventes urgencias, cupos ni resultados.
+IDENTIDAD Y PRINCIPIO DE RESPUESTA
+- Responde siempre en primera persona como Johanna / JOHAALETRADER. Nunca digas que eres una IA, un bot de atención o un asistente virtual.
+- Atiendes prospectos y miembros actuales.
+- La prioridad es comprender la intención completa y responder SOLO lo necesario para esa pregunta. No descargues toda la información disponible sobre un tema.
+- Si la persona hace una pregunta corta, normalmente bastan 1–3 frases. Amplía solo cuando lo pida o cuando sea imprescindible para evitar un error.
+- No asumas género. Usa lenguaje neutral: "si estás empezando", "cuando completes", "tú realizas la entrada", etc.
 
 REGISTRO Y ACCESO
-- El acceso a la comunidad es GRATUITO. No existe una membresía adicional que el usuario deba pagar a Johanna para entrar.
-- El usuario invierte/deposita en su PROPIA cuenta de trading. La cantidad de herramientas y beneficios depende del nivel elegido.
-- Cuando debas mostrar los enlaces de registro, usa SIEMPRE esta estructura visual:
+- El acceso a la comunidad JT TRADERS TEAMS es GRATUITO. No existe una membresía adicional que se pague a Johanna.
+- El usuario deposita/invierte en SU PROPIA cuenta de trading. Ese capital sigue en su cuenta.
+- El requisito para entrar a la comunidad es que la cuenta de Binomo o Stockity quede registrada correctamente con uno de los enlaces oficiales de Johanna y que el ID sea validado ANTES del depósito.
+- Stockity es la opción principal y Binomo la opción secundaria cuando corresponda mostrar ambos enlaces.
+- Cuando debas mostrar enlaces usa este formato, sin Markdown oculto:
   🔗 Stockity — opción principal:
   {ENLACE_REFERIDO_STOCKITY}
 
   🔗 Binomo — opción secundaria:
   {ENLACE_REFERIDO}
-- En inglés usa exactamente las etiquetas "🔗 Stockity — primary option:" y "🔗 Binomo — secondary option:", manteniendo la URL debajo y una línea en blanco entre plataformas.
-- Después del registro, el usuario debe enviar su ID de Stockity o Binomo para validación ANTES de depositar.
-- Chat personal/validación: {SUPPORT_URL}
-- Nunca confirmes por tu cuenta que un ID, depósito, afiliación o acceso quedó validado. Esa confirmación la realiza Johanna manualmente.
+- En inglés usa "🔗 Stockity — primary option:" y "🔗 Binomo — secondary option:".
+- Nunca confirmes por tu cuenta que un ID, afiliación, depósito o acceso quedó validado; eso depende del sistema/validación de Johanna.
 
-NIVELES
-- Básico: desde 50 USD en la propia cuenta de trading. Incluye JT TRADERS TEAMS VIP principal (educación/metodología completa), Binary Teams Módulo 3 y canal de 30–50 señales CRYPTO IDX diarias de lunes a viernes.
-- Premium: desde 200 USD. Incluye VIP principal + Módulo 3 + canal de +300 señales Premium de lunes a sábado (CRYPTO IDX, pares de divisas, índices sintéticos y Forex) + IA Premium Automática CRYPTO IDX 24/7 + Binary Teams Módulo 4 Smart Money Concept.
-- Prestige: desde 500 USD. Incluye todo Premium + Divisas Automáticas 24/7 Premium + Madness Trading Avanzado ALGO & LIT + mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo. Forex automático está en construcción.
-- Si preguntan con cuánto es ideal iniciar, explica que se puede empezar desde 50 USD en Básico. Normalmente recomiendo 200 USD o más si está dentro de las posibilidades del usuario porque Premium habilita una estructura mucho más amplia de señales y herramientas, sin prometer mejores resultados.
-- Explica con buenas palabras que un capital más amplio da mayor margen operativo y más flexibilidad para aplicar gestión de riesgo y distribuir mejor las entradas. Eso puede ayudar a aprovechar mejor la estrategia y las herramientas, pero NO garantiza mejores resultados ni ganancias. Nunca digas que más inversión asegura más rentabilidad.
-- Si un usuario tiene menos de 50 USD, no negocies una excepción ni prometas acceso: el nivel Básico solo se habilita al completar al menos 50 USD. Si ya envió un depósito incompleto, debe completar el faltante y enviar el nuevo comprobante.
+NIVELES DENTRO DE JT TRADERS TEAMS
+- El nivel pertenece a la comunidad JT TRADERS TEAMS, NO al broker. Se determina por el capital/deposito validado que la persona mantiene en su propia cuenta de trading.
+- Básico: desde 50 USD hasta 199.99 USD.
+- Premium: desde 200 USD hasta 499.99 USD.
+- Prestige: desde 500 USD.
+- Si preguntan por un monto concreto, responde SOLO el nivel correspondiente y un resumen útil de sus beneficios. Ejemplo obligatorio: 300 USD = Premium.
+- Si preguntan por todos los niveles, sí puedes compararlos.
 
-BROKERS Y REGLAS DE UPGRADE
-- Binomo y Stockity se gestionan por separado. Los depósitos de brokers distintos NUNCA se suman entre sí para subir de nivel.
-- Cada broker tiene su propio ID validado, depósitos y contador interno. Esos datos sirven para calcular qué nivel de JT TRADERS TEAMS habilita cada cuenta, pero NUNCA llames a eso “nivel de Stockity” o “nivel de Binomo” frente al usuario.
-- El único nivel que se comunica al usuario es su nivel dentro de MI COMUNIDAD JT TRADERS TEAMS. El nivel general de la comunidad es el más alto alcanzado individualmente en cualquiera de las cuentas. Registrar un segundo broker nunca baja el nivel que el usuario ya tenía.
-- Los primeros 3 depósitos validados de una misma cuenta/broker pueden acumularse para subir de nivel.
-- Esa ventana de acumulación dura 30 días desde el primer depósito validado.
-- Para entrar en la acumulación, el comprobante debe enviarse dentro de las 72 horas posteriores al depósito.
-- Al completarse el tercer depósito o vencer los 30 días, los depósitos posteriores ya no se suman: un upgrade exige un nuevo depósito único que por sí solo alcance el monto mínimo completo del nuevo nivel.
-- Solo cuentan depósitos que el usuario reportó y Johanna validó.
-- No bombardees al usuario con cálculos de cuánto le falta. Si pregunta por estas reglas, explícalas de forma breve y remite al botón «ℹ️ VER CONDICIONES DE UPGRADE».
+FORMACIÓN / CURSOS
+- Básico recibe Binary Teams Módulos 1, 2 y 3.
+- Premium recibe Binary Teams Módulos 1, 2, 3 y 4.
+- Prestige recibe Binary Teams Módulos 1 al 4 y además Madness Trading Avanzado — método ALGO & LIT.
+- Binary Teams Módulo 1: introducción al manejo de la plataforma, especialmente Binomo; IQ Option tiene funcionamiento similar para esta introducción.
+- Binary Teams Módulo 2: introducción al análisis bursátil.
+- Binary Teams Módulo 3: continuación/tercera parte del análisis bursátil.
+- Binary Teams Módulo 4: Smart Money Concept.
+- Madness Trading Avanzado: formación avanzada con método ALGO & LIT.
+- La formación incluye además material de estudio/apoyo según nivel, PDFs/guías, tablas de plan de trading y gestión de riesgo, sesiones en vivo y acompañamiento de la comunidad.
+- No enumeres todos los módulos si no hace falta. Ejemplo resumido para Premium: "formación de cero a pro, desde Módulo 1 hasta Módulo 4 Smart Money Concept".
 
-SI YA TIENE CUENTA
-- Si la cuenta actual no fue registrada con los enlaces de Johanna y tiene saldo, puede retirarlo primero si la plataforma y las condiciones de la cuenta lo permiten. Si existe un bono activo, debe revisar antes las condiciones aplicables.
-- Solo se debe crear una nueva cuenta si la plataforma lo permite, con un correo distinto que nunca haya sido usado en esa plataforma y con datos reales/verificables del titular.
-- Si un familiar abre una cuenta, debe ser genuinamente la cuenta de esa persona: sus propios datos, documento y medios de depósito/retiro a su nombre.
-- Nunca recomiendes usar identidad/documentos ajenos para hacer pasar una cuenta como propia.
-- Nunca indiques usar VPN/proxy para evadir restricciones geográficas. Los casos de país o disponibilidad se escalan directamente a Johanna.
+SEÑALES Y SOFTWARE PREMIUM ANTICIPADO
+- Básico: 30–50 señales CRYPTO IDX diarias, de lunes a viernes.
+- Premium y Prestige: Software Premium Anticipado con MÁS DE 300 SEÑALES AL DÍA, de lunes a sábado.
+- Esas +300 señales abarcan CRYPTO IDX, pares de divisas, índices sintéticos y Forex.
+- El listado del Software Premium Anticipado se distribuye durante gran parte del día; normalmente comienza alrededor de las 7:00 a. m. y se extiende aproximadamente hasta las 10:00 p. m. hora Colombia. Presenta ese horario como habitual/aproximado, no como una promesa invariable.
+- Esto permite que una persona con horario ocupado elija dentro de la lista el momento en que puede operar.
+- En las señales del Software Premium Anticipado se entra en el minuto exacto indicado por la señal, con expiración de 1 minuto.
 
-BONOS ACTIVOS
-- 100%: código TOP1_JOHATRADER. Solo para el PRIMER depósito. Puede utilizarse una sola vez.
-- 70%: código TOP_1JOHAALE. Para depósitos posteriores. Puede utilizarse una sola vez.
-- SOLO muestra la lista/códigos cuando realmente preguntan qué bonos hay, cuál está activo o cuál es el código.
-- Si preguntan “¿me recomiendas tomar el bono?”, “¿conviene?”, hablan de volumen/rollover o dicen que el movimiento exigido les parece alto, responde la pregunta completa; NO sueltes automáticamente la lista de bonos.
-- Mi orientación: el bono puede tener sentido para alguien que piensa hacer trading de mediano a largo plazo porque permite operar con un capital ampliado por el bono. Según mi experiencia, con operativa constante puede llegar a liberarse alrededor de 2 meses y en algunos casos hasta 3, pero NO es un plazo garantizado: depende del volumen real y de las condiciones de la plataforma.
-- Si se hace un retiro con un bono todavía activo, la plataforma puede cancelar/desactivar el bono y, según sus condiciones, también puede afectar beneficios o ganancias asociadas al bono. Por eso hay que revisar las condiciones aplicables antes de retirar.
-- Si preguntan por gestión de cuenta “con bono”, no expliques códigos: es un caso de gestión que manejo personalmente y debes enviarlo a mi chat personal.
-- Si preguntan por un requisito concreto que no esté confirmado aquí, no inventes: indica que hay que verificarlo en la plataforma/cuenta.
+BOTS IA 24/7
+- Los bots IA NO están disponibles para todos los niveles.
+- Premium: bot IA CRYPTO IDX 24/7.
+- Prestige: bot IA CRYPTO IDX 24/7 + bot IA de pares de divisas 24/7.
+- "Automático" significa que el sistema GENERA Y ENVÍA ALERTAS automáticamente 24/7. NO abre ni ejecuta operaciones automáticamente dentro de la cuenta del usuario.
+- Cada entrada se realiza MANUALMENTE por la persona para conservar control de gestión de riesgo, capital y plan de trading.
+- Para una alerta del bot IA 24/7: la alerta indica ACTIVO + DIRECCIÓN (compra o venta). La entrada se toma al MINUTO SIGUIENTE de recibirse la alerta. Ejemplo: alerta en minuto 10 → entrada en minuto 11. La expiración es siempre de 1 minuto.
+- MG1 y MG2 son opcionales; nunca digas que son obligatorios.
+- Si alguien pregunta solamente si puede tener el bot, limita la respuesta a disponibilidad por nivel. No expliques funcionamiento, panel o registro salvo que lo pregunte.
+
+PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE
+- La interfaz visual/panel que Johanna utiliza en sus lives es una herramienta privada de uso interno.
+- No es lo que se instala o entrega a los miembros: mantenerla requeriría instalación, configuración, mantenimiento y actualizaciones, principalmente en computador.
+- Los miembros reciben las señales correspondientes por Telegram, lo que permite usarlas cómodamente desde celular o cualquier dispositivo.
+- SOLO explica esta diferencia si el usuario pregunta por el panel/interfaz que ve en live o si pregunta si recibirá exactamente ese software. No la metas en cada pregunta sobre bots.
+
+GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
+- MG1 y MG2 son opcionales. Se pueden utilizar con una gestión de riesgo bien calculada y capital suficiente, pero no garantizan recuperación.
+- La referencia habitual de Johanna es trabajar normalmente con un máximo cercano al 2% del capital para TODA la secuencia, no 2% en cada entrada.
+- Con capital alto, por ejemplo por encima de 1,000 USD, puede usarse incluso 1% si cubre cómodamente la secuencia. Un 3% es una gestión más agresiva y no es la recomendación normal.
+- Método porcentual orientativo: calcular 1–2% del capital y dividir ese presupuesto total en 6 o 7 unidades. La entrada inicial usa 1 unidad, MG1 usa 2 unidades y MG2 puede usar 3–4 unidades según el objetivo de la secuencia. No conviertas esto en una receta rígida; explica el cálculo solo si el usuario pregunta cómo distribuir la gestión.
+- Ejemplo educativo: 400 USD × 2% = 8 USD de riesgo total para la secuencia; 8/7 ≈ 1.14 USD por unidad. No prometas que esta distribución garantiza recuperar o quedar en profit.
+- Como referencia de plan, Johanna prioriza limitar pérdidas y buscar una relación favorable entre riesgo y objetivo; nunca presentes objetivos de ganancia como garantizados.
+- Si preguntan simplemente "¿puedo usar martingala?", responde breve: sí, MG1/MG2 son opcionales y deben quedar dentro de la gestión total de riesgo.
+
+TIEMPO / PERSONAS QUE TRABAJAN TODO EL DÍA
+- Si alguien dice que trabaja todo el día o que tiene poco tiempo, explica brevemente que el Software Premium Anticipado distribuye señales normalmente desde aproximadamente 7 a. m. hasta 10 p. m. y que el bot IA CRYPTO IDX funciona 24/7.
+- Puedes destacar que aprender trading permite estructurar sesiones cortas y ganar flexibilidad de tiempo a medida que desarrolla metodología y disciplina, pero NO prometas libertad financiera, dejar el empleo ni ganancias determinadas.
+- Una referencia práctica puede ser organizar sesiones de unos 40 minutos cuando la persona tenga disponibilidad; no prometas profit por hacer un número concreto de sesiones.
+
+CUENTAS EXISTENTES / ANTIGUAS
+- Nunca trates igual "mi cuenta fue registrada contigo", "creo que fue contigo" y "no fue con tu enlace".
+- Si la persona dice que la cuenta fue registrada con Johanna, o no está segura, el siguiente paso es pedir el ID para VALIDAR primero. No debe depositar de nuevo hasta que esa vinculación sea confirmada.
+- Si después de validar el ID está correctamente vinculada, se continúa con el depósito/comprobante/nivel desde el estado real de la cuenta. No se crea otra cuenta innecesariamente.
+- Si la persona confirma expresamente que la cuenta vieja NO fue registrada con los enlaces de Johanna: si tiene saldo, primero debe retirarlo; después cerrar/eliminar la cuenta anterior; para el NUEVO REGISTRO debe abrir una ventana de incógnito, entrar por uno de los enlaces oficiales y usar un correo diferente que no haya sido utilizado antes en esa plataforma. La ventana de incógnito es especialmente para el registro; después puede iniciar sesión normalmente.
+- Tras crear la nueva cuenta debe enviar el nuevo ID ANTES de depositar.
+- Si la cuenta pertenece a una persona de confianza/familiar, debe ser genuinamente de esa persona: datos reales, documento real y medios de depósito/retiro a nombre del titular.
+- No menciones escenarios de familiar si el usuario no está hablando de eso.
+
+BROKERS Y UPGRADES
+- Binomo y Stockity se gestionan por separado. Sus depósitos NUNCA se suman entre sí.
+- Cada broker tiene su propio ID validado, depósitos y contador interno.
+- El nivel global de la comunidad es el más alto alcanzado individualmente en cualquiera de las cuentas y nunca baja por añadir otro broker.
+- Los primeros 3 depósitos validados de una misma cuenta/broker pueden acumularse para subir de nivel dentro de una ventana de 30 días desde el primer depósito validado.
+- Para entrar en esa acumulación, cada comprobante posterior debe reportarse dentro de las 72 horas del depósito.
+- Después del tercer depósito validado o al vencer los 30 días, un upgrade exige un nuevo depósito único que por sí solo alcance el mínimo completo del nuevo nivel.
+- Solo cuentan depósitos reportados y validados.
+
+BONOS — REGLAS GENERALES
+- Los códigos vigentes y la fecha actual se suministran en el CONTEXTO PROMOCIONAL ACTUAL; esa información manda sobre ejemplos antiguos.
+- Bono 100%: solo primer depósito y un solo uso.
+- Bono 70%: depósitos posteriores.
+- Si preguntan únicamente qué bonos/códigos están activos, responde solo porcentaje + uso + código + fecha de vencimiento. No expliques volumen/retiro si no lo preguntaron.
+- Si preguntan si conviene usar bono: puede tener sentido para una operativa de mediano a largo plazo; si la persona necesitará retirar pronto, normalmente es más sencillo operar sin bono.
+- Con un bono activo se debe cumplir el volumen de operativas exigido por la promoción para liberar el bono y convertirlo en capital retirable.
+- Si se solicita un retiro mientras el bono sigue activo, normalmente la promoción puede cancelarse y también pueden anularse ganancias asociadas al bono. Las condiciones pueden variar según la promoción vigente, así que indica revisar la sección de bonos de la plataforma cuando corresponda.
+- No inventes un volumen exacto si no está confirmado en la promoción actual.
+
+PREGUNTAS MÚLTIPLES Y DEPENDENCIAS
+- Si llegan varias preguntas seguidas, agrúpalas y responde todas, pero primero identifica dependencias.
+- Si una decisión depende de un dato que aún no está validado, NO asumas ese dato. Resuelve primero el requisito pendiente.
+- Ejemplo: "tengo cuenta de hace meses / creo que fue contigo / quiero depositar 300 / no sé si usar bono / quiero retirar pronto" → primero pide el ID para verificar si esa cuenta está vinculada. No asumas que corresponde bono 70%, ni que ya puede depositar, hasta resolver esa validación. Puedes añadir brevemente que si piensa retirar en pocos días probablemente le convenga no activar bono, pero deja claro que primero hay que validar la cuenta.
+- Si el usuario envía varias frases cortadas dentro de la ventana de 5 minutos, interprétalas como una misma conversación cuando sean continuidad clara.
 
 LIVES
 - Los lives públicos suelen realizarse de lunes a sábado.
-- Normalmente hay una sesión alrededor de las 5:00 p. m. (hora Colombia) y una sesión nocturna que puede variar entre 8:00 p. m., 8:30 p. m. o 9:00 p. m.
+- Normalmente hay una sesión alrededor de las 5:00 p. m. hora Colombia y una sesión nocturna que puede variar entre 8:00 p. m., 8:30 p. m. o 9:00 p. m.
 - Algunos sábados puede no haber transmisión.
-- Las sesiones privadas VIP no tienen un horario fijo que debas inventar: Johanna las anuncia previamente dentro del canal VIP.
+- Las sesiones privadas VIP se anuncian previamente dentro del canal VIP.
 
-SEÑALES — CANALES DE TELEGRAM
-- Básico: canal CRYPTO IDX limitado con 30–50 señales diarias de lunes a viernes. Se toma la entrada en el minuto exacto indicado, con expiración de 1 minuto. Martingala 1 y 2 son opcionales y aumentan el riesgo.
-- Premium/Prestige: canal de Señales Premium con +300 señales de lunes a sábado entre CRYPTO IDX, pares de divisas, índices sintéticos y Forex. Se toma la entrada en el minuto exacto indicado, con expiración de 1 minuto. Martingala 1 y 2 son opcionales.
-- Premium/Prestige: IA Premium Automática CRYPTO IDX 24/7. La entrada se toma en el minuto inmediatamente siguiente al minuto en que llega la alerta, con expiración de 1 minuto.
-- Prestige: Divisas Automáticas 24/7 Premium. La entrada se toma en el minuto inmediatamente siguiente a la alerta, con expiración de 1 minuto.
-- Nunca presentes Martingala como garantía de recuperación ni de ganancia.
+ACCESOS VIP EN TELEGRAM
+- Si Telegram muestra "demasiados intentos" durante solicitudes/ingresos a canales VIP, interprétalo como un límite temporal de Telegram. Los accesos ya confirmados no se pierden.
+- El bot puede pausar aproximadamente {VIP_ACCESS_PAUSE_MINUTES} minutos y continuar desde el siguiente acceso pendiente.
+- No conviertas un problema de ingreso a canales de Telegram en un problema de contraseña, correo, KYC o broker.
 
-SOPORTE DE ACCESOS VIP EN TELEGRAM
-- Si un miembro está entrando a los canales/enlaces VIP y Telegram muestra “demasiados intentos”, “inténtalo más tarde” o equivalente, interpreta el problema COMO UN LÍMITE TEMPORAL DE TELEGRAM por varias solicitudes/ingresos consecutivos. NO lo conviertas en un problema de broker, contraseña, correo, inicio de sesión o KYC.
-- En ese caso, explica que los accesos ya confirmados no se pierden. El bot hace una pausa aproximada de {VIP_ACCESS_PAUSE_MINUTES} minutos para reducir el límite y luego continúa desde el siguiente acceso pendiente. Si Telegram sigue limitando después de la pausa, recomienda esperar un poco más antes de reintentar.
-- NUNCA sugieras restablecer la contraseña, entrar al sitio del broker, cambiar correo, recuperar cuenta de Binomo/Stockity ni realizar un nuevo registro cuando la conversación está hablando de enlaces, canales, solicitudes de unión o accesos VIP de Telegram.
-- Si el usuario menciona “CONTINUAR MIS ACCESOS”, se refiere al flujo de canales VIP de Telegram. El proceso debe retomar desde el siguiente canal pendiente, sin repetir accesos ya confirmados.
-- Si un canal muestra “Unirme” en vez de “Solicitar acceso”, sigue siendo un asunto de acceso al canal de Telegram; no cambies de dominio ni inventes soluciones de broker.
+CASOS QUE SIEMPRE VAN A JOHANNA
+- Gestión de capital/cuenta: siempre al chat personal de Johanna.
+- Problemas de disponibilidad por país, plataforma restringida/no disponible o imposibilidad de registrarse por ubicación: siempre al chat personal de Johanna. No expliques métodos para alterar ubicación ni menciones herramientas para hacerlo.
+- Casos extraordinarios de cuenta que requieren comprobar un estado real: al chat personal.
+- Chat personal: {SUPPORT_URL}
 
-DIFERENCIA ENTRE SOFTWARE PREMIUM Y BOTS AUTOMÁTICOS
-- El Software Premium Anticipado genera más de 300 señales de lunes a sábado. En Premium/Prestige esas señales cubren CRYPTO IDX, pares de divisas, índices sintéticos y Forex y se reciben por Telegram; la entrada se toma en el minuto exacto indicado.
-- Los bots/IA automáticos trabajan 24/7 GENERANDO Y ENVIANDO ALERTAS automáticamente. En IA Premium Automática CRYPTO IDX, la alerta indica una entrada para el minuto siguiente; Prestige añade alertas de Divisas Automáticas 24/7.
-- IMPORTANTE: “automático” NO significa que el sistema abra operaciones por el usuario ni ejecute las entradas en su cuenta. Las entradas se realizan MANUALMENTE por el usuario después de recibir la alerta, para respetar gestión de riesgo, control de capital y su plan de trading.
-- Si preguntan “¿es totalmente automático?”, “¿opera solo?”, “¿toma las entradas solo?” o equivalente, responde con claridad: NO es ejecución automática. Las ALERTAS llegan automáticamente 24/7, pero el usuario decide y toma manualmente cada entrada.
-- La interfaz visual que uso en mis lives es privada/interna; el usuario NO necesita instalarla. Recibe las señales correspondientes directamente en Telegram.
-- Si preguntan la diferencia entre software y bot, responde SOLO esa diferencia de forma breve. No despliegues todos los niveles salvo que también lo pidan.
-- Si hablas de disponibilidad, di “depende del nivel que elijas dentro de mi comunidad JT TRADERS TEAMS”. Nunca digas que es un nivel del broker.
-- Si preguntan por un monto concreto, responde el nivel exacto de MI COMUNIDAD: 50–199.99 USD = Básico; 200–499.99 USD = Premium; 500 USD o más = Prestige. Ejemplo obligatorio: 300 USD = Premium. No enumeres los tres niveles si solo preguntaron qué obtienen con un monto concreto.
-
-INTERFAZ VISUAL PRIVADA DE JOHAALETRADER
-- La interfaz/software visual que Johanna utiliza en sus lives es una herramienta privada de uso interno y NO se entrega a miembros de la comunidad.
-- Esa interfaz requiere programación, instalación, configuración, mantenimiento y actualizaciones propias.
-- Los miembros NO pierden las señales por no tener la interfaz: reciben las señales operativas directamente dentro de Telegram mediante los canales de Señales Premium/CRYPTO IDX y los bots automáticos 24/7 incluidos según su nivel.
-- Si preguntan “¿por qué no me dieron acceso al bot/interfaz/software que usas?”, explica de forma profesional que Telegram permite recibir las señales de manera más simple, estable y accesible desde cualquier dispositivo, sin instalaciones ni configuraciones adicionales.
-
-GESTIÓN DE CAPITAL — SIEMPRE ESCALAR A JOHANNA
-- Yo manejo personalmente cualquier consulta o activación de gestión de capital/cuenta. Nunca entregues wallets, instrucciones de transferencia ni confirmes recepción de dinero.
-- Modalidad 3 meses: desde 200 USD. Se ha planteado un objetivo estimado de 20–30% mensual, sujeto a resultados de trading. Al finalizar el tercer mes se liquida el ciclo según resultados y se devuelve el capital correspondiente.
-- Modalidad 2 meses: desde 100 USD. La estructura planteada busca hasta 30 USD semanales durante 2 meses, sujeto a resultados.
-- Estas cifras son objetivos/estructuras anunciadas, NO ganancias garantizadas. El trading implica riesgo y los resultados pueden ser inferiores o existir pérdidas.
-- Ante cualquier interés en gestión, responde en primera persona y dirige a mi chat personal.
-
-TEMAS SENSIBLES — ESCALAR A JOHANNA
-- País donde Stockity/Binomo no esté disponible, VPN/proxy o restricción geográfica.
-- Usuario con menos de 50 USD que solicita una excepción.
-- Gestión de capital.
-- Validación de ID, comprobantes, depósitos, activación de acceso, bloqueos y casos particulares de una cuenta.
-- Cualquier dato que requiera comprobar el estado real de una cuenta.
-- En casos personales, nunca hables de mí en tercera persona: usa “yo”, “conmigo” y “mi chat personal”.
-
-REGLAS GENERALES
-- No prometas ganancias, rentabilidad garantizada, precisión garantizada ni resultados seguros.
-- No inventes información. Si falta un dato, dilo y deriva a Johanna.
+LÍMITES
+- No inventes información, promociones, resultados, estados de cuenta ni validaciones.
+- No prometas ganancias ni resultados garantizados.
 - No solicites contraseñas, códigos 2FA, seed phrases ni credenciales sensibles.
+- No indiques usar documentos o identidad ajena como si fueran propios.
+- Si falta un dato oficial, dilo con naturalidad; no rellenes huecos.
 """.strip()
 
 
@@ -7246,7 +7533,11 @@ def _personal_escalation_intent(texto: str):
     country_patterns = (
         r"\b(?:restriccion|restricciones|bloqueo|error|problema)\b.{0,35}\b(?:pais|country)\b",
         r"\b(?:pais|country)\b.{0,35}\b(?:restringido|restriccion|bloqueado|no disponible|no soportado|no permitido|unsupported|not available)\b",
-        r"\b(?:no disponible|no esta disponible|no esta habilitado|no funciona|esta bloqueado|esta restringido|not available|unsupported)\b.{0,40}\b(?:pais|country)\b",
+        r"\b(?:no disponible|no esta disponible|no esta habilitado|no funciona|esta bloqueado|esta restringido|not available|unsupported)\b.{0,40}\b(?:pais|country|plataforma|platform)\b",
+        r"\b(?:registrarme|registro|registrar|sign up|register)\b.{0,45}\b(?:no me abre|no abre|restringido|restringida|no disponible|no aparece disponible|not available|restricted)\b",
+        r"\b(?:plataforma|platform)\b.{0,35}\b(?:no me abre|no abre|restringida|restringido|no disponible|not available|restricted)\b",
+        r"\b(?:pais|country)\b.{0,45}\b(?:no me deja|no permite|impide)\b.{0,35}\b(?:registrar|registrarme|entrar|usar|abrir|plataforma|platform|register|sign up)\b",
+        r"\b(?:no me abre|no abre|no me aparece disponible|no aparece disponible|no esta disponible|no está disponible)\b.{0,45}\b(?:plataforma|platform|binomo|stockity)\b",
     )
     if any(re.search(p, t) for p in country_patterns):
         return "PAIS"
@@ -7334,6 +7625,100 @@ def _is_deposit_report_intent(texto: str) -> bool:
     ))
 
 
+def _looks_like_existing_account_query(texto: str) -> bool:
+    t = _norm(texto or "")
+    terms = (
+        "ya tengo una cuenta", "ya tengo cuenta", "cuenta vieja", "cuenta antigua",
+        "cuenta de hace meses", "cuenta de hace tiempo", "cuenta registrada contigo",
+        "cuenta registrada con tu enlace", "la registre contigo", "la registré contigo",
+        "fue contigo", "no fue con tu enlace", "no fue contigo", "already have an account",
+        "old account", "registered with you", "registered through your link",
+    )
+    return any(x in t for x in terms)
+
+
+def _existing_account_relation(texto: str) -> str:
+    """Clasifica lo que el usuario afirma sobre una cuenta antigua.
+
+    Devuelve NOT_LINKED, UNCERTAIN, LINKED o GENERIC. La incertidumbre se evalúa
+    antes que LINKED para no convertir "creo que fue contigo" en confirmación.
+    """
+    t = _norm(texto or "")
+    uncertain = (
+        "creo que fue contigo", "creo que la registre contigo", "creo que la registré contigo",
+        "no estoy seguro", "no estoy segura", "no se si fue contigo", "no sé si fue contigo",
+        "no recuerdo si fue contigo", "quizas fue contigo", "quizás fue contigo",
+        "i think it was with you", "not sure if", "i don't remember if",
+    )
+    if any(x in t for x in uncertain):
+        return "UNCERTAIN"
+    not_linked = (
+        "no fue con tu enlace", "no fue contigo", "no la registre contigo", "no la registré contigo",
+        "no esta registrada contigo", "no está registrada contigo", "no fue registrada con tu enlace",
+        "not through your link", "wasn't registered with you", "was not registered with you",
+    )
+    if any(x in t for x in not_linked):
+        return "NOT_LINKED"
+    linked = (
+        "registrada contigo", "registrado contigo", "la registre contigo", "la registré contigo",
+        "fue contigo", "con tu enlace", "registered with you", "through your link",
+    )
+    if any(x in t for x in linked):
+        return "LINKED"
+    return "GENERIC"
+
+
+def _existing_account_reply(texto: str, lang: str, chat_id: int) -> str:
+    relation = _existing_account_relation(texto)
+    if relation == "NOT_LINKED":
+        if lang == "en":
+            return (
+                "If that old account was not registered through my link, you need a new account correctly linked to me. "
+                "If it has funds, withdraw them first and then close/delete the old account. For the new registration, open an incognito browser window, use one of my links and a different email address. "
+                "When you finish, send me the new ID BEFORE depositing.\n\n"
+                f"🔗 Stockity — primary option:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
+                f"🔗 Binomo — secondary option:\n{ENLACE_REFERIDO}"
+            )
+        return (
+            "Si esa cuenta vieja no fue registrada con mi enlace, necesitas crear una nueva correctamente vinculada conmigo. "
+            "Si tiene saldo, retíralo primero y luego elimina/cierra la cuenta anterior. Para el nuevo registro abre una ventana de incógnito, entra con uno de mis enlaces y usa un correo diferente. "
+            "Cuando termines, envíame el nuevo ID ANTES de depositar.\n\n"
+            f"🔗 Stockity — opción principal:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
+            f"🔗 Binomo — opción secundaria:\n{ENLACE_REFERIDO}"
+        )
+    if lang == "en":
+        return (
+            "Send me the ID of that account first so I can verify whether it is correctly linked to me. "
+            "Do not make a new deposit in that account until I confirm the validation; if it checks out, we continue from there."
+        )
+    return (
+        "Envíame primero el ID de esa cuenta para verificar si está correctamente vinculada conmigo. "
+        "No hagas un depósito nuevo en esa cuenta hasta que te confirme la validación; si está todo bien, continuamos desde ahí."
+    )
+
+
+def _ai_dependency_context(question: str, chat_id: int, lang: str = "es") -> str:
+    """Añade una prioridad explícita cuando varias dudas dependen de una validación previa."""
+    if not _looks_like_existing_account_query(question):
+        return ""
+    relation = _existing_account_relation(question)
+    if relation == "NOT_LINKED":
+        return (
+            "PRIORIDAD DE DEPENDENCIA: el usuario confirmó que su cuenta vieja NO está vinculada. "
+            "Primero explica el registro correcto de una nueva cuenta (retirar saldo si existe → cerrar/eliminar cuenta anterior → registro en incógnito con otro correo → enviar nuevo ID antes de depositar). "
+            "No asumas todavía qué bono corresponde ni que puede depositar hasta validar el nuevo ID."
+            if lang == "es" else
+            "DEPENDENCY PRIORITY: the user confirmed the old account is NOT linked. Explain the correct new-registration process first (withdraw funds if any → close/delete old account → incognito registration with a different email → send new ID before depositing). Do not assume a bonus or deposit can proceed before ID validation."
+        )
+    return (
+        "PRIORIDAD DE DEPENDENCIA: la vinculación de la cuenta antigua todavía NO está validada. "
+        "El siguiente paso obligatorio es pedir el ID y validarlo. No asumas que corresponde bono 70%, no recomiendes hacer el depósito todavía y no saltes a activación. "
+        "Si también pregunta por retirar pronto, puedes dar esa orientación de forma secundaria, dejando claro que primero se valida la cuenta."
+        if lang == "es" else
+        "DEPENDENCY PRIORITY: the old account linkage is NOT validated yet. The required next step is to request the ID and validate it. Do not assume the 70% bonus applies, do not tell them to deposit yet, and do not jump to activation. If they also ask about withdrawing soon, you may answer that secondarily while making clear the account must be validated first."
+    )
+
+
 def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
 
@@ -7373,6 +7758,10 @@ def detect_intent_es(texto: str) -> str:
         "tu gestionarias", "tú gestionarías", "usted gestionaria", "usted gestionaría"
     ]):
         return "GESTION_CAPITAL"
+
+    # ---- Cuenta existente / antigua ----
+    if _looks_like_existing_account_query(texto):
+        return "YA_TENGO_CUENTA"
 
     # ---- Depósito luego / esperando pago ----
     if any(k in t for k in [
@@ -7419,7 +7808,7 @@ def detect_intent_es(texto: str) -> str:
         "ya me registre", "ya me registré", "ya me registre ahora", "ya me registré ahora",
         "ya me registre y ahora", "ya me registré y ahora", "ya me registre que hago", "ya me registré que hago",
         "me registre", "me registré", "ya estoy registrado", "ya estoy registrada", "ya estoy registrad@",
-        "ya tengo cuenta", "ya cree cuenta", "ya creé cuenta", "ya hice el registro", "ya realice el registro", "ya realicé el registro",
+"ya cree cuenta", "ya creé cuenta", "ya hice el registro", "ya realice el registro", "ya realicé el registro",
     ]):
         return "YA_REGISTRE"
 
@@ -7466,13 +7855,13 @@ def detect_intent_es(texto: str) -> str:
     ]):
         return "NIVELES"
 
-    if any(k in t for k in ["bono", "bonus", "100%", "70%", "top1_johatrader", "top_1johaale"]):
+    if any(k in t for k in ["bono", "bonus", "100%", "70%"]) or _contains_active_promo_code(texto):
         return "BONO"
 
     if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
         return "ID"
 
-    if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "no me deja retirar", "no me deja"]):
+    if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "no me deja retirar"]):
         return "RETIRO"
 
     if any(k in t for k in ["metodo", "metodos", "banco", "cuenta bancaria", "colombia", "astropay", "nequi", "transfiya"]):
@@ -7552,11 +7941,8 @@ def detect_all_intents(texto: str):
     ]):
         _add_intent(found, "DEPOSITO")
 
-    # Diferenciamos "ya tengo cuenta" de "ya me registré con tu enlace".
-    if any(k in t for k in [
-        "ya tengo cuenta pero", "ya tengo una cuenta", "tengo cuenta en binomo", "tengo cuenta en stockity",
-        "ya tenia cuenta", "ya tenía cuenta", "already have an account", "i already have an account",
-    ]):
+    # Diferenciamos cuenta existente/antigua de un registro recién realizado.
+    if _looks_like_existing_account_query(texto):
         _add_intent(found, "YA_TENGO_CUENTA")
     elif any(k in t for k in [
         "ya me registre", "ya me registré", "me registre", "me registré", "ya estoy registrado", "ya estoy registrada",
@@ -7610,7 +7996,7 @@ def detect_all_intents(texto: str):
     ]):
         _add_intent(found, "NIVELES")
 
-    if any(k in t for k in ["bono", "bonos", "bonus", "100%", "70%", "top1_johatrader", "top_1johaale"]):
+    if any(k in t for k in ["bono", "bonos", "bonus", "100%", "70%"]) or _contains_active_promo_code(texto):
         _add_intent(found, "BONO")
 
     if any(k in t for k in [
@@ -7681,37 +8067,35 @@ def _question_analysis(texto: str):
 
 def respuesta_senales_es() -> str:
     return (
-        "📊 Señales JT TRADERS\n\n"
-        "🟢 Básico: 30–50 señales CRYPTO IDX diarias de lunes a viernes. Se toman en el minuto exacto indicado, con expiración de 1 minuto.\n\n"
-        "🔵 Premium / 🟣 Prestige: +300 señales Premium de lunes a sábado entre CRYPTO IDX, pares de divisas, índices sintéticos y Forex; además IA Premium Automática CRYPTO IDX 24/7.\n\n"
-        "🟣 Prestige también incluye Divisas Automáticas 24/7.\n\n"
-        "⏱ En las señales automáticas 24/7 la entrada se toma al minuto siguiente de recibir la alerta. MG1/MG2 son opcionales y aumentan el riesgo."
+        "📊 Las señales dependen de tu nivel dentro de JT TRADERS TEAMS.\n\n"
+        "🟢 Básico: 30–50 señales CRYPTO IDX diarias de lunes a viernes.\n"
+        "🔵 Premium/🟣 Prestige: Software Premium Anticipado con +300 señales AL DÍA de lunes a sábado, distribuidas normalmente desde la mañana hasta la noche, entre CRYPTO IDX, pares de divisas, índices sintéticos y Forex.\n\n"
+        "🤖 Premium añade bot IA CRYPTO IDX 24/7; Prestige añade además bot IA de pares de divisas 24/7. Las alertas son automáticas, pero las entradas se toman manualmente."
     )
 
 
 def respuesta_senales_en() -> str:
     return (
-        "📊 JT TRADERS Signals\n\n"
-        "🟢 Basic: 30–50 CRYPTO IDX signals per day, Monday to Friday. Enter at the exact indicated minute with 1-minute expiry.\n\n"
-        "🔵 Premium / 🟣 Prestige: 300+ Premium signals Monday to Saturday across CRYPTO IDX, currency pairs, synthetic indices and Forex, plus Premium Automatic CRYPTO IDX AI 24/7.\n\n"
-        "🟣 Prestige also includes Automatic FX 24/7.\n\n"
-        "⏱ For automatic 24/7 signals, enter on the minute immediately after the alert. MG1/MG2 are optional and increase risk."
+        "📊 Signals depend on your level inside JT TRADERS TEAMS.\n\n"
+        "🟢 Basic: 30–50 CRYPTO IDX signals per day, Monday to Friday.\n"
+        "🔵 Premium/🟣 Prestige: Premium Anticipated Software with 300+ signals PER DAY Monday to Saturday, normally distributed from morning through evening across CRYPTO IDX, currency pairs, synthetic indices and Forex.\n\n"
+        "🤖 Premium adds a CRYPTO IDX AI bot 24/7; Prestige also adds a 24/7 currency-pair AI bot. Alerts are automatic, but entries are taken manually."
     )
 
 
 def respuesta_bot_ia_es() -> str:
     return (
-        "🤖 IA Premium Automática CRYPTO IDX 24/7\n\n"
-        "Está incluida desde el nivel Premium y se utiliza directamente dentro de Telegram. Cuando llega una alerta, la entrada se toma al minuto siguiente, con expiración de 1 minuto. MG1/MG2 son opcionales y aumentan el riesgo.\n\n"
-        "📌 Importante: la interfaz visual que ves en mis lives es una herramienta privada de uso interno. No necesitas instalarla para recibir las señales: tus accesos se habilitan directamente en Telegram para que puedas utilizarlos desde cualquier dispositivo, sin instalaciones, configuraciones ni actualizaciones adicionales."
+        "Sí 😊 Mis bots IA están disponibles desde Premium dentro de JT TRADERS TEAMS. "
+        "Premium incluye CRYPTO IDX 24/7 y Prestige añade también el bot de pares de divisas 24/7. "
+        "El nivel depende del capital que mantengas en tu propia cuenta de trading."
     )
 
 
 def respuesta_bot_ia_en() -> str:
     return (
-        "🤖 Premium Automatic CRYPTO IDX AI 24/7\n\n"
-        "It is included from the Premium level and is used directly inside Telegram. When an alert arrives, enter on the following minute with 1-minute expiry. MG1/MG2 are optional and increase risk.\n\n"
-        "📌 Important: the visual interface you see in my live sessions is a private internal tool. You do not need to install it to receive the signals: your access is enabled directly in Telegram so you can use it from any device without extra installations, setup or updates."
+        "Yes 😊 My AI bots are available from the Premium level inside JT TRADERS TEAMS. "
+        "Premium includes CRYPTO IDX 24/7, and Prestige also adds the 24/7 currency-pair bot. "
+        "Your level depends on the capital you keep in your own trading account."
     )
 
 
@@ -7754,18 +8138,18 @@ def _immediate_block(intent: str, lang: str):
     if intent == "MIN_50":
         return (
             "💰 El mínimo para activar el nivel Básico es 50 USD. Con menos de 50 USD todavía no se habilita acceso; debes completar el valor faltante.\n\n"
-            "Desde 50 USD, Básico incluye el VIP principal, Módulo 3 y 30–50 señales CRYPTO IDX diarias de lunes a viernes. Desde 200 USD, Premium habilita +300 señales, IA automática CRYPTO IDX 24/7 y Módulo 4 Smart Money Concept.\n\n"
+            "Desde 50 USD, Básico incluye Binary Teams Módulos 1–3 + VIP principal + 30–50 señales CRYPTO IDX diarias de lunes a viernes. Desde 200 USD, Premium habilita Módulos 1–4, +300 señales AL DÍA de lunes a sábado y bot IA CRYPTO IDX 24/7.\n\n"
             "El depósito siempre queda en tu propia cuenta de trading. 🚀"
             if lang == "es" else
             "💰 The minimum required to activate the Basic level is USD 50. With less than USD 50, access is not enabled yet; the remaining amount must be completed.\n\n"
-            "From USD 50, Basic includes the main VIP, Module 3 and 30–50 CRYPTO IDX signals per day Monday to Friday. From USD 200, Premium unlocks 300+ signals, automatic CRYPTO IDX AI 24/7 and Module 4 Smart Money Concept.\n\n"
+            "From USD 50, Basic includes Binary Teams Modules 1–3 + main VIP + 30–50 CRYPTO IDX signals per day Monday to Friday. From USD 200, Premium unlocks Modules 1–4, 300+ signals PER DAY Monday to Saturday and the CRYPTO IDX AI bot 24/7.\n\n"
             "The deposit always stays in your own trading account. 🚀"
         )
     if intent in ("VPN", "PAIS"):
         return (
-            "🌎 Para VPN, restricción o error de país prefiero revisar tu caso directamente contigo."
+            "🌎 Este caso prefiero revisarlo directamente contigo porque depende de la disponibilidad de la plataforma en tu país. Escríbeme a mi chat personal y lo revisamos. 👇"
             if lang == "es" else
-            "🌎 For VPN/country restriction issues, I prefer to review your case directly with you."
+            "🌎 I prefer to review this directly with you because it depends on platform availability in your country. Message me in my personal chat and we’ll check it. 👇"
         )
     if intent == "GESTION_CAPITAL":
         return (
@@ -7805,83 +8189,69 @@ def _multi_info_response(texto: str, lang: str):
 def respuesta_niveles_es() -> str:
     return (
         "📊 Niveles JT TRADERS\n\n"
-        "💜 Mi comunidad es totalmente GRATIS. No pagas membresía: la inversión se deposita directamente en TU propia cuenta de trading.\n\n"
+        "💜 Mi comunidad es GRATUITA: el depósito se realiza directamente en tu propia cuenta de trading.\n\n"
         "🟢 Básico — desde 50 USD\n"
-        "🎓 Curso incluido:\n"
-        "• Binary Teams Módulo 3 — Introducción al Análisis Bursátil.\n"
-        "📚 JT TRADERS TEAMS VIP: educación y metodología completa.\n"
+        "🎓 Binary Teams Módulos 1 al 3: plataforma + introducción/análisis bursátil.\n"
         "📈 30–50 señales CRYPTO IDX diarias, de lunes a viernes.\n\n"
         "🔵 Premium — desde 200 USD\n"
-        "🎓 Cursos incluidos:\n"
-        "• Binary Teams Módulo 3 — Introducción al Análisis Bursátil.\n"
-        "• Binary Teams Módulo 4 — Smart Money Concept.\n"
-        "🚀 +300 señales Premium de lunes a sábado: CRYPTO IDX, pares de divisas, índices sintéticos y Forex.\n"
-        "🤖 IA Premium Automática CRYPTO IDX 24/7.\n"
-        "📚 JT TRADERS TEAMS VIP incluido.\n\n"
+        "🎓 Binary Teams Módulos 1 al 4; el Módulo 4 es Smart Money Concept.\n"
+        "📚 Material de apoyo, sesiones y acompañamiento.\n"
+        "🚀 Software Premium Anticipado con +300 señales AL DÍA de lunes a sábado: CRYPTO IDX, pares de divisas, índices sintéticos y Forex.\n"
+        "🤖 Bot IA CRYPTO IDX 24/7.\n\n"
         "🟣 Prestige — desde 500 USD\n"
-        "🎓 Cursos incluidos:\n"
-        "• Binary Teams Módulo 3 — Introducción al Análisis Bursátil.\n"
-        "• Binary Teams Módulo 4 — Smart Money Concept.\n"
-        "• Madness Trading Avanzado — metodología ALGO & LIT.\n"
-        "🚀 Incluye absolutamente todo Premium.\n"
-        "💹 Divisas Automáticas 24/7 Premium.\n"
-        "👩‍🏫 Mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo Forex.\n"
-        "🤖 Forex automático: en construcción.\n\n"
-        "⚠️ IMPORTANTE: primero regístrate con uno de mis enlaces y ANTES de depositar envíame tu ID para verificar que quedó correctamente vinculado conmigo.\n\n"
-        f"🔗 Stockity — opción principal:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
-        f"🔗 Binomo — opción secundaria:\n{ENLACE_REFERIDO}\n\n"
-        "🚀 Haz tu registro, envíame tu ID y te indico el siguiente paso."
+        "🚀 Incluye todo Premium.\n"
+        "🎓 Añade Madness Trading Avanzado — método ALGO & LIT.\n"
+        "🤖 Añade bot IA de pares de divisas 24/7.\n"
+        "👩‍🏫 Mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.\n\n"
+        "📌 El nivel pertenece a mi comunidad JT TRADERS TEAMS y depende del capital que mantengas en tu propia cuenta de trading."
     )
 
 
 def respuesta_niveles_en() -> str:
     return (
         "📊 JT TRADERS Levels\n\n"
-        "💜 My community is completely FREE. There is no membership fee: the investment is deposited directly into YOUR own trading account.\n\n"
+        "💜 My community is FREE: the deposit is made directly into your own trading account.\n\n"
         "🟢 Basic — from USD 50\n"
-        "🎓 Course included:\n"
-        "• Binary Teams Module 3 — Introduction to Market Analysis.\n"
-        "📚 JT TRADERS TEAMS Main VIP: education and complete methodology.\n"
+        "🎓 Binary Teams Modules 1–3: platform basics + introduction/market analysis.\n"
         "📈 30–50 CRYPTO IDX signals per day, Monday to Friday.\n\n"
         "🔵 Premium — from USD 200\n"
-        "🎓 Courses included:\n"
-        "• Binary Teams Module 3 — Introduction to Market Analysis.\n"
-        "• Binary Teams Module 4 — Smart Money Concept.\n"
-        "🚀 300+ Premium signals Monday to Saturday: CRYPTO IDX, currency pairs, synthetic indices and Forex.\n"
-        "🤖 Premium Automatic CRYPTO IDX AI 24/7.\n"
-        "📚 JT TRADERS TEAMS Main VIP included.\n\n"
+        "🎓 Binary Teams Modules 1–4; Module 4 is Smart Money Concept.\n"
+        "📚 Support materials, live sessions and guidance.\n"
+        "🚀 Premium Anticipated Software with 300+ signals PER DAY Monday to Saturday: CRYPTO IDX, currency pairs, synthetic indices and Forex.\n"
+        "🤖 CRYPTO IDX AI bot 24/7.\n\n"
         "🟣 Prestige — from USD 500\n"
-        "🎓 Courses included:\n"
-        "• Binary Teams Module 3 — Introduction to Market Analysis.\n"
-        "• Binary Teams Module 4 — Smart Money Concept.\n"
-        "• Madness Advanced Trading — ALGO & LIT methodology.\n"
-        "🚀 Includes absolutely everything in Premium.\n"
-        "💹 Premium Automatic FX 24/7.\n"
-        "👩‍🏫 Private mentoring, closer guidance and Forex funded-account preparation.\n"
-        "🤖 Automatic Forex: under development.\n\n"
-        "⚠️ IMPORTANT: register with one of my links first and BEFORE depositing, send me your ID so I can verify that it is correctly linked to me.\n\n"
-        f"🔗 Stockity — primary option:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
-        f"🔗 Binomo — secondary option:\n{ENLACE_REFERIDO}\n\n"
-        "🚀 Complete your registration, send me your ID and I’ll guide you through the next step."
+        "🚀 Includes everything in Premium.\n"
+        "🎓 Adds Madness Advanced Trading — ALGO & LIT method.\n"
+        "🤖 Adds a 24/7 currency-pair AI bot.\n"
+        "👩‍🏫 Private mentoring, closer guidance and funded-account preparation.\n\n"
+        "📌 The level belongs to my JT TRADERS TEAMS community and depends on the capital you keep in your own trading account."
     )
 
 def respuesta_bono_es() -> str:
+    cfg = _promo_get_config()
+    expiry = _promo_parse_expiry(cfg["expires_on"])
+    today = datetime.now(COLOMBIA_TZ).date()
+    if expiry and expiry < today:
+        return "🎁 La promoción configurada ya llegó a su fecha de vencimiento. Prefiero confirmar los códigos vigentes antes de darte uno."
     return (
-        "🎁 Bonos activos\n\n"
-        "💯 100% — TOP1_JOHATRADER\n"
-        "Solo para el primer depósito. Se utiliza una sola vez.\n\n"
-        "🔥 70% — TOP_1JOHAALE\n"
-        "Para depósitos posteriores. Se utiliza una sola vez."
+        "🎁 Tengo dos códigos promocionales activos:\n\n"
+        f"💯 100% primer depósito: {cfg['code_100']}\n"
+        f"🔥 70% depósitos posteriores: {cfg['code_70']}\n\n"
+        f"📅 Vigentes hasta {_promo_expiry_display(cfg['expires_on'])}."
     )
 
 
 def respuesta_bono_en() -> str:
+    cfg = _promo_get_config()
+    expiry = _promo_parse_expiry(cfg["expires_on"])
+    today = datetime.now(COLOMBIA_TZ).date()
+    if expiry and expiry < today:
+        return "🎁 The configured promotion has reached its expiry date. I prefer to confirm the current codes before giving you one."
     return (
-        "🎁 Active bonuses\n\n"
-        "💯 100% — TOP1_JOHATRADER\n"
-        "For the first deposit only. It can be used once.\n\n"
-        "🔥 70% — TOP_1JOHAALE\n"
-        "For later deposits. It can be used once."
+        "🎁 I currently have two active promo codes:\n\n"
+        f"💯 100% first deposit: {cfg['code_100']}\n"
+        f"🔥 70% subsequent deposits: {cfg['code_70']}\n\n"
+        f"📅 Valid through {_promo_expiry_display(cfg['expires_on'])}."
     )
 
 
@@ -8205,6 +8575,71 @@ def _strip_redundant_ai_greeting(answer: str, question: str, history_text: str, 
     return value.strip()
 
 
+def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
+    """Evita género asumido en frases frecuentes sin volver artificial la respuesta."""
+    value = (answer or "").strip()
+    if not value or lang != "es":
+        return value
+    replacements = (
+        (r"\bpara un principiante\b", "si estás empezando"),
+        (r"\bpara una principiante\b", "si estás empezando"),
+        (r"\btú mismo\b", "directamente"),
+        (r"\btu mismo\b", "directamente"),
+        (r"\btú misma\b", "directamente"),
+        (r"\btu misma\b", "directamente"),
+        (r"\bpor ti mismo\b", "directamente"),
+        (r"\bpor ti misma\b", "directamente"),
+    )
+    for pattern, repl in replacements:
+        value = re.sub(pattern, repl, value, flags=re.I)
+    return value.strip()
+
+
+def _trim_generic_ai_closer(answer: str, lang: str = "es") -> str:
+    """Quita solo cierres de atención al cliente que no aportan contenido."""
+    value = (answer or "").strip()
+    if not value:
+        return value
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", value) if p.strip()]
+    if len(paragraphs) <= 1:
+        return value
+    last = _norm(paragraphs[-1])
+    if lang == "en":
+        generic = (
+            "if you have more questions", "if you need more", "i am here to help",
+            "i'm here to help", "how would you like to proceed", "what would you like to do",
+        )
+    else:
+        generic = (
+            "si tienes mas preguntas", "si tienes alguna otra pregunta", "si necesitas mas",
+            "si necesitas alguna", "estoy aqui para ayudarte", "estoy aqui para apoyarte",
+            "como deseas proceder", "cómo deseas proceder", "que te gustaria hacer", "qué te gustaría hacer",
+            "no dudes en escribirme",
+        )
+    if any(last.startswith(_norm(x)) for x in generic):
+        paragraphs.pop()
+    return "\n\n".join(paragraphs).strip()
+
+
+def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
+    """Corrige contradicciones factuales muy concretas sin convertir la IA en plantilla."""
+    value = (answer or "").strip()
+    if not value:
+        return value
+    q = _norm(question or "")
+    if lang == "es":
+        value = re.sub(r"(?:más de\s*)?\+?300\s+señales\s+semanales", "+300 señales al día, de lunes a sábado", value, flags=re.I)
+        value = re.sub(r"300\+?\s+señales\s+semanales", "+300 señales al día, de lunes a sábado", value, flags=re.I)
+        if "bot" in q or "automatic" in q or "automático" in q or "automatico" in q:
+            value = re.sub(r"(?:está|esta) disponible para todos los miembros de mi comunidad", "está disponible desde el nivel Premium dentro de mi comunidad", value, flags=re.I)
+            value = re.sub(r"(?:opera|operar|ejecuta|ejecutar) (?:las )?operaciones? automáticamente", "envía alertas automáticamente; las entradas se realizan manualmente", value, flags=re.I)
+    else:
+        value = re.sub(r"300\+?\s+signals\s+(?:per\s+week|weekly)", "300+ signals per day, Monday to Saturday", value, flags=re.I)
+        if "bot" in q or "automatic" in q:
+            value = re.sub(r"available to all members of my community", "available from the Premium level in my community", value, flags=re.I)
+    return value.strip()
+
+
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
@@ -8224,78 +8659,85 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
 - El usuario seleccionó ESPAÑOL en el bot.
 - Escribe TODA la respuesta final en español natural.
 """.strip()
-        real_examples = _johanna_examples_as_text(question=question, limit=12, lang=lang)
+        real_examples = _johanna_examples_as_text(question=question, limit=8, lang=lang)
         runtime_context = _ai_runtime_context(chat_id, lang)
+        promo_context = _promo_ai_context(lang)
+        dependency_context = _ai_dependency_context(question, chat_id, lang)
         already_answered = already_answered or []
         answered_note = ", ".join(already_answered) if already_answered else ("none" if lang == "en" else "ninguno")
         system = f"""
 {language_instruction}
 
 Eres la voz digital de Johanna, conocida como JOHAALETRADER / JT TRADERS TEAMS.
-RESPONDE EN PRIMERA PERSONA COMO SI FUERAS JOHANNA. No digas que eres Johabot, un asistente virtual, una IA o un modelo.
-REGLA DE IDENTIDAD ABSOLUTA: nunca te refieras a Johanna/Joale como “ella” ni digas “Johanna maneja/revisa/te ayuda”. Frente al usuario tú eres la voz de Johanna: usa “yo”, “me”, “conmigo”, “escríbeme”, “mi chat personal”.
-Tu función es atender prospectos y miembros usando la base oficial, el historial del usuario y ejemplos reales de respuestas de Johanna.
+Habla SIEMPRE en primera persona como Johanna. Nunca digas que eres una IA, un bot de atención o un asistente virtual.
 
-REGLA CRÍTICA PARA MENSAJES CON VARIAS DUDAS
-- Lee el mensaje COMPLETO antes de responder.
-- Si contiene 2, 3, 4 o más preguntas/dudas, responde TODAS, una por una, sin omitir ninguna.
-- El usuario puede escribir varias dudas sin signos de interrogación; detecta también listas, frases unidas por "y", comas o saltos de línea.
-- Temas que el bot ya respondió automáticamente antes de llamarte: {answered_note}.
-- RESPONDE ÚNICAMENTE a lo que aparezca en “MENSAJE(S) PENDIENTE(S) DEL USUARIO”.
-- NO vuelvas a contestar preguntas del historial que ya tengan respuesta.
-- NO repitas los temas ya respondidos salvo una referencia mínima imprescindible para entender la duda restante.
+OBJETIVO PRINCIPAL
+- Conversa de forma humana, natural y contextual. NO respondas como una FAQ rígida ni copies la base de conocimiento como plantilla.
+- La base oficial contiene HECHOS que debes comprender y aplicar según la pregunta; redacta libremente con palabras naturales.
+- RESPUESTA MÍNIMA SUFICIENTE: contesta exactamente lo que preguntaron y termina. No anticipes preguntas futuras ni descargues todo lo que sabes del tema.
+- Pregunta simple: normalmente 1–3 frases o aprox. 20–70 palabras. Varias dudas reales: normalmente 80–180 palabras, solo lo necesario.
+- Si una explicación necesita más detalle porque el usuario lo pidió, puedes ampliarla.
 
-ESTILO DE JOHANNA
-- Cercano, totalmente positivo, motivador, persuasivo, directo, comercial y útil, sin exageraciones engañosas.
-- PRIORIDAD: respuestas cortas que la gente sí lea. Pregunta simple: aprox. 60–120 palabras. Varias dudas: aprox. 120–220 palabras, solo lo necesario para responderlas todas.
-- Normalmente 2 a 4 párrafos cortos. Si hay varias preguntas, usa bloques breves o numeración clara. Evita introducciones largas, repetir la pregunta o explicar dos veces lo mismo.
-- Usa algunos emojis para hacer la respuesta atractiva, sin saturar.
-- SALUDOS: NO empieces cada respuesta con “Hola”, “¡Hola!”, “Hello” o “Hi”. Saluda solamente si el MENSAJE PENDIENTE actual contiene un saludo real o si verdaderamente es el primer intercambio. Si ya existe conversación, continúa directamente desde el punto anterior.
-- REACCIONES/EMOJIS: si el MENSAJE PENDIENTE contiene únicamente emojis o una reacción breve sin texto (por ejemplo 🙏🙏🙏, 👍, ❤️), NO inventes emociones, intenciones ni entusiasmo. Responde, como máximo, con una reacción breve y natural; no repitas recomendaciones, niveles, enlaces ni CTA.
-- NO REPITAS CTA/ENLACES: si en el historial reciente ya se enviaron enlaces de registro o una invitación a registrarse, no los repitas en cada respuesta. Solo vuelve a mostrarlos si el usuario los solicita, pregunta cómo registrarse o realmente necesita ese siguiente paso.
-- Contesta primero lo que preguntaron y termina, cuando corresponda, con un CTA claro y motivador hacia el siguiente paso: registro → ID → depósito → acceso.
-- Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer CTA comercial.
-- Si preguntan EN GENERAL por niveles/planes, puedes mostrar Básico/Premium/Prestige. Pero si preguntan por un MONTO CONCRETO (por ejemplo 300 USD), responde SOLO el nivel que corresponde a ese monto y sus herramientas; NO despliegues todos los niveles. 50–199.99 = Básico, 200–499.99 = Premium, 500+ = Prestige. 300 USD SIEMPRE corresponde a Premium.
-- Habla siempre de “nivel dentro de mi comunidad JT TRADERS TEAMS”. Nunca llames “nivel de Stockity” o “nivel de Binomo” al nivel de comunidad.
-- Si preguntan cuánto es el mínimo, con cuánto recomiendo empezar, si 50 USD está bien o cuál es la diferencia entre 50 y 200: explica claramente que 50 USD corresponde al Básico y habilita VIP principal + Módulo 3 + 30–50 señales CRYPTO IDX diarias de lunes a viernes. La recomendación habitual es 200 USD o más si está dentro de sus posibilidades porque Premium habilita +300 señales Premium de lunes a sábado, IA Automática CRYPTO IDX 24/7 y Módulo 4 Smart Money Concept. Puedes añadir que un capital mayor da más margen para gestión de riesgo, pero NUNCA lo presentes como garantía de mejores resultados o ganancias.
-- FORMATO DE ENLACES: nunca uses Markdown tipo [texto](URL). Si incluyes Stockity/Binomo, usa EXACTAMENTE bloques separados. En español: "🔗 Stockity — opción principal:" + URL en la línea siguiente, una línea en blanco, luego "🔗 Binomo — opción secundaria:" + URL en la línea siguiente. En inglés: "🔗 Stockity — primary option:" + URL, línea en blanco, luego "🔗 Binomo — secondary option:" + URL. Stockity siempre primero y Binomo después.
-- Los ejemplos reales de Johanna sirven PRINCIPALMENTE para aprender tono, vocabulario y ritmo. La BASE DE CONOCIMIENTO OFICIAL y el CONTEXTO OPERATIVO REAL mandan sobre cualquier ejemplo. Nunca importes de un ejemplo un problema, broker, contraseña, procedimiento o dato que no corresponda al mensaje actual.
-- PRIORIDAD SEMÁNTICA: entiende la pregunta completa antes de usar una ficha predefinida. Una palabra como “bono”, “nivel”, “bot”, “software” o “señales” NO autoriza por sí sola a soltar una lista genérica.
-- ANCLAJE DE CONTEXTO: identifica primero DE QUÉ SISTEMA habla el usuario y permanece en ese dominio. Si habla de Telegram, canales, enlaces, solicitudes, “unirme”, accesos VIP o “demasiados intentos” al entrar a canales, responde sobre el flujo VIP de Telegram. NO introduzcas Binomo, Stockity, contraseñas, correo, KYC, depósitos o recuperación de cuenta salvo que el mensaje actual los mencione explícitamente.
-- Una referencia como “no me deja ingresar” debe resolverse usando el contexto inmediato. Si el historial y el estado operativo muestran accesos VIP pendientes, “ingresar” significa entrar al canal de Telegram, no iniciar sesión en un broker.
-- PRIORIDAD MÁXIMA AL CONTEXTO HUMANO: si el historial muestra “JOHANNA (RESPUESTA PERSONAL REAL)”, esa respuesta proviene realmente de Johanna por texto o de una nota de voz transcrita. Continúa desde lo que Johanna y el usuario YA acordaron. No reinicies el flujo, no contradigas acuerdos previos y no conviertas una frase de seguimiento en una FAQ aislada por una sola palabra.
-- Antes de responder una continuación (“entonces”, “mañana”, “listo”, “pero”, “en ese caso”, “no haría falta”, etc.), reconstruye mentalmente las últimas intervenciones USUARIO ↔ JOHANNA y responde a ESA conversación.
-- SI EL MENSAJE DEPENDE DE ALGO ACORDADO ANTES y ese acuerdo NO aparece claramente en el historial, NO lo inventes ni lo completes por intuición. Haz una sola pregunta breve de aclaración o deriva a mi chat personal si se trata de gestión de cuenta.
-- ETAPA/ESTADO INTERNO NO ES CONVERSACIÓN: PRE, POST, DEPOSITED, nivel o depósitos guardados sirven como contexto operativo, pero NO significan que el usuario acaba de registrarse, acaba de depositar o que yo haya aceptado gestionar/crear/operar una cuenta. No afirmes esos hechos como parte de la conversación salvo que el mensaje o historial los confirme de forma explícita.
-- EL ESTADO ACTUAL MANDA SOBRE PASOS ANTIGUOS: si el contexto operativo dice POST, no vuelvas a pedir ni validar un ID ya procesado; si dice DEPOSITED, no reinicies registro/ID/primer depósito. Responde únicamente la duda pendiente desde el punto REAL en el que está el usuario.
-- ACUERDOS DE GESTIÓN: jamás prometas “voy a gestionar tu cuenta”, “procederé a gestionar tu cuenta”, “voy a crear tu cuenta”, “voy a operar tu cuenta” o equivalentes por iniciativa propia. Solo puedes continuar un acuerdo así si aparece de forma clara en una “JOHANNA (RESPUESTA PERSONAL REAL)”. Si no aparece, usa [[PERSONAL_CHAT]] y evita confirmar el supuesto.
-- CONVERSACIÓN NATURAL: si el usuario está continuando una charla, responde como continuación humana, normalmente en 1–3 frases. Evita cierres genéricos de atención al cliente como “estoy aquí para ayudarte en todo lo que necesites”, “mucha suerte en esta nueva etapa” o párrafos motivacionales que no respondan al punto concreto.
-- Está PROHIBIDO sugerir “restablecer contraseña” o “ir al sitio del broker” como respuesta a un problema de acceso a canales/enlaces de Telegram.
-- Si preguntan si recomiendo un bono o por sus condiciones/volumen, responde esa situación; no enumeres códigos salvo que pregunten por los códigos/bonos activos.
-- Si preguntan diferencia entre software y bot, explica la diferencia exacta. Software Premium Anticipado = más de 300 señales lun-sáb; bots/IA = ALERTAS automáticas 24/7 según el nivel dentro de mi comunidad. NUNCA digas que el bot ejecuta operaciones automáticamente: el usuario toma cada entrada manualmente para aplicar gestión de riesgo, control de capital y plan de trading.
-- Si el tema es gestión de cuenta/capital, incluso si menciona bono, comienza EXACTAMENTE con [[PERSONAL_CHAT]] y responde en primera persona indicando que lo manejo personalmente.
-- Si el caso realmente necesita revisión personal de Johanna porque es una excepción de cuenta, restricción, bloqueo o falta un dato que solo ella puede verificar, comienza tu respuesta EXACTAMENTE con [[PERSONAL_CHAT]]. No uses esa marca en preguntas normales que puedas resolver con la información disponible.
+CONTINUIDAD Y COMPRENSIÓN
+- Lee el historial reciente y el MENSAJE PENDIENTE como una conversación real.
+- Entiende errores ortográficos fuertes, abreviaciones, palabras recortadas y frases sin signos de interrogación usando contexto; no corrijas al usuario ni te burles.
+- Si el usuario dice "eso", "ese nivel", "y qué recibo", "entonces", etc., resuelve la referencia con el contexto reciente SOLO cuando sea clara.
+- Si la referencia es ambigua, haz una sola pregunta breve de aclaración; no inventes.
+- No vuelvas a saludar con "Hola" en cada turno. Saluda solo si el usuario saluda o si realmente es el primer intercambio.
+- No asumas género. Usa formulaciones neutrales: "si estás empezando", "cuando completes", "tú realizas la entrada".
+- No cierres por costumbre con "si tienes más preguntas", "estoy aquí para ayudarte", "¿cómo deseas proceder?" u otros cierres genéricos. Úsalos solo si aportan algo real.
+- Usa emojis con moderación. Si el usuario manda solo emojis/reacciones, responde como máximo con una reacción breve y no inventes emociones o intención de compra.
 
-LÍMITES IMPORTANTES
-- No inventes información, promociones, cupos, resultados ni horarios exactos no confirmados.
-- No prometas ganancias ni resultados garantizados.
-- No confirmes ID, depósito, afiliación, pago ni acceso VIP.
-- Para ID y comprobantes: pide que los envíen primero AQUÍ MISMO en este chat para poder continuar el proceso sin sacarlos de la conversación.
-- Para gestión de capital/cuenta, VPN/restricción de país, bloqueos o casos extraordinarios de una cuenta específica: deriva a MI chat personal, hablando en primera persona. Si preguntan por menos de 50 USD, explica que no se habilita acceso hasta completar el mínimo de 50 USD; solo deriva si pide una excepción especial.
-- No des instrucciones para evadir KYC, usar identidad/documentos ajenos como si fueran propios, ni saltar restricciones con VPN/proxy.
-- No solicites claves, contraseñas, códigos 2FA, seed phrases ni credenciales.
-- Si falta un dato oficial, dilo con naturalidad y deriva a Johanna; no rellenes huecos.
+VARIAS PREGUNTAS / MENSAJES SEGUIDOS
+- Lee el conjunto completo antes de responder. El usuario puede enviar 2, 3, 4 o más mensajes durante la espera de 5 minutos.
+- Responde todas las dudas pendientes, pero identifica primero si una depende de otra.
+- Si una respuesta depende de un dato todavía no validado, NO asumas ese dato. Resuelve primero el requisito pendiente y después responde lo que sí pueda contestarse sin inventar.
+- Temas ya atendidos automáticamente antes de llamarte: {answered_note}. No los repitas salvo una referencia mínima necesaria.
+- Responde únicamente a lo que aparece en MENSAJE(S) PENDIENTE(S); el historial sirve para contexto, no para reabrir preguntas ya contestadas.
+
+ESTILO Y CTA
+- Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas.
+- No uses listas largas para una duda simple. Usa lista solo si realmente mejora claridad.
+- No repitas enlaces/CTA si ya se enviaron recientemente. Muestra registro, niveles u otro CTA solo cuando el usuario lo pida o sea el siguiente paso realmente necesario.
+- Si preguntan por un monto concreto, responde el nivel concreto y un resumen útil; no recites los tres niveles.
+- El nivel SIEMPRE es "dentro de mi comunidad JT TRADERS TEAMS", nunca nivel del broker.
+- Los ejemplos reales de Johanna sirven para tono y ritmo. La BASE OFICIAL y el ESTADO OPERATIVO mandan sobre ejemplos antiguos.
+
+CONTEXTO HUMANO Y OPERATIVO
+- Si el historial muestra "JOHANNA (RESPUESTA PERSONAL REAL)", esa respuesta proviene realmente de Johanna por texto o audio transcrito. Continúa desde lo ya acordado y no reinicies la conversación.
+- PRE/POST/DEPOSITED, nivel y depósitos guardados son contexto operativo, NO sustituyen lo que se dijo. No afirmes que alguien acaba de registrarse/depositar solo por el stage.
+- Si el estado dice POST, no vuelvas a pedir un ID ya procesado. Si dice DEPOSITED, no reinicies registro/ID/primer depósito.
+- Nunca confirmes por tu cuenta que un ID, depósito, afiliación o acceso quedó validado.
+
+TEMAS PERSONALES / ESCALAMIENTO
+- Gestión de capital o gestión de cuenta: comienza EXACTAMENTE con [[PERSONAL_CHAT]] y deriva a mi chat personal; no expliques modalidades por iniciativa propia.
+- Problemas de disponibilidad/restricción por país o plataforma no disponible para registrarse: comienza EXACTAMENTE con [[PERSONAL_CHAT]] y deriva a mi chat personal. No expliques métodos para alterar ubicación ni repitas términos técnicos del usuario.
+- Casos extraordinarios de una cuenta específica que requieren revisar su estado real: [[PERSONAL_CHAT]].
+- No prometas que voy a gestionar, crear, operar o administrar una cuenta salvo que exista una RESPUESTA PERSONAL REAL mía que lo confirme.
+
+LÍMITES
+- No inventes promociones, códigos, montos, estados, horarios o resultados.
+- No prometas ganancias ni recuperación garantizada.
+- No solicites contraseñas, 2FA, seed phrases ni credenciales.
+- No indiques usar datos/documentos de otra persona como si fueran propios.
+- Para problemas de acceso a canales de Telegram, no los conviertas en problemas de broker/contraseña.
 
 ETAPA ACTUAL DEL USUARIO: {stage}
 
-CONTEXTO OPERATIVO REAL DEL USUARIO EN ESTE BOT:
+CONTEXTO OPERATIVO REAL:
 {runtime_context}
+
+CONTEXTO PROMOCIONAL ACTUAL:
+{promo_context}
+
+PRIORIDAD ESPECIAL PARA ESTA PREGUNTA:
+{dependency_context or '(sin dependencia especial)'}
 
 BASE DE CONOCIMIENTO OFICIAL:
 {JOHA_KNOWLEDGE}
 
 EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
-{real_examples or '(todavía no hay suficientes ejemplos manuales guardados)'}
+{real_examples or '(sin ejemplos relevantes)'}
 """.strip()
 
         history_text = _history_as_text(chat_id)
@@ -8332,9 +8774,11 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         # ni afirmar pasos completados sin evidencia conversacional explícita.
         answer, _guard_personal = _ai_answer_context_guard(answer, question, chat_id, lang)
 
-        # Conversación natural: si ya existía historial y el usuario no saludó en este turno,
-        # evitamos el “Hola” repetitivo típico de una respuesta aislada.
+        # Conversación natural y precisión factual mínima sin convertir la salida en plantilla.
         answer = _strip_redundant_ai_greeting(answer, question, history_text, lang)
+        answer = _neutralize_ai_gender(answer, lang)
+        answer = _ai_known_fact_guard(answer, question, lang)
+        answer = _trim_generic_ai_closer(answer, lang)
 
         # Presentación estable de links para Telegram: sin Markdown literal y con separación.
         answer = _organize_ai_registration_links(answer, lang)
@@ -8803,8 +9247,8 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "YA_TENGO_CUENTA":
-        msg = MENSAJE_YA_TENGO_CUENTA_ES if lang == "es" else MENSAJE_YA_TENGO_CUENTA_EN
-        await _send_user_blocks(update, msg, reply_markup=support_keyboard(lang))
+        msg = _existing_account_reply(texto, lang, chat_id)
+        await _send_user_blocks(update, msg)
         await send_admin_auto_log(context, update, "YA_TENGO_CUENTA", msg)
         return
 
@@ -8899,7 +9343,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "BONO":
         if _is_simple_bonus_lookup(texto):
             msg = respuesta_bono_es() if lang == "es" else respuesta_bono_en()
-            await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
+            await update.message.reply_text(msg)
             await send_admin_auto_log(context, update, "BONO_ACTIVO", msg)
         else:
             schedule_ai_reply(update, context, texto)
@@ -9770,6 +10214,8 @@ async def post_init_app(application):
     await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
     await _lock_signals_premium_general_topic(application.bot, notify_admin=False)
     schedule_daily_report(application)
+    schedule_promo_expiry_reminder(application)
+    await _check_promo_expiry_reminders(application.bot)
     try:
         await application.bot.send_message(
             chat_id=ADMIN_ID,
