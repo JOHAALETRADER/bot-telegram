@@ -55,9 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.26-20260918-PROCESS-BUTTONS-CLEAN"
-# v7.10.26: soporte/menú se reservan para cierres e información;
-# durante pasos operativos se muestra únicamente la acción necesaria para continuar.
+BOT_VERSION = "v7.10.28-20260918-MERGED-LEVELS-BENEFITS-MENU"
+# v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
+# enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
 
 
@@ -427,6 +427,8 @@ VIP_ACCESS_CHANNELS = {
         "name_es": "JT TRADERS TEAMS · VIP Principal",
         "name_en": "JT TRADERS TEAMS · Main VIP",
         "url": "https://t.me/+k1--4ts-vnc4ODUx",
+        # ID real confirmado en prueba Telegram 18/09/2026.
+        "chat_id": -1001946870620,
         "levels": (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE),
         "desc_es": "Comunidad principal dividida por temas, con educación y metodología completa.",
         "desc_en": "Main community organized by topics, with education and the complete methodology.",
@@ -443,6 +445,8 @@ VIP_ACCESS_CHANNELS = {
         "name_es": "Binary Teams · Módulo 3 — Introducción al Análisis Bursátil",
         "name_en": "Binary Teams · Module 3 — Introduction to Market Analysis",
         "url": "https://t.me/+imlcZTiobAs0YTJh",
+        # ID real confirmado en prueba Telegram 18/09/2026.
+        "chat_id": -1001898859946,
         "levels": (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE),
         "desc_es": "Curso de introducción al análisis bursátil para todos los niveles.",
         "desc_en": "Introduction to market analysis course for every level.",
@@ -467,6 +471,8 @@ VIP_ACCESS_CHANNELS = {
         "name_es": "Binary Teams · Módulo 4 — Smart Money Concept",
         "name_en": "Binary Teams · Module 4 — Smart Money Concept",
         "url": "https://t.me/+G56hMIAyasFjNTY5",
+        # ID real confirmado en prueba Telegram 18/09/2026.
+        "chat_id": -1001929893768,
         "levels": (VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE),
         "desc_es": "Módulo formativo de Smart Money Concept.",
         "desc_en": "Smart Money Concept training module.",
@@ -930,12 +936,12 @@ VIP_ACCESS_CHAT_ID_LOOKUP = {
 
 
 VIP_ACCESS_TITLE_ALIASES = {
-    "vip_main": ("JT TRADERS TEAMS", "JT TRADERS TEAMS VIP", "VIP PRINCIPAL"),
+    "vip_main": ("JT TRADERS TEAMS", "JT TRADERS TEAMS VIP", "JT TRADERS VIP", "VIP PRINCIPAL"),
     "crypto_basic": ("CANAL DE SEÑALES CRYPTOIDX", "SEÑALES CRYPTO IDX", "CRYPTO IDX BASICO", "CRYPTO IDX BÁSICO"),
-    "module3": ("BINARY TEAMS MODULO 3", "BINARY TEAMS MÓDULO 3", "INTRODUCCION AL ANALISIS BURSATIL", "INTRODUCCIÓN AL ANÁLISIS BURSÁTIL"),
+    "module3": ("BINARY TEAMS MODULO 3", "BINARY TEAMS MÓDULO 3", "BINARY TEAMS 3", "INTRODUCCION AL ANALISIS BURSATIL", "INTRODUCCIÓN AL ANÁLISIS BURSÁTIL"),
     "signals_premium": ("SEÑALES PREMIUM +300", "SENALES PREMIUM +300", "PREMIUM +300"),
     "ai_crypto": ("IA PREMIUM AUTOMATICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMÁTICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMATICA CRYPTO IDX 24/7"),
-    "module4": ("BINARY TEAMS MODULO 4", "BINARY TEAMS MÓDULO 4", "SMART MONEY CONCEPT"),
+    "module4": ("BINARY TEAMS MODULO 4", "BINARY TEAMS MÓDULO 4", "BINARY TEAMS 4", "SMART MONEY CONCEPT"),
     "fx_auto": ("DIVISAS AUTOMATICAS 24/7 PREMIUM", "DIVISAS AUTOMÁTICAS 24/7 PREMIUM", "DIVISAS AUTO PREMIUM"),
     "madness": ("MADNESS TRADING AVANZADO", "METODO ALGO Y LIT", "MÉTODO ALGO Y LIT"),
 }
@@ -1007,18 +1013,16 @@ def _vip_channel_allowed(level: str, access_key: str) -> bool:
 
 
 def _vip_access_keyboard(level: str, lang: str, keys=None) -> InlineKeyboardMarkup:
+    """Entrega un solo acceso por vez para reducir ráfagas/rate limits de Telegram."""
     keys = list(keys if keys is not None else _vip_channel_keys_for_level(level))
     rows = []
-    for key in keys:
+    if keys:
+        key = keys[0]
         info = VIP_ACCESS_CHANNELS.get(key)
-        if not info:
-            continue
-        label = info["name_es"] if lang == "es" else info["name_en"]
-        rows.append([InlineKeyboardButton(f"🔐 {label}", url=info["url"])])
-    # Mientras solicita accesos, solo se muestran los canales pendientes.
-    # Soporte y menú vuelven en la bienvenida final al completar el proceso.
+        if info:
+            label = info["name_es"] if lang == "es" else info["name_en"]
+            rows.append([InlineKeyboardButton(f"🔐 {label}", url=info["url"])])
     return InlineKeyboardMarkup(rows)
-
 
 def _vip_access_intro(level: str, lang: str, upgrade: bool = False) -> str:
     level_label = _vip_level_label(level, lang)
@@ -1026,26 +1030,25 @@ def _vip_access_intro(level: str, lang: str, upgrade: bool = False) -> str:
         if upgrade:
             return (
                 f"🔐 🎉 Congratulations! Your {level_label} level is now active.\n\n"
-                "Use the buttons below to request access to the NEW channels unlocked by your level. "
-                "The bot will approve your requests automatically when they come from this same Telegram account."
+                "I’ll unlock your NEW channels one by one. Request access to the channel shown below; "
+                "as soon as it is approved, I’ll send you the next one automatically."
             )
         return (
             f"🔐 🎉 Congratulations! Your {level_label} level access is ready.\n\n"
-            "Use the buttons below to request access to each channel included in your level. "
-            "The bot will approve your requests automatically when they come from this same Telegram account."
+            "I’ll unlock your channels one by one. Request access to the channel shown below; "
+            "as soon as it is approved, I’ll send you the next one automatically."
         )
     if upgrade:
         return (
             f"🔐 🎉 ¡Felicidades! Tu nivel {level_label} ya está activo.\n\n"
-            "Usa los botones de abajo para solicitar acceso a los NUEVOS canales desbloqueados por tu nivel. "
-            "El bot aprobará automáticamente las solicitudes hechas desde esta misma cuenta de Telegram."
+            "Voy a habilitarte los NUEVOS canales uno por uno. Solicita acceso al canal que aparece abajo; "
+            "apenas quede aprobado, te enviaré automáticamente el siguiente."
         )
     return (
         f"🔐 🎉 ¡Felicidades! Ya están listos tus accesos del nivel {level_label}.\n\n"
-        "Usa los botones de abajo para solicitar acceso a cada canal incluido en tu nivel. "
-        "El bot aprobará automáticamente las solicitudes hechas desde esta misma cuenta de Telegram."
+        "Voy a habilitarte los canales uno por uno. Solicita acceso al canal que aparece abajo; "
+        "apenas quede aprobado, te enviaré automáticamente el siguiente."
     )
-
 
 def _vip_level_summary(level: str, lang: str) -> str:
     lines = []
@@ -1101,6 +1104,19 @@ def _vip_mark_access_approved(chat_id: int, access_key: str):
     except Exception as e:
         logging.warning("No pude marcar acceso VIP aprobado para %s/%s: %s", chat_id, access_key, e)
         return VIP_LEVEL_NONE, False
+
+
+def _vip_pending_keys(chat_id: int):
+    """Devuelve los accesos aún pendientes, conservando el orden del nivel."""
+    try:
+        state = _vip_get_state(chat_id, create=False) or {}
+        pending = [x for x in (state.get("pending_keys") or []) if x in VIP_ACCESS_CHANNELS]
+        level = state.get("level") or VIP_LEVEL_NONE
+        order = _vip_channel_keys_for_level(level)
+        return [k for k in order if k in pending]
+    except Exception as e:
+        logging.warning("No pude leer accesos VIP pendientes de %s: %s", chat_id, e)
+        return []
 
 
 def _vip_activation_message(level: str, total_cents: int, lang: str, upgraded: bool = False) -> str:
@@ -2284,10 +2300,27 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
         level, should_welcome = _vip_mark_access_approved(chat_id, access_key)
         logging.info("✅ Acceso VIP automático aprobado: %s / %s / nivel=%s", chat_id, access_key, level)
 
-        # UNA sola bienvenida privada cuando se completaron todos los accesos
-        # pendientes del nivel/upgrade actual. No se publica bienvenida por canal.
-        if should_welcome:
-            lang = get_user_lang(chat_id)
+        # Flujo secuencial: después de aprobar un canal, entrega el siguiente.
+        # Reduce ráfagas de solicitudes y el error de Telegram "demasiados intentos".
+        lang = get_user_lang(chat_id)
+        remaining = _vip_pending_keys(chat_id)
+        if remaining:
+            try:
+                next_info = VIP_ACCESS_CHANNELS.get(remaining[0]) or {}
+                next_name = next_info.get("name_es") if lang == "es" else next_info.get("name_en")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"✅ Acceso aprobado. Ahora solicita el siguiente: {next_name}."
+                        if lang == "es" else
+                        f"✅ Access approved. Now request the next one: {next_name}."
+                    ),
+                    reply_markup=_vip_access_keyboard(level, lang, keys=remaining),
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logging.warning("Aprobé %s para %s, pero no pude enviar el siguiente acceso: %s", access_key, chat_id, e)
+        elif should_welcome:
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
@@ -2677,13 +2710,62 @@ def levels_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     ])
 
 def personal_chat_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
-    """Acceso secundario al chat personal, reservado para casos que sí requieren atención directa."""
-    label = "📩 MY PERSONAL CHAT" if lang == "en" else "📩 MI CHAT PERSONAL"
-    back = "🏠 Back to main menu" if lang == "en" else "🏠 Volver al menú principal"
+    """Único CTA para casos que realmente requieren atención personal."""
+    label = "📩 CHAT WITH ME PERSONALLY" if lang == "en" else "📩 HABLAR CONMIGO EN MI CHAT PERSONAL"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, url=SUPPORT_URL)],
-        [InlineKeyboardButton(back, callback_data="back_main_menu")],
     ])
+
+def _ai_needs_levels_button(question: str) -> bool:
+    t = _norm(question or "")
+    terms = (
+        "nivel", "niveles", "premium", "prestige", "basico", "básico", "plan", "planes",
+        "fondeando", "depositando", "con 50", "con 100", "con 200", "con 300", "con 500",
+        "acceso al bot", "acceso a las señales", "acceso a las senales", "que incluye", "qué incluye",
+    )
+    return any(x in t for x in terms)
+
+
+def ai_context_keyboard(question: str, lang: str = "es") -> InlineKeyboardMarkup:
+    """Añade un CTA de niveles solo cuando la respuesta lo necesita."""
+    rows = []
+    if _ai_needs_levels_button(question):
+        label = "📊 VIEW MY COMMUNITY LEVELS" if lang == "en" else "📊 MIRA LOS NIVELES DE MI COMUNIDAD"
+        callback = "levels_plans_en" if lang == "en" else "niveles_planes"
+        rows.append([InlineKeyboardButton(label, callback_data=callback)])
+    rows.extend(support_rows(lang))
+    return InlineKeyboardMarkup(rows)
+
+
+def _is_simple_bonus_lookup(texto: str) -> bool:
+    """Solo códigos/bonos activos; recomendaciones y condiciones pasan a IA."""
+    t = _norm(texto or "")
+    nuanced = (
+        "recomiend", "conviene", "deberia", "debería", "condicion", "condición", "requisito", "volumen",
+        "mover", "liberar", "retiro", "retirar", "ganancia", "gestionar", "gestion", "gestión", "riesgo",
+        "cuanto tarda", "cuánto tarda", "meses", "que pasa", "qué pasa",
+    )
+    if any(x in t for x in nuanced):
+        return False
+    simple = (
+        "que bonos", "qué bonos", "bonos activos", "bono activo", "codigo de bono", "código de bono",
+        "codigo bono", "código bono", "cual es el bono", "cuál es el bono", "bono 100", "bono 70",
+        "top1_johatrader", "top_1johaale",
+    )
+    return any(x in t for x in simple) or t.strip() in {"bono", "bonos", "bonus"}
+
+
+def _is_simple_levels_lookup(texto: str) -> bool:
+    """Consulta general de niveles; montos/casos concretos pasan a IA."""
+    t = _norm(texto or "")
+    contextual = (
+        "recomiend", "conviene", "diferencia", "con 50", "con 100", "con 200", "con 300", "con 500",
+        "fondeando", "depositando", "acceso", "bot", "señal", "senal", "software", "para mi", "me sirve",
+    )
+    if any(x in t for x in contextual):
+        return False
+    return any(x in t for x in ("que niveles", "qué niveles", "niveles disponibles", "planes disponibles")) or t.strip() in {"niveles", "planes"}
+
 
 def remarketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     """Teclado exclusivo del remarketing: registro + soporte + regreso al menú."""
@@ -3279,23 +3361,28 @@ async def _admin_reject_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id: i
 
 
 def _broker_deposit_preview_text(chat_id: int, broker: str, preview: dict) -> str:
-    old_global = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
-    proposed_global = _max_level(old_global, preview.get("new_level") or VIP_LEVEL_NONE)
+    global_state = _vip_get_state(chat_id, create=False) or {}
+    current_global = global_state.get("level") or VIP_LEVEL_NONE
+    proposed_global = _max_level(current_global, preview.get("new_level") or VIP_LEVEL_NONE)
     mode = "ACUMULA dentro de la ventana" if preview.get("accumulates") else "NO acumula; se evalúa como depósito único"
     status = "CERRADA después de este depósito" if preview.get("window_closed_after") else "ABIERTA"
+    proof_line = (
+        "Comprobante ≤72h: NO APLICA (primer depósito)"
+        if int(preview.get("old_count") or 0) == 0 else
+        f"Comprobante ≤72h: {'SÍ' if preview['timely'] else 'NO'}"
+    )
     return (
         f"💰 CONFIRMAR DEPÓSITO · {_broker_label(broker).upper()}\n\n"
         f"Monto: USD {_usd(preview['amount_cents'])}\n"
-        f"Comprobante ≤72h: {'SÍ' if preview['timely'] else 'NO'}\n"
+        f"{proof_line}\n"
         f"Depósito validado nº: {preview['new_count']}\n"
         f"Regla: {mode}\n"
         f"Acumulación habilitada: USD {_usd(preview['new_accum_cents'])}\n"
         f"Ventana 3 depósitos / 30 días: {status}\n\n"
-        f"Nivel en {_broker_label(broker)}: {_vip_level_label(preview['new_level'], 'es')}\n"
-        f"Nivel general JT TRADERS: {_vip_level_label(proposed_global, 'es')}\n\n"
+        f"Nivel JT que habilita esta cuenta {_broker_label(broker)}: {_vip_level_label(preview['new_level'], 'es')}\n"
+        f"Nivel general JT TRADERS TEAMS: {_vip_level_label(proposed_global, 'es')}\n\n"
         "¿Confirmas este depósito validado?"
     )
-
 
 async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str, preview: dict):
     broker = _broker_norm(broker)
@@ -3357,15 +3444,13 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
     if lang == "en":
         user_msg = (
             f"✅ {_broker_label(broker)} deposit confirmed.\n\n"
-            f"Your current level on {_broker_label(broker)} is {_vip_level_label(broker_level, lang)}.\n"
-            f"Your current JT TRADERS level is {_vip_level_label(new_global, lang)}.\n\n"
+            f"Your current level in my JT TRADERS TEAMS community is {_vip_level_label(new_global, lang)}.\n\n"
             "Upgrades are calculated from validated deposits within the enabled level-update period."
         )
     else:
         user_msg = (
             f"✅ Depósito de {_broker_label(broker)} confirmado.\n\n"
-            f"Tu nivel actual en {_broker_label(broker)} es {_vip_level_label(broker_level, lang)}.\n"
-            f"Tu nivel actual JT TRADERS es {_vip_level_label(new_global, lang)}.\n\n"
+            f"Tu nivel actual en mi comunidad JT TRADERS TEAMS es {_vip_level_label(new_global, lang)}.\n\n"
             "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
         )
     await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=upgrade_info_keyboard(lang))
@@ -3381,8 +3466,8 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
     admin_result = (
         f"✅ DEPÓSITO CONFIRMADO · {_broker_label(broker).upper()}\n\n"
         f"💰 Monto validado: USD {_usd(preview['amount_cents'])}\n"
-        f"👑 Nivel en {_broker_label(broker)}: {_vip_level_label(broker_level, 'es')}\n"
-        f"⭐ Nivel general JT TRADERS: {_vip_level_label(new_global, 'es')}"
+        f"👑 Nivel JT asociado a la cuenta {_broker_label(broker)}: {_vip_level_label(broker_level, 'es')}\n"
+        f"⭐ Nivel general JT TRADERS TEAMS: {_vip_level_label(new_global, 'es')}"
     )
     if new_keys:
         admin_result += (
@@ -3752,22 +3837,38 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
             from telegram.ext import ApplicationHandlerStop
             raise ApplicationHandlerStop
         context.user_data.pop("admin_user_action", None)
-        context.user_data["admin_pending_broker_deposit"] = {
-            "chat_id": chat_id, "broker": broker, "amount_cents": amount_cents
-        }
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                f"🕒 COMPROBANTE · {_broker_label(broker).upper()}\n\n"
-                f"Monto confirmado: USD {_usd(amount_cents)}\n\n"
-                "¿El usuario envió este comprobante dentro de las 72 horas posteriores al depósito?"
-            ),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ SÍ · DENTRO DE 72H", callback_data=f"admin_broker_timely:{chat_id}:{broker}")],
-                [InlineKeyboardButton("⏰ NO · FUERA DE 72H", callback_data=f"admin_broker_late:{chat_id}:{broker}")],
-                [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
-            ]),
-        )
+        state = _broker_get(chat_id, broker, create=False) or {}
+        old_count = int(state.get("deposit_count") or 0)
+        pending_dep = {"chat_id": chat_id, "broker": broker, "amount_cents": amount_cents}
+
+        # Primer depósito: inicia la ventana, por eso 72 h todavía no aplica.
+        if old_count == 0:
+            preview = _broker_preview_deposit(chat_id, broker, amount_cents, True)
+            pending_dep.update({"timely": True, "preview": preview})
+            context.user_data["admin_pending_broker_deposit"] = pending_dep
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=_broker_deposit_preview_text(chat_id, broker, preview),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ CONFIRMAR DEPÓSITO", callback_data=f"admin_broker_deposit_confirm:{chat_id}:{broker}")],
+                    [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
+                ]),
+            )
+        else:
+            context.user_data["admin_pending_broker_deposit"] = pending_dep
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    f"🕒 COMPROBANTE · {_broker_label(broker).upper()}\n\n"
+                    f"Monto confirmado: USD {_usd(amount_cents)}\n\n"
+                    "¿El usuario envió este comprobante dentro de las 72 horas posteriores al depósito?"
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ SÍ · DENTRO DE 72H", callback_data=f"admin_broker_timely:{chat_id}:{broker}")],
+                    [InlineKeyboardButton("⏰ NO · FUERA DE 72H", callback_data=f"admin_broker_late:{chat_id}:{broker}")],
+                    [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
+                ]),
+            )
         from telegram.ext import ApplicationHandlerStop
         raise ApplicationHandlerStop
 
@@ -4462,8 +4563,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")],
             [InlineKeyboardButton("✅ I already have an account", callback_data="ya_tengo_cuenta")],
             [InlineKeyboardButton("📊 Capital Management", callback_data="gestion_capital_en")],
-            [InlineKeyboardButton("🎁 VIP Benefits", callback_data="beneficios_vip")],
-            [InlineKeyboardButton("📊 Levels & Plans", callback_data="levels_plans_en")],
+            [InlineKeyboardButton("🎁 Benefits, Levels & Plans", callback_data="levels_plans_en")],
             [InlineKeyboardButton("📲 Channel in English", url=CANAL_EN)],
             [InlineKeyboardButton("📊 Results Channel", url=CANAL_RESULTADOS)],
             [InlineKeyboardButton("🌐 Social media", callback_data="redes_sociales")],
@@ -4476,8 +4576,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
             [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_tengo_cuenta")],
             [InlineKeyboardButton("📊 Gestión de capital", callback_data="gestion_capital")],
-            [InlineKeyboardButton("🎁 Beneficios VIP", callback_data="beneficios_vip")],
-            [InlineKeyboardButton("📊 Niveles y Planes", callback_data="niveles_planes")],
+            [InlineKeyboardButton("🎁 Beneficios, Niveles y Planes", callback_data="niveles_planes")],
             [InlineKeyboardButton("📲 Canal en Español", url=CANAL_ES)],
             [InlineKeyboardButton("📊 Canal de resultados", url=CANAL_RESULTADOS)],
             [InlineKeyboardButton("🌐 Redes sociales", callback_data="redes_sociales")],
@@ -5405,7 +5504,8 @@ JOHA_KNOWLEDGE = os.getenv("JOHA_KNOWLEDGE", "").strip() or f"""
 INFORMACIÓN OFICIAL DE JOHAALETRADER / JT TRADERS TEAMS
 
 IDENTIDAD Y FORMA DE RESPONDER
-- Responde en primera persona como Johanna / JOHAALETRADER. Nunca te presentes como Johabot ni como una IA.
+- Responde SIEMPRE en primera persona como Johanna / JOHAALETRADER. Nunca te presentes como Johabot ni como una IA.
+- Nunca hables de Johanna en tercera persona frente al usuario: NO digas “Johanna maneja”, “ella revisa”, “contacta a Johanna”. Di “yo manejo”, “yo reviso”, “escríbeme”, “conmigo”, “mi chat personal”.
 - Puedes atender tanto prospectos que quieren entrar a la comunidad como miembros que ya están dentro.
 - Mantén respuestas MUY fáciles de leer en Telegram: normalmente 2 a 4 párrafos cortos; una pregunta simple debe resolverse en pocas líneas.
 - Sé muy positiva, motivadora, persuasiva y orientada a acción, sin sonar robótica ni repetir información.
@@ -5436,7 +5536,8 @@ NIVELES
 
 BROKERS Y REGLAS DE UPGRADE
 - Binomo y Stockity se gestionan por separado. Los depósitos de brokers distintos NUNCA se suman entre sí para subir de nivel.
-- Cada broker tiene su propio ID validado, depósitos, contador y nivel. El nivel general de la comunidad es el nivel más alto alcanzado individualmente en cualquiera de las cuentas. Registrar un segundo broker nunca baja el nivel que el usuario ya tenía.
+- Cada broker tiene su propio ID validado, depósitos y contador interno. Esos datos sirven para calcular qué nivel de JT TRADERS TEAMS habilita cada cuenta, pero NUNCA llames a eso “nivel de Stockity” o “nivel de Binomo” frente al usuario.
+- El único nivel que se comunica al usuario es su nivel dentro de MI COMUNIDAD JT TRADERS TEAMS. El nivel general de la comunidad es el más alto alcanzado individualmente en cualquiera de las cuentas. Registrar un segundo broker nunca baja el nivel que el usuario ya tenía.
 - Los primeros 3 depósitos validados de una misma cuenta/broker pueden acumularse para subir de nivel.
 - Esa ventana de acumulación dura 30 días desde el primer depósito validado.
 - Para entrar en la acumulación, el comprobante debe enviarse dentro de las 72 horas posteriores al depósito.
@@ -5454,8 +5555,12 @@ SI YA TIENE CUENTA
 BONOS ACTIVOS
 - 100%: código TOP1_JOHATRADER. Solo para el PRIMER depósito. Puede utilizarse una sola vez.
 - 70%: código TOP_1JOHAALE. Para depósitos posteriores. Puede utilizarse una sola vez.
-- Para una pregunta simple sobre bonos, indica únicamente los bonos activos anteriores.
-- Si preguntan por requisitos de retiro, volumen, elegibilidad concreta, reglas o condiciones que no estén aquí, no inventes: explica que deben verificarse en la plataforma/cuenta y ofrece escalarlo a Johanna.
+- SOLO muestra la lista/códigos cuando realmente preguntan qué bonos hay, cuál está activo o cuál es el código.
+- Si preguntan “¿me recomiendas tomar el bono?”, “¿conviene?”, hablan de volumen/rollover o dicen que el movimiento exigido les parece alto, responde la pregunta completa; NO sueltes automáticamente la lista de bonos.
+- Mi orientación: el bono puede tener sentido para alguien que piensa hacer trading de mediano a largo plazo porque permite operar con un capital ampliado por el bono. Según mi experiencia, con operativa constante puede llegar a liberarse alrededor de 2 meses y en algunos casos hasta 3, pero NO es un plazo garantizado: depende del volumen real y de las condiciones de la plataforma.
+- Si se hace un retiro con un bono todavía activo, la plataforma puede cancelar/desactivar el bono y, según sus condiciones, también puede afectar beneficios o ganancias asociadas al bono. Por eso hay que revisar las condiciones aplicables antes de retirar.
+- Si preguntan por gestión de cuenta “con bono”, no expliques códigos: es un caso de gestión que manejo personalmente y debes enviarlo a mi chat personal.
+- Si preguntan por un requisito concreto que no esté confirmado aquí, no inventes: indica que hay que verificarlo en la plataforma/cuenta.
 
 LIVES
 - Los lives públicos suelen realizarse de lunes a sábado.
@@ -5470,6 +5575,14 @@ SEÑALES — CANALES DE TELEGRAM
 - Prestige: Divisas Automáticas 24/7 Premium. La entrada se toma en el minuto inmediatamente siguiente a la alerta, con expiración de 1 minuto.
 - Nunca presentes Martingala como garantía de recuperación ni de ganancia.
 
+DIFERENCIA ENTRE SOFTWARE PREMIUM Y BOTS AUTOMÁTICOS
+- El Software Premium Anticipado genera más de 300 señales de lunes a sábado. En Premium/Prestige esas señales cubren CRYPTO IDX, pares de divisas, índices sintéticos y Forex y se reciben por Telegram; la entrada se toma en el minuto exacto indicado.
+- Los bots/IA automáticos trabajan 24/7. En IA Premium Automática CRYPTO IDX, la entrada se toma en el minuto siguiente al aviso; Prestige añade Divisas Automáticas 24/7.
+- La interfaz visual que uso en mis lives es privada/interna; el usuario NO necesita instalarla. Recibe las señales correspondientes directamente en Telegram.
+- Si preguntan la diferencia entre software y bot, responde SOLO esa diferencia de forma breve. No despliegues todos los niveles salvo que también lo pidan.
+- Si hablas de disponibilidad, di “depende del nivel que elijas dentro de mi comunidad JT TRADERS TEAMS”. Nunca digas que es un nivel del broker.
+- Si preguntan por un monto concreto, responde el nivel exacto de MI COMUNIDAD: 50–199.99 USD = Básico; 200–499.99 USD = Premium; 500 USD o más = Prestige. Ejemplo obligatorio: 300 USD = Premium. No enumeres los tres niveles si solo preguntaron qué obtienen con un monto concreto.
+
 INTERFAZ VISUAL PRIVADA DE JOHAALETRADER
 - La interfaz/software visual que Johanna utiliza en sus lives es una herramienta privada de uso interno y NO se entrega a miembros de la comunidad.
 - Esa interfaz requiere programación, instalación, configuración, mantenimiento y actualizaciones propias.
@@ -5477,11 +5590,11 @@ INTERFAZ VISUAL PRIVADA DE JOHAALETRADER
 - Si preguntan “¿por qué no me dieron acceso al bot/interfaz/software que usas?”, explica de forma profesional que Telegram permite recibir las señales de manera más simple, estable y accesible desde cualquier dispositivo, sin instalaciones ni configuraciones adicionales.
 
 GESTIÓN DE CAPITAL — SIEMPRE ESCALAR A JOHANNA
-- Johanna maneja personalmente cualquier consulta o activación de gestión de capital. Nunca entregues wallets, instrucciones de transferencia ni confirmes recepción de dinero.
+- Yo manejo personalmente cualquier consulta o activación de gestión de capital/cuenta. Nunca entregues wallets, instrucciones de transferencia ni confirmes recepción de dinero.
 - Modalidad 3 meses: desde 200 USD. Se ha planteado un objetivo estimado de 20–30% mensual, sujeto a resultados de trading. Al finalizar el tercer mes se liquida el ciclo según resultados y se devuelve el capital correspondiente.
 - Modalidad 2 meses: desde 100 USD. La estructura planteada busca hasta 30 USD semanales durante 2 meses, sujeto a resultados.
 - Estas cifras son objetivos/estructuras anunciadas, NO ganancias garantizadas. El trading implica riesgo y los resultados pueden ser inferiores o existir pérdidas.
-- Ante cualquier interés en gestión, deriva al chat personal de Johanna.
+- Ante cualquier interés en gestión, responde en primera persona y dirige a mi chat personal.
 
 TEMAS SENSIBLES — ESCALAR A JOHANNA
 - País donde Stockity/Binomo no esté disponible, VPN/proxy o restricción geográfica.
@@ -5489,6 +5602,7 @@ TEMAS SENSIBLES — ESCALAR A JOHANNA
 - Gestión de capital.
 - Validación de ID, comprobantes, depósitos, activación de acceso, bloqueos y casos particulares de una cuenta.
 - Cualquier dato que requiera comprobar el estado real de una cuenta.
+- En casos personales, nunca hables de mí en tercera persona: usa “yo”, “conmigo” y “mi chat personal”.
 
 REGLAS GENERALES
 - No prometas ganancias, rentabilidad garantizada, precisión garantizada ni resultados seguros.
@@ -5992,7 +6106,11 @@ def detect_intent_es(texto: str) -> str:
     if any(k in t for k in [
         "gestion de capital", "gestión de capital", "gestionar capital", "manejas capital",
         "manejo de capital", "inversion contigo", "inversión contigo", "enviarte capital",
-        "capital management", "manage my capital", "investment with you"
+        "capital management", "manage my capital", "investment with you",
+        "gestion de cuenta", "gestión de cuenta", "gestionar mi cuenta", "gestiones mi cuenta",
+        "me ayudas a gestionar", "me ayudarías a gestionar", "me ayudarias a gestionar",
+        "gestionar con bono", "gestionar con un bono", "manejar mi cuenta", "manejes mi cuenta",
+        "operar mi cuenta", "operes mi cuenta", "administrar mi cuenta", "administres mi cuenta"
     ]):
         return "GESTION_CAPITAL"
 
@@ -6140,6 +6258,10 @@ def detect_all_intents(texto: str):
         "gestion de capital", "gestión de capital", "gestionar capital", "manejas capital",
         "manejo de capital", "inversion contigo", "inversión contigo", "enviarte capital",
         "capital management", "manage my capital", "investment with you",
+        "gestion de cuenta", "gestión de cuenta", "gestionar mi cuenta", "gestiones mi cuenta",
+        "me ayudas a gestionar", "me ayudarías a gestionar", "me ayudarias a gestionar",
+        "gestionar con bono", "gestionar con un bono", "manejar mi cuenta", "manejes mi cuenta",
+        "operar mi cuenta", "operes mi cuenta", "administrar mi cuenta", "administres mi cuenta",
     ]):
         _add_intent(found, "GESTION_CAPITAL")
 
@@ -6387,9 +6509,9 @@ def _immediate_block(intent: str, lang: str):
         )
     if intent == "GESTION_CAPITAL":
         return (
-            "📊 La gestión de capital la reviso personalmente porque depende de modalidad, disponibilidad y condiciones actuales. Escríbeme directamente y te explico."
+            "📊 La gestión de cuenta la manejo personalmente porque depende de cada caso. Antes de continuar, escríbeme a mi chat personal y te explico cómo funciona, qué modalidad aplica y resolvemos tus dudas directamente."
             if lang == "es" else
-            "📊 I review capital-management requests personally because they depend on the current option, availability and conditions. Message me directly."
+            "📊 I handle account-management cases personally because each case is different. Before continuing, message me in my personal chat and I’ll explain how it works, which option applies, and we’ll review your questions directly."
         )
     return None
 
@@ -6694,6 +6816,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
 
 Eres la voz digital de Johanna, conocida como JOHAALETRADER / JT TRADERS TEAMS.
 RESPONDE EN PRIMERA PERSONA COMO SI FUERAS JOHANNA. No digas que eres Johabot, un asistente virtual, una IA o un modelo.
+REGLA DE IDENTIDAD ABSOLUTA: nunca te refieras a Johanna/Joale como “ella” ni digas “Johanna maneja/revisa/te ayuda”. Frente al usuario tú eres la voz de Johanna: usa “yo”, “me”, “conmigo”, “escríbeme”, “mi chat personal”.
 Tu función es atender prospectos y miembros usando la base oficial, el historial del usuario y ejemplos reales de respuestas de Johanna.
 
 REGLA CRÍTICA PARA MENSAJES CON VARIAS DUDAS
@@ -6712,10 +6835,15 @@ ESTILO DE JOHANNA
 - Usa algunos emojis para hacer la respuesta atractiva, sin saturar.
 - Contesta primero lo que preguntaron y termina, cuando corresponda, con un CTA claro y motivador hacia el siguiente paso: registro → ID → depósito → acceso.
 - Si es un miembro actual, prioriza resolver su duda de señales, bots, clases o herramientas antes de hacer CTA comercial.
-- Si preguntan por niveles/planes/inversión mínima, comienza aclarando que mi comunidad es GRATIS y que el dinero se deposita directamente en la PROPIA cuenta de trading. Muestra Básico/Premium/Prestige con emojis, SIN asteriscos alrededor de los nombres, usando la estructura oficial vigente de canales y herramientas. Incluye Stockity primero y Binomo segundo y recalca que ANTES de depositar deben enviarme el ID para validarlo conmigo.
+- Si preguntan EN GENERAL por niveles/planes, puedes mostrar Básico/Premium/Prestige. Pero si preguntan por un MONTO CONCRETO (por ejemplo 300 USD), responde SOLO el nivel que corresponde a ese monto y sus herramientas; NO despliegues todos los niveles. 50–199.99 = Básico, 200–499.99 = Premium, 500+ = Prestige. 300 USD SIEMPRE corresponde a Premium.
+- Habla siempre de “nivel dentro de mi comunidad JT TRADERS TEAMS”. Nunca llames “nivel de Stockity” o “nivel de Binomo” al nivel de comunidad.
 - Si preguntan cuánto es el mínimo, con cuánto recomiendo empezar, si 50 USD está bien o cuál es la diferencia entre 50 y 200: explica claramente que 50 USD corresponde al Básico y habilita VIP principal + Módulo 3 + 30–50 señales CRYPTO IDX diarias de lunes a viernes. La recomendación habitual es 200 USD o más si está dentro de sus posibilidades porque Premium habilita +300 señales Premium de lunes a sábado, IA Automática CRYPTO IDX 24/7 y Módulo 4 Smart Money Concept. Puedes añadir que un capital mayor da más margen para gestión de riesgo, pero NUNCA lo presentes como garantía de mejores resultados o ganancias.
 - FORMATO DE ENLACES: nunca uses Markdown tipo [texto](URL). Si incluyes Stockity/Binomo, usa EXACTAMENTE bloques separados. En español: "🔗 Stockity — opción principal:" + URL en la línea siguiente, una línea en blanco, luego "🔗 Binomo — opción secundaria:" + URL en la línea siguiente. En inglés: "🔗 Stockity — primary option:" + URL, línea en blanco, luego "🔗 Binomo — secondary option:" + URL. Stockity siempre primero y Binomo después.
 - Los ejemplos reales de Johanna sirven para aprender vocabulario, ritmo y conocimiento. No generalices una excepción claramente individual.
+- PRIORIDAD SEMÁNTICA: entiende la pregunta completa antes de usar una ficha predefinida. Una palabra como “bono”, “nivel”, “bot”, “software” o “señales” NO autoriza por sí sola a soltar una lista genérica.
+- Si preguntan si recomiendo un bono o por sus condiciones/volumen, responde esa situación; no enumeres códigos salvo que pregunten por los códigos/bonos activos.
+- Si preguntan diferencia entre software y bot, explica la diferencia exacta. Software Premium Anticipado = más de 300 señales lun-sáb; bots/IA = alertas automáticas 24/7 según el nivel dentro de mi comunidad.
+- Si el tema es gestión de cuenta/capital, incluso si menciona bono, comienza EXACTAMENTE con [[PERSONAL_CHAT]] y responde en primera persona indicando que lo manejo personalmente.
 - Si el caso realmente necesita revisión personal de Johanna porque es una excepción de cuenta, restricción, bloqueo o falta un dato que solo ella puede verificar, comienza tu respuesta EXACTAMENTE con [[PERSONAL_CHAT]]. No uses esa marca en preguntas normales que puedas resolver con la información disponible.
 
 LÍMITES IMPORTANTES
@@ -6723,7 +6851,7 @@ LÍMITES IMPORTANTES
 - No prometas ganancias ni resultados garantizados.
 - No confirmes ID, depósito, afiliación, pago ni acceso VIP.
 - Para ID y comprobantes: pide que los envíen primero AQUÍ MISMO en este chat para poder continuar el proceso sin sacarlos de la conversación.
-- Para gestión de capital, VPN/restricción de país, bloqueos o casos extraordinarios de una cuenta específica: deriva a Johanna usando el chat de validación. Si preguntan por menos de 50 USD, explica que no se habilita acceso hasta completar el mínimo de 50 USD; solo deriva si pide una excepción especial.
+- Para gestión de capital/cuenta, VPN/restricción de país, bloqueos o casos extraordinarios de una cuenta específica: deriva a MI chat personal, hablando en primera persona. Si preguntan por menos de 50 USD, explica que no se habilita acceso hasta completar el mínimo de 50 USD; solo deriva si pide una excepción especial.
 - No des instrucciones para evadir KYC, usar identidad/documentos ajenos como si fueran propios, ni saltar restricciones con VPN/proxy.
 - No solicites claves, contraseñas, códigos 2FA, seed phrases ni credenciales.
 - Si falta un dato oficial, dilo con naturalidad y deriva a Johanna; no rellenes huecos.
@@ -6855,7 +6983,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=chat_id,
             text=answer,
-            reply_markup=personal_chat_keyboard(lang) if personal_review else support_keyboard(lang),
+            reply_markup=personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang),
             disable_web_page_preview=True,
         )
         _clear_pending_ai_db(chat_id)
@@ -6966,121 +7094,52 @@ async def _send_user_blocks(update: Update, text_value: str, reply_markup=None):
 
 
 async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, lang: str, intents, unknown_parts):
-    """Responde todas las partes conocidas y deja solo lo restante para IA a los 5 min."""
+    """Flujos operativos inmediatos; dudas naturales reciben una sola respuesta IA contextual."""
     chat_id = update.effective_chat.id
-    blocks = []
-    handled = []
-    needs_ai_topics = []
-
-    # Si hay otras preguntas, el saludo no necesita un bloque separado.
     effective_intents = [i for i in intents if i != "GREETING"] or intents
+    handled_operational = []
 
-    for intent in effective_intents:
-        # Side effects de flujos operativos.
-        if intent == "ID_SUBMIT":
-            _record_submitted_trading_id(chat_id, texto, context)
-            block = _id_pending_review_message(lang)
-            await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
-            handled.append(intent); continue
-
-        if intent == "DEPOSITO":
-            _log_event(chat_id, "DEPOSIT_REPORTED", texto)
-            _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
-            stage_now = get_user_stage(chat_id)
-            if stage_now == STAGE_DEPOSITED:
-                block = (
-                    "💳 Perfecto. Envíame aquí la captura del depósito adicional y la revisaré según las condiciones de actualización de nivel."
-                    if lang == "es" else
-                    "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review it under the level-update conditions."
-                )
-            elif stage_now == STAGE_POST:
-                block = (
-                    "💳 Perfecto. Envíame aquí el comprobante de depósito/activación para revisar el monto y habilitar el nivel que corresponda."
-                    if lang == "es" else
-                    "💳 Perfect. Send me the deposit/activation proof here so I can review the amount and enable the corresponding level."
-                )
-            else:
-                block = (
-                    "💳 Perfecto. Envíame aquí el comprobante de depósito/activación y tu ID de Stockity o Binomo en texto para revisarlo y habilitar el acceso."
-                    if lang == "es" else
-                    "💳 Perfect. Send me the deposit/activation proof and your Stockity/Binomo ID as text so I can review it and enable access."
-                )
-            blocks.append(block); handled.append(intent); continue
-
-        if intent in ("RETIRO", "METODOS", "EMAIL"):
-            needs_ai_topics.append(intent)
-            continue
-
-        if intent == "BONO" and bono_requiere_guia(texto):
-            # Mostramos los bonos activos ya mismo y dejamos condiciones/detalles a la IA.
-            block = _immediate_block(intent, lang)
-            if block:
-                blocks.append(block); handled.append(intent)
-            needs_ai_topics.append("BONO_DETALLE")
-            continue
-
-        block = _immediate_block(intent, lang)
-        if block:
-            if block not in blocks:
-                blocks.append(block)
-            handled.append(intent)
-        elif intent not in ("GREETING",):
-            needs_ai_topics.append(intent)
-
-    if effective_intents == ["GREETING"]:
-        blocks.append("¡Hola! 🤍 ¿En qué puedo ayudarte hoy?" if lang == "es" else "Hi! 🤍 How can I help you today?")
-        handled.append("GREETING")
-
-    # Si el mensaje mezcla preguntas conocidas con preguntas abiertas/no reconocidas,
-    # evitamos enviar una respuesta parcial (por ejemplo solo BONO) y luego otra
-    # respuesta de IA. En ese caso la IA recibe el mensaje COMPLETO y responde una
-    # sola vez después de la ventana de prioridad de Johanna.
-    #
-    # Excepción: ID_SUBMIT/DEPOSITO mantienen su acuse inmediato por ser flujos
-    # operativos sensibles; cualquier duda adicional sí queda para IA.
-    mixed_needs_ai = bool(unknown_parts or needs_ai_topics)
-    operational_handled = any(i in handled for i in ("ID_SUBMIT", "DEPOSITO"))
-    if mixed_needs_ai and blocks and not operational_handled:
-        schedule_ai_reply(update, context, texto.strip(), answered_topics=[])
+    if "GESTION_CAPITAL" in effective_intents:
+        msg = _immediate_block("GESTION_CAPITAL", lang)
+        await update.effective_message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
+        await send_admin_auto_log(context, update, "GESTION_CAPITAL", msg)
         return True
 
-    if blocks:
-        combined = "\n\n────────────\n\n".join(blocks)
-        keyboard = live_keyboard(lang) if "LIVE" in handled else support_keyboard(lang)
-        await _send_user_blocks(update, combined, reply_markup=keyboard)
-        await send_admin_auto_log(context, update, "MULTI_" + "+".join(effective_intents), combined)
+    if "ID_SUBMIT" in effective_intents:
+        _record_submitted_trading_id(chat_id, texto, context)
+        block = _id_pending_review_message(lang)
+        await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
+        handled_operational.append("ID_SUBMIT")
 
-    if unknown_parts or needs_ai_topics or not blocks:
-        # La IA solo recibe las partes que quedaron SIN responder.
-        # Esto evita que, después de una respuesta automática multi-pregunta,
-        # vuelva a repetir niveles/bonos/registro a los 5 minutos.
-        ai_parts = []
-        for part in _split_question_parts(texto):
-            p_intents = [i for i in detect_all_intents(part) if i != "GREETING"]
-            if not p_intents:
-                ai_parts.append(part)
-                continue
+    if "DEPOSITO" in effective_intents:
+        _log_event(chat_id, "DEPOSIT_REPORTED", texto)
+        _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
+        stage_now = get_user_stage(chat_id)
+        if stage_now == STAGE_DEPOSITED:
+            block = (
+                "💳 Perfecto. Envíame aquí la captura del depósito adicional y la revisaré según las condiciones de actualización de nivel."
+                if lang == "es" else
+                "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review it under the level-update conditions."
+            )
+        elif stage_now == STAGE_POST:
+            block = (
+                "💳 Perfecto. Envíame aquí el comprobante de depósito/activación para revisar el monto y habilitar el nivel que corresponda."
+                if lang == "es" else
+                "💳 Perfect. Send me the deposit/activation proof here so I can review the amount and enable the corresponding level."
+            )
+        else:
+            block = (
+                "💳 Perfecto. Envíame aquí el comprobante y tu ID de Stockity o Binomo en texto para revisarlo y continuar."
+                if lang == "es" else
+                "💳 Perfect. Send me the proof and your Stockity/Binomo ID as text so I can review it and continue."
+            )
+        await update.effective_message.reply_text(block)
+        handled_operational.append("DEPOSITO")
 
-            for p_intent in p_intents:
-                if p_intent in needs_ai_topics:
-                    ai_parts.append(part)
-                    break
-                if p_intent == "BONO" and "BONO_DETALLE" in needs_ai_topics:
-                    ai_parts.append(part)
-                    break
-
-        # Conserva orden y elimina duplicados.
-        ai_parts = list(dict.fromkeys(x.strip() for x in ai_parts if x and x.strip()))
-        ai_text = "\n".join(ai_parts).strip()
-
-        # Si no hubo bloques automáticos, la IA sí debe recibir el mensaje completo.
-        if not ai_text and not blocks:
-            ai_text = texto.strip()
-
-        if ai_text:
-            schedule_ai_reply(update, context, ai_text, answered_topics=handled)
+    non_operational = [i for i in effective_intents if i not in handled_operational]
+    if non_operational or unknown_parts or not handled_operational:
+        schedule_ai_reply(update, context, texto.strip(), answered_topics=handled_operational)
     return True
-
 
 # Nueva función para manejar mensajes de usuarios (texto o media)
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7174,9 +7233,16 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intents, unknown_parts = _question_analysis(texto)
     meaningful = [i for i in intents if i != "GREETING"]
 
-    # MULTI-PREGUNTA GENERAL:
-    # - 2+ temas conocidos, o
-    # - una parte conocida + otra parte no reconocida.
+    # Gestión de cuenta/capital siempre requiere mi atención personal, incluso si
+    # el mismo mensaje menciona bono u otro tema.
+    if "GESTION_CAPITAL" in meaningful:
+        msg = _immediate_block("GESTION_CAPITAL", lang)
+        await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
+        await send_admin_auto_log(context, update, "GESTION_CAPITAL", msg)
+        return
+
+    # MULTI-PREGUNTA GENERAL: una sola respuesta contextual de IA, sin disparar
+    # varias fichas genéricas. Flujos operativos mantienen su acuse inmediato.
     if len(meaningful) >= 2 or (meaningful and unknown_parts):
         await _handle_multi_question(update, context, texto, lang, intents, unknown_parts)
         return
@@ -7192,8 +7258,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # usamos la intención general detectada para no perder la consulta.
     if intent in ("OTRO", "HUMAN_CHAT") and meaningful:
         intent = meaningful[0]
-    bonus_needs_guide = intent == "BONO" and bono_requiere_guia(texto)
-
     if intent == "GREETING":
         msg = "¡Hola! 🤍 ¿En qué puedo ayudarte hoy?" if lang == "es" else "Hi! 🤍 How can I help you today?"
         await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
@@ -7269,31 +7333,36 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, intent, msg)
         return
 
-    if intent in ("NEXT_STEP", "WHERE_SEND_ID", "NIVELES", "LIVE", "ID", "BENEFICIOS", "SENALES", "BOT_IA"):
+    if intent in ("NEXT_STEP", "WHERE_SEND_ID", "LIVE", "ID"):
         msg = _immediate_block(intent, lang)
         if msg:
-            if intent == "LIVE":
-                keyboard = live_keyboard(lang)
-            elif intent in ("NIVELES", "BENEFICIOS", "SENALES", "BOT_IA"):
-                keyboard = support_keyboard(lang)
-            else:
-                # NEXT_STEP / WHERE_SEND_ID / ID forman parte del flujo de registro.
-                keyboard = None
+            keyboard = live_keyboard(lang) if intent == "LIVE" else None
             await _send_user_blocks(update, msg, reply_markup=keyboard)
             await send_admin_auto_log(context, update, intent, msg)
             return
 
+    if intent == "NIVELES":
+        if _is_simple_levels_lookup(texto):
+            msg = _immediate_block(intent, lang)
+            await _send_user_blocks(update, msg, reply_markup=levels_keyboard(lang))
+            await send_admin_auto_log(context, update, intent, msg)
+        else:
+            schedule_ai_reply(update, context, texto)
+        return
+
+    # Preguntas escritas sobre beneficios, señales y bots necesitan contexto.
+    # Los botones del menú conservan sus respuestas fijas en su propio callback.
+    if intent in ("BENEFICIOS", "SENALES", "BOT_IA"):
+        schedule_ai_reply(update, context, texto)
+        return
+
     if intent == "BONO":
-        if not bonus_needs_guide:
+        if _is_simple_bonus_lookup(texto):
             msg = respuesta_bono_es() if lang == "es" else respuesta_bono_en()
             await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
             await send_admin_auto_log(context, update, "BONO_ACTIVO", msg)
-            return
-        # Pregunta detallada de bono: muestra los bonos y deja la explicación a la IA.
-        msg = respuesta_bono_es() if lang == "es" else respuesta_bono_en()
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
-        await send_admin_auto_log(context, update, "BONO_ACTIVO", msg)
-        schedule_ai_reply(update, context, texto, answered_topics=["BONO_ACTIVO"])
+        else:
+            schedule_ai_reply(update, context, texto)
         return
 
     # RETIRO, MÉTODOS, EMAIL, HUMAN_CHAT, OTRO y cualquier consulta abierta.
