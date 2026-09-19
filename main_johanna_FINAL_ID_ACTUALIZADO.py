@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.28-20260918-MERGED-LEVELS-BENEFITS-MENU"
+BOT_VERSION = "v7.10.29-20260918-PRESTIGE-FINAL-DIRECT-JOIN-FIX"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -420,8 +420,9 @@ VIP_LEVEL_PRESTIGE = "PRESTIGE"
 VIP_LEVEL_RANK = {VIP_LEVEL_NONE: 0, VIP_LEVEL_BASIC: 1, VIP_LEVEL_PREMIUM: 2, VIP_LEVEL_PRESTIGE: 3}
 VIP_LEVEL_THRESHOLDS_CENTS = {VIP_LEVEL_BASIC: 5000, VIP_LEVEL_PREMIUM: 20000, VIP_LEVEL_PRESTIGE: 50000}
 
-# Los enlaces conservan solicitud de acceso. El mismo bot los aprueba automáticamente
-# cuando el Telegram ID tiene nivel suficiente y el bot es administrador del canal.
+# Los accesos VIP se validan por Telegram ID y nivel. Cuando el enlace genera
+# solicitud, el bot la aprueba; si un enlace existente admite entrada directa,
+# el handler chat_member detecta el ingreso y continúa el flujo secuencial.
 VIP_ACCESS_CHANNELS = {
     "vip_main": {
         "name_es": "JT TRADERS TEAMS · VIP Principal",
@@ -454,6 +455,7 @@ VIP_ACCESS_CHANNELS = {
     "signals_premium": {
         "name_es": "Señales Premium +300",
         "name_en": "Premium Signals +300",
+        # Enlace reconfirmado por Johanna el 18/09/2026.
         "url": "https://t.me/+fe5N2iolLGk0ZjBh",
         "levels": (VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE),
         "desc_es": "+300 señales de lunes a sábado entre CRYPTO IDX, pares de divisas, índices sintéticos y Forex. Entrada en el minuto exacto indicado, expiración de 1 minuto y hasta Martingala 2 opcional.",
@@ -697,6 +699,8 @@ def _broker_selection_keyboard(kind: str, lang: str = "es") -> InlineKeyboardMar
 def _broker_upgrade_window_open(state, now=None) -> bool:
     if not state:
         return True
+    if (state.get("level") or VIP_LEVEL_NONE) == VIP_LEVEL_PRESTIGE:
+        return False
     now = now or utcnow_naive()
     count = int(state.get("deposit_count") or 0)
     first = state.get("first_deposit_at")
@@ -817,7 +821,8 @@ def _broker_preview_deposit(chat_id: int, broker: str, amount_cents: int, timely
     new_count = old_count + 1
     first_after = first or now
     window_closed_after = (
-        new_count >= UPGRADE_ACCUM_MAX_DEPOSITS
+        new_level == VIP_LEVEL_PRESTIGE
+        or new_count >= UPGRADE_ACCUM_MAX_DEPOSITS
         or now > first_after + timedelta(days=UPGRADE_ACCUM_WINDOW_DAYS)
     )
     return {
@@ -969,20 +974,14 @@ def _vip_learn_channel(access_key: str, chat) -> None:
         logging.warning("No pude aprender chat_id VIP %s: %s", access_key, e)
 
 
-def _vip_access_key_from_request(req) -> str:
-    invite_obj = getattr(req, "invite_link", None)
-    invite_link = _normalize_invite_url(getattr(invite_obj, "invite_link", None) or "")
-    if invite_link in VIP_ACCESS_LINK_LOOKUP:
-        key = VIP_ACCESS_LINK_LOOKUP[invite_link]
-        _vip_learn_channel(key, getattr(req, "chat", None))
-        return key
-    token = _invite_token(invite_link)
-    if token in VIP_ACCESS_TOKEN_LOOKUP:
-        key = VIP_ACCESS_TOKEN_LOOKUP[token]
-        _vip_learn_channel(key, getattr(req, "chat", None))
-        return key
+def _vip_access_key_from_chat(chat) -> str:
+    """Identifica un canal VIP por chat_id aprendido/estático o por título.
 
-    chat = getattr(req, "chat", None)
+    Sirve también para enlaces que Telegram admite de forma directa y por eso
+    no generan ChatJoinRequest.
+    """
+    if not chat:
+        return ""
     chat_id = str(getattr(chat, "id", "") or "")
     if chat_id and chat_id in VIP_ACCESS_CHAT_ID_LOOKUP:
         key = VIP_ACCESS_CHAT_ID_LOOKUP[chat_id]
@@ -1005,6 +1004,22 @@ def _vip_access_key_from_request(req) -> str:
                 _vip_learn_channel(key, chat)
                 return key
     return ""
+
+
+def _vip_access_key_from_request(req) -> str:
+    invite_obj = getattr(req, "invite_link", None)
+    invite_link = _normalize_invite_url(getattr(invite_obj, "invite_link", None) or "")
+    if invite_link in VIP_ACCESS_LINK_LOOKUP:
+        key = VIP_ACCESS_LINK_LOOKUP[invite_link]
+        _vip_learn_channel(key, getattr(req, "chat", None))
+        return key
+    token = _invite_token(invite_link)
+    if token in VIP_ACCESS_TOKEN_LOOKUP:
+        key = VIP_ACCESS_TOKEN_LOOKUP[token]
+        _vip_learn_channel(key, getattr(req, "chat", None))
+        return key
+
+    return _vip_access_key_from_chat(getattr(req, "chat", None))
 
 
 def _vip_channel_allowed(level: str, access_key: str) -> bool:
@@ -1123,11 +1138,15 @@ def _vip_activation_message(level: str, total_cents: int, lang: str, upgraded: b
     label = _vip_level_label(level, lang)
     if lang == "en":
         prefix = "✅ Additional deposit confirmed." if upgraded else "✅ Deposit confirmed."
+        if level == VIP_LEVEL_PRESTIGE:
+            return f"{prefix}\n\nYour current JT TRADERS TEAMS level is {label}."
         return (
             f"{prefix}\n\nYour current level is {label}.\n"
             "Upgrades are calculated from validated deposits within the enabled level-update period."
         )
     prefix = "✅ Depósito adicional confirmado." if upgraded else "✅ Depósito confirmado."
+    if level == VIP_LEVEL_PRESTIGE:
+        return f"{prefix}\n\nTu nivel actual en JT TRADERS TEAMS es {label}."
     return (
         f"{prefix}\n\nTu nivel actual es {label}.\n"
         "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
@@ -2164,10 +2183,10 @@ def _channel_join_source_metrics(start_utc: datetime, end_utc: datetime):
 
 
 async def tracking_channel_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Registra TODA alta al canal ES y distingue ADS del resto cuando Telegram entrega la marca."""
+    """Gestiona altas directas VIP y conserva el tracking del canal informativo ES."""
     change = getattr(update, "chat_member", None)
     chat = update.effective_chat
-    if not change or not _is_tracking_info_channel(chat):
+    if not change or not chat:
         return
 
     old_status = str(getattr(getattr(change, "old_chat_member", None), "status", "") or "").lower()
@@ -2180,20 +2199,95 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
     if not member or not _is_private_user_id(getattr(member, "id", None)):
         return
 
+    # 1) VIP: algunos enlaces antiguos pueden admitir al usuario directamente sin
+    # producir ChatJoinRequest. En ese caso detectamos la entrada, la marcamos como
+    # completada y enviamos el siguiente acceso del flujo secuencial.
+    access_key = _vip_access_key_from_chat(chat)
+    if access_key:
+        # Cuando Telegram confirma que vino de una solicitud de ingreso, el handler
+        # ChatJoinRequest ya se encarga; evitamos duplicar mensajes.
+        if bool(getattr(change, "via_join_request", False)):
+            return
+
+        chat_id = int(member.id)
+        stage = get_user_stage(chat_id)
+        state = _vip_get_state(chat_id, create=False)
+        if state:
+            authorized = stage == STAGE_DEPOSITED and _vip_channel_allowed(state.get("level"), access_key)
+        else:
+            authorized = stage == STAGE_DEPOSITED and access_key in ("vip_main", "module3")
+
+        if not authorized:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "⚠️ INGRESO VIP DIRECTO NO AUTORIZADO\n\n"
+                        f"Canal: {getattr(chat, 'title', None) or access_key}\n"
+                        f"Chat ID: {getattr(chat, 'id', None)}\n"
+                        f"Usuario: {_telegram_display_name(member)} (ID: {chat_id})\n\n"
+                        "El enlace permitió entrada directa. Revisa ese enlace de invitación si quieres que siempre requiera aprobación."
+                    ),
+                )
+            except Exception:
+                pass
+            logging.warning("⚠️ Ingreso VIP directo no autorizado: %s / %s", chat_id, access_key)
+            return
+
+        # Solo avanza si ese canal estaba realmente pendiente en el flujo actual.
+        pending_before = _vip_pending_keys(chat_id)
+        if access_key not in pending_before:
+            logging.info("ℹ️ Alta VIP directa ya procesada/no pendiente: %s / %s", chat_id, access_key)
+            return
+
+        _log_event(chat_id, "VIP_ACCESS_DIRECT_JOIN", access_key)
+        _tracking_fire_event(chat_id, "VIP_ACCESS_DIRECT_JOIN", access_key)
+        level, should_welcome = _vip_mark_access_approved(chat_id, access_key)
+        logging.info("✅ Acceso VIP directo detectado: %s / %s / nivel=%s", chat_id, access_key, level)
+
+        lang = get_user_lang(chat_id)
+        remaining = _vip_pending_keys(chat_id)
+        if remaining:
+            next_info = VIP_ACCESS_CHANNELS.get(remaining[0]) or {}
+            next_name = next_info.get("name_es") if lang == "es" else next_info.get("name_en")
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"✅ Acceso detectado. Ahora continúa con el siguiente: {next_name}."
+                        if lang == "es" else
+                        f"✅ Access detected. Now continue with the next one: {next_name}."
+                    ),
+                    reply_markup=_vip_access_keyboard(level, lang, keys=remaining),
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logging.warning("Detecté acceso directo %s para %s, pero no pude enviar el siguiente: %s", access_key, chat_id, e)
+        elif should_welcome:
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=_vip_final_welcome_text(level, lang),
+                    reply_markup=support_keyboard(lang),
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logging.warning("Accesos VIP directos completos para %s, pero no pude enviar bienvenida: %s", chat_id, e)
+        return
+
+    # 2) TRACKING DEL CANAL INFORMATIVO ES — comportamiento anterior intacto.
+    if not _is_tracking_info_channel(chat):
+        return
+
     invite_obj = getattr(change, "invite_link", None)
     invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
     invite_name = (getattr(invite_obj, "name", None) or "").strip()
 
-    # Nuevo enlace permanente de pauta: name=source-ADS.
-    # Los antiguos track-JT-* también se consideran ADS para conservar compatibilidad.
     detected_source = "ADS" if (
         invite_name.upper().startswith("SOURCE-ADS")
         or invite_name.startswith("track-JT-")
     ) else "ORGANIC_OTHER"
 
-    # El servicio de tracking puede reconocer el invite_link exacto aun cuando
-    # Telegram omite invite_name. Por eso consultamos tracking ANTES de persistir
-    # la clasificación local y usamos su respuesta como autoridad si está disponible.
     result = await _tracking_post(
         "/internal/channel-join",
         {
@@ -3145,7 +3239,11 @@ async def _admin_apply_deposit_confirmation(context: ContextTypes.DEFAULT_TYPE, 
     try:
         if first_activation or rank_up:
             activation_msg = _vip_activation_message(new_level, new_total, lang, upgraded=(was_active and rank_up))
-            await context.bot.send_message(chat_id=chat_id, text=activation_msg, reply_markup=upgrade_info_keyboard(lang))
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=activation_msg,
+                reply_markup=None if new_level == VIP_LEVEL_PRESTIGE else upgrade_info_keyboard(lang),
+            )
             if new_keys:
                 await context.bot.send_message(
                     chat_id=chat_id,
@@ -3156,16 +3254,26 @@ async def _admin_apply_deposit_confirmation(context: ContextTypes.DEFAULT_TYPE, 
         else:
             next_level, missing = _vip_next_level(new_level, new_total)
             if lang == "en":
-                user_msg = (
-                    f"✅ Additional deposit confirmed. Your current level remains {_vip_level_label(new_level, lang)}.\n\n"
-                    "Upgrades are calculated from validated deposits within the enabled level-update period."
-                )
+                if new_level == VIP_LEVEL_PRESTIGE:
+                    user_msg = f"✅ Additional deposit confirmed. Your JT TRADERS TEAMS level remains {_vip_level_label(new_level, lang)}."
+                else:
+                    user_msg = (
+                        f"✅ Additional deposit confirmed. Your current level remains {_vip_level_label(new_level, lang)}.\n\n"
+                        "Upgrades are calculated from validated deposits within the enabled level-update period."
+                    )
             else:
-                user_msg = (
-                    f"✅ Depósito adicional confirmado. Tu nivel actual se mantiene en {_vip_level_label(new_level, lang)}.\n\n"
-                    "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
-                )
-            await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=upgrade_info_keyboard(lang))
+                if new_level == VIP_LEVEL_PRESTIGE:
+                    user_msg = f"✅ Depósito adicional confirmado. Tu nivel en JT TRADERS TEAMS se mantiene en {_vip_level_label(new_level, lang)}."
+                else:
+                    user_msg = (
+                        f"✅ Depósito adicional confirmado. Tu nivel actual se mantiene en {_vip_level_label(new_level, lang)}.\n\n"
+                        "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
+                    )
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=user_msg,
+                reply_markup=None if new_level == VIP_LEVEL_PRESTIGE else upgrade_info_keyboard(lang),
+            )
     except Exception as e:
         logging.warning("Depósito/nivel actualizado para %s, pero no pude enviar todos los avisos: %s", chat_id, e)
 
@@ -3364,6 +3472,15 @@ def _broker_deposit_preview_text(chat_id: int, broker: str, preview: dict) -> st
     global_state = _vip_get_state(chat_id, create=False) or {}
     current_global = global_state.get("level") or VIP_LEVEL_NONE
     proposed_global = _max_level(current_global, preview.get("new_level") or VIP_LEVEL_NONE)
+    if proposed_global == VIP_LEVEL_PRESTIGE:
+        return (
+            f"💰 CONFIRMAR DEPÓSITO · {_broker_label(broker).upper()}\n\n"
+            f"Monto: USD {_usd(preview['amount_cents'])}\n"
+            f"Depósito validado nº: {preview['new_count']}\n\n"
+            f"Nivel JT asociado a esta cuenta: {_vip_level_label(preview['new_level'], 'es')}\n"
+            f"Nivel general JT TRADERS TEAMS: {_vip_level_label(proposed_global, 'es')}\n\n"
+            "¿Confirmas este depósito validado?"
+        )
     mode = "ACUMULA dentro de la ventana" if preview.get("accumulates") else "NO acumula; se evalúa como depósito único"
     status = "CERRADA después de este depósito" if preview.get("window_closed_after") else "ABIERTA"
     proof_line = (
@@ -3442,18 +3559,34 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
     lang = get_user_lang(chat_id)
     broker_level = preview.get("new_level") or VIP_LEVEL_NONE
     if lang == "en":
-        user_msg = (
-            f"✅ {_broker_label(broker)} deposit confirmed.\n\n"
-            f"Your current level in my JT TRADERS TEAMS community is {_vip_level_label(new_global, lang)}.\n\n"
-            "Upgrades are calculated from validated deposits within the enabled level-update period."
-        )
+        if new_global == VIP_LEVEL_PRESTIGE:
+            user_msg = (
+                f"✅ {_broker_label(broker)} deposit confirmed.\n\n"
+                f"Your current level in my JT TRADERS TEAMS community is {_vip_level_label(new_global, lang)}."
+            )
+        else:
+            user_msg = (
+                f"✅ {_broker_label(broker)} deposit confirmed.\n\n"
+                f"Your current level in my JT TRADERS TEAMS community is {_vip_level_label(new_global, lang)}.\n\n"
+                "Upgrades are calculated from validated deposits within the enabled level-update period."
+            )
     else:
-        user_msg = (
-            f"✅ Depósito de {_broker_label(broker)} confirmado.\n\n"
-            f"Tu nivel actual en mi comunidad JT TRADERS TEAMS es {_vip_level_label(new_global, lang)}.\n\n"
-            "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
-        )
-    await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=upgrade_info_keyboard(lang))
+        if new_global == VIP_LEVEL_PRESTIGE:
+            user_msg = (
+                f"✅ Depósito de {_broker_label(broker)} confirmado.\n\n"
+                f"Tu nivel actual en mi comunidad JT TRADERS TEAMS es {_vip_level_label(new_global, lang)}."
+            )
+        else:
+            user_msg = (
+                f"✅ Depósito de {_broker_label(broker)} confirmado.\n\n"
+                f"Tu nivel actual en mi comunidad JT TRADERS TEAMS es {_vip_level_label(new_global, lang)}.\n\n"
+                "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
+            )
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=user_msg,
+        reply_markup=None if new_global == VIP_LEVEL_PRESTIGE else upgrade_info_keyboard(lang),
+    )
 
     if new_keys:
         await context.bot.send_message(
@@ -3487,16 +3620,26 @@ async def _start_admin_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
         return
     context.user_data["admin_user_action"] = {"action": "broker_deposit_amount", "chat_id": chat_id, "broker": broker}
     context.user_data.pop("admin_pending_broker_deposit", None)
-    window = "ABIERTA" if _broker_upgrade_window_open(state) else "CERRADA"
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=(
+    global_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+    if global_level == VIP_LEVEL_PRESTIGE:
+        review_text = (
             f"💰 REVISAR DEPÓSITO · {_broker_label(broker).upper()}\n\n"
-            f"Nivel actual de esta cuenta: {_vip_level_label(state.get('level'), 'es')}\n"
+            f"Nivel actual JT TRADERS TEAMS: {_vip_level_label(global_level, 'es')}\n"
+            f"Depósitos validados en esta cuenta: {state.get('deposit_count', 0)}\n\n"
+            "Escribe el monto NUEVO que acabas de confirmar en USD."
+        )
+    else:
+        window = "ABIERTA" if _broker_upgrade_window_open(state) else "CERRADA"
+        review_text = (
+            f"💰 REVISAR DEPÓSITO · {_broker_label(broker).upper()}\n\n"
+            f"Nivel JT asociado a esta cuenta: {_vip_level_label(state.get('level'), 'es')}\n"
             f"Depósitos validados: {state.get('deposit_count', 0)}\n"
             f"Ventana acumulable: {window}\n\n"
             "Escribe el monto NUEVO que acabas de confirmar en USD."
-        ),
+        )
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=review_text,
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")]]),
     )
 
@@ -3841,8 +3984,18 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
         old_count = int(state.get("deposit_count") or 0)
         pending_dep = {"chat_id": chat_id, "broker": broker, "amount_cents": amount_cents}
 
-        # Primer depósito: inicia la ventana, por eso 72 h todavía no aplica.
-        if old_count == 0:
+        # Primer depósito: 72 h todavía no aplica. Tampoco aplica cuando el usuario
+        # ya está en Prestige o este depósito por sí solo alcanza Prestige (USD 500+),
+        # porque no existe un nivel superior al cual subir.
+        current_global = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        account_level = state.get("level") or VIP_LEVEL_NONE
+        skip_72h = (
+            old_count == 0
+            or current_global == VIP_LEVEL_PRESTIGE
+            or account_level == VIP_LEVEL_PRESTIGE
+            or amount_cents >= VIP_LEVEL_THRESHOLDS_CENTS[VIP_LEVEL_PRESTIGE]
+        )
+        if skip_72h:
             preview = _broker_preview_deposit(chat_id, broker, amount_cents, True)
             pending_dep.update({"timely": True, "preview": preview})
             context.user_data["admin_pending_broker_deposit"] = pending_dep
