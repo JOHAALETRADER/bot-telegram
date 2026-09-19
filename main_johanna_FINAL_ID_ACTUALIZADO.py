@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.22-20260918-TELEGRAPH-LEVELS-SYNC"
+BOT_VERSION = "v7.10.24-20260918-ADMIN-DEPOSIT-QUIET"
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
 
 
@@ -273,18 +273,49 @@ class AdsClickAttribution(Base):
 
 
 class VIPAccessState(Base):
-    """Estado persistente de depósitos, nivel y accesos VIP.
-
-    Tabla independiente para no alterar `usuarios` ni romper despliegues previos.
-    Los montos se guardan en centavos de USD para evitar errores de redondeo.
-    """
+    """Estado global de acceso a la comunidad (nivel más alto del usuario)."""
     __tablename__ = "vip_access_state"
-    telegram_id          = Column(String, primary_key=True)
+    telegram_id           = Column(String, primary_key=True)
     validated_total_cents = Column(Integer, default=0)
-    level                = Column(String, default="NONE", index=True)
-    pending_access_keys  = Column(Text)
-    welcome_level        = Column(String)
-    updated_at           = Column(DateTime, default=utcnow_naive, index=True)
+    level                 = Column(String, default="NONE", index=True)
+    pending_access_keys   = Column(Text)
+    welcome_level         = Column(String)
+    updated_at            = Column(DateTime, default=utcnow_naive, index=True)
+
+
+class BrokerAccountState(Base):
+    """Cuenta independiente por Telegram + broker, sin mezclar Binomo y Stockity."""
+    __tablename__ = "broker_account_state"
+    account_key                 = Column(String, primary_key=True)
+    telegram_id                 = Column(String, index=True)
+    broker                      = Column(String, index=True)
+    trading_id                  = Column(String)
+    pending_trading_id          = Column(String)
+    id_validated                = Column(Integer, default=0, index=True)
+    validated_total_cents       = Column(Integer, default=0)
+    upgrade_accum_cents         = Column(Integer, default=0)
+    validated_deposit_count     = Column(Integer, default=0)
+    first_validated_deposit_at  = Column(DateTime, nullable=True)
+    level                       = Column(String, default="NONE", index=True)
+    updated_at                  = Column(DateTime, default=utcnow_naive, index=True)
+
+
+class BrokerFlowState(Base):
+    """Selecciones cortas de broker persistentes ante redeploys."""
+    __tablename__ = "broker_flow_state"
+    telegram_id            = Column(String, primary_key=True)
+    pending_trading_id     = Column(String)
+    pending_deposit_broker = Column(String)
+    updated_at             = Column(DateTime, default=utcnow_naive, index=True)
+
+
+class VIPChannelMap(Base):
+    """Mapa aprendido de canal VIP -> chat_id para no depender del invite_link."""
+    __tablename__ = "vip_channel_map"
+    access_key = Column(String, primary_key=True)
+    chat_id    = Column(String, unique=True, index=True)
+    title      = Column(String)
+    updated_at = Column(DateTime, default=utcnow_naive, index=True)
 
 
 engine = create_engine(DATABASE_URL, echo=False)
@@ -543,6 +574,270 @@ def _vip_next_level(level: str, total_cents: int):
     return target, needed
 
 
+BROKER_BINOMO = "BINOMO"
+BROKER_STOCKITY = "STOCKITY"
+BROKERS = (BROKER_BINOMO, BROKER_STOCKITY)
+UPGRADE_ACCUM_MAX_DEPOSITS = 3
+UPGRADE_ACCUM_WINDOW_DAYS = 30
+UPGRADE_PROOF_MAX_HOURS = 72
+
+
+def _broker_norm(value: str) -> str:
+    raw = (value or "").strip().upper()
+    return raw if raw in BROKERS else ""
+
+
+def _broker_label(broker: str) -> str:
+    return "Stockity" if _broker_norm(broker) == BROKER_STOCKITY else "Binomo"
+
+
+def _broker_key(chat_id: int, broker: str) -> str:
+    return f"{int(chat_id)}:{_broker_norm(broker)}"
+
+
+def _broker_get(chat_id: int, broker: str, create: bool = False):
+    broker = _broker_norm(broker)
+    if not broker:
+        return None
+    try:
+        with Session() as session:
+            row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
+            if not row and create:
+                row = BrokerAccountState(
+                    account_key=_broker_key(chat_id, broker), telegram_id=str(chat_id), broker=broker,
+                    id_validated=0, validated_total_cents=0, upgrade_accum_cents=0,
+                    validated_deposit_count=0, level=VIP_LEVEL_NONE, updated_at=utcnow_naive(),
+                )
+                session.add(row); session.commit(); session.refresh(row)
+            if not row:
+                return None
+            return {
+                "broker": broker,
+                "trading_id": (row.trading_id or "").strip(),
+                "pending_trading_id": (row.pending_trading_id or "").strip(),
+                "id_validated": bool(row.id_validated),
+                "validated_total_cents": int(row.validated_total_cents or 0),
+                "upgrade_accum_cents": int(row.upgrade_accum_cents or 0),
+                "deposit_count": int(row.validated_deposit_count or 0),
+                "first_deposit_at": row.first_validated_deposit_at,
+                "level": row.level if row.level in VIP_LEVEL_RANK else VIP_LEVEL_NONE,
+                "updated_at": row.updated_at,
+            }
+    except Exception as e:
+        logging.warning("No pude leer cuenta %s/%s: %s", chat_id, broker, e)
+        return None
+
+
+def _broker_rows(chat_id: int, validated_only: bool = False):
+    rows = []
+    for broker in BROKERS:
+        state = _broker_get(chat_id, broker, create=False)
+        if state and (not validated_only or state.get("id_validated")):
+            rows.append(state)
+    return rows
+
+
+def _broker_validated_brokers(chat_id: int):
+    return [state["broker"] for state in _broker_rows(chat_id, validated_only=True)]
+
+
+def _broker_flow_get(chat_id: int):
+    try:
+        with Session() as session:
+            row = session.get(BrokerFlowState, str(chat_id))
+            return {
+                "pending_trading_id": (row.pending_trading_id or "").strip() if row else "",
+                "pending_deposit_broker": _broker_norm(row.pending_deposit_broker) if row else "",
+            }
+    except Exception as e:
+        logging.warning("No pude leer broker_flow de %s: %s", chat_id, e)
+        return {"pending_trading_id": "", "pending_deposit_broker": ""}
+
+
+def _broker_flow_set(chat_id: int, *, pending_trading_id=None, pending_deposit_broker=None):
+    try:
+        with Session() as session:
+            row = session.get(BrokerFlowState, str(chat_id))
+            if not row:
+                row = BrokerFlowState(telegram_id=str(chat_id))
+                session.add(row)
+            if pending_trading_id is not None:
+                row.pending_trading_id = str(pending_trading_id or "")
+            if pending_deposit_broker is not None:
+                row.pending_deposit_broker = _broker_norm(pending_deposit_broker)
+            row.updated_at = utcnow_naive(); session.commit()
+        return True
+    except Exception as e:
+        logging.warning("No pude guardar broker_flow de %s: %s", chat_id, e)
+        return False
+
+
+def _broker_selection_keyboard(kind: str, lang: str = "es") -> InlineKeyboardMarkup:
+    prefix = "broker_id_select" if kind == "id" else "broker_deposit_select"
+    rows = [[
+        InlineKeyboardButton("🔵 BINOMO", callback_data=f"{prefix}:BINOMO"),
+        InlineKeyboardButton("🟣 STOCKITY", callback_data=f"{prefix}:STOCKITY"),
+    ]]
+    rows.extend(support_rows(lang))
+    return InlineKeyboardMarkup(rows)
+
+
+def _broker_upgrade_window_open(state, now=None) -> bool:
+    if not state:
+        return True
+    now = now or utcnow_naive()
+    count = int(state.get("deposit_count") or 0)
+    first = state.get("first_deposit_at")
+    if count >= UPGRADE_ACCUM_MAX_DEPOSITS:
+        return False
+    if first and now > first + timedelta(days=UPGRADE_ACCUM_WINDOW_DAYS):
+        return False
+    return True
+
+
+def _max_level(a: str, b: str) -> str:
+    return a if VIP_LEVEL_RANK.get(a, 0) >= VIP_LEVEL_RANK.get(b, 0) else b
+
+
+def _broker_seed_legacy_if_matching(chat_id: int, broker: str, trading_id: str):
+    """Si el ID coincide con el único ID legado, migra su nivel sin perderlo."""
+    state = _broker_get(chat_id, broker, create=True)
+    if not state or state.get("trading_id") or state.get("pending_trading_id"):
+        return
+    old_id = _get_saved_trading_id(chat_id)
+    legacy = _vip_get_state(chat_id, create=False)
+    if not (
+        legacy and old_id and old_id == trading_id
+        and (int(legacy.get("total_cents") or 0) > 0 or legacy.get("level") != VIP_LEVEL_NONE)
+    ):
+        return
+    try:
+        with Session() as session:
+            row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
+            viprow = session.get(VIPAccessState, str(chat_id))
+            row.trading_id = trading_id
+            row.id_validated = 1
+            row.validated_total_cents = int(legacy.get("total_cents") or 0)
+            row.upgrade_accum_cents = int(legacy.get("total_cents") or 0)
+            row.validated_deposit_count = 1
+            row.first_validated_deposit_at = (viprow.updated_at if viprow else utcnow_naive())
+            row.level = legacy.get("level") or VIP_LEVEL_NONE
+            row.updated_at = utcnow_naive(); session.commit()
+        logging.info("♻️ Cuenta legacy migrada a %s para %s", broker, chat_id)
+    except Exception as e:
+        logging.warning("No pude migrar cuenta legacy %s/%s: %s", chat_id, broker, e)
+
+
+def _broker_bind_legacy_validated_id(chat_id: int, broker: str) -> bool:
+    """Asocia un ID ya validado de versiones previas al broker elegido por el usuario."""
+    broker = _broker_norm(broker)
+    saved_id = _get_saved_trading_id(chat_id)
+    if not broker or not re.fullmatch(r"\d{6,12}", saved_id or ""):
+        return False
+    # Si existe estado VIP previo, migra también su monto/nivel de referencia.
+    _broker_seed_legacy_if_matching(chat_id, broker, saved_id)
+    state = _broker_get(chat_id, broker, create=False)
+    if state and state.get("id_validated"):
+        return True
+    if not _strict_validated_id_state(chat_id) and get_user_stage(chat_id) != STAGE_DEPOSITED:
+        return False
+    try:
+        with Session() as session:
+            row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
+            if not row:
+                row = BrokerAccountState(account_key=_broker_key(chat_id, broker), telegram_id=str(chat_id), broker=broker)
+                session.add(row)
+            row.trading_id = saved_id
+            row.pending_trading_id = None
+            row.id_validated = 1
+            row.updated_at = utcnow_naive()
+            session.commit()
+        logging.info("♻️ ID validado legacy asociado a %s para %s", broker, chat_id)
+        return True
+    except Exception as e:
+        logging.warning("No pude asociar ID legacy %s/%s: %s", chat_id, broker, e)
+        return False
+
+
+def upgrade_conditions_text(lang: str = "es") -> str:
+    if lang == "en":
+        return (
+            "📈 UPGRADE CONDITIONS\n\n"
+            "• The first 3 validated deposits on the SAME broker/account may accumulate toward a level upgrade.\n"
+            "• The accumulation window lasts 30 days from the first validated deposit.\n"
+            "• To be included in that accumulation, proof must be sent within 72 hours of the deposit.\n"
+            "• After the 3rd validated deposit or once the 30-day window ends, an upgrade requires ONE new deposit that by itself reaches the full minimum of the new level.\n"
+            "• Binomo and Stockity are managed separately and their deposits are never added together.\n"
+            "• Only deposits reported and validated through this chat are considered."
+        )
+    return (
+        "📈 CONDICIONES PARA SUBIR DE NIVEL\n\n"
+        "• Los primeros 3 depósitos validados de una MISMA cuenta/broker pueden acumularse para subir de nivel.\n"
+        "• La ventana de acumulación dura 30 días desde el primer depósito validado.\n"
+        "• Para entrar en esa acumulación, el comprobante debe enviarse dentro de las 72 horas posteriores al depósito.\n"
+        "• Después del 3.er depósito validado o una vez vencidos los 30 días, el upgrade requiere UN nuevo depósito que por sí solo alcance el monto mínimo completo del nuevo nivel.\n"
+        "• Binomo y Stockity se gestionan por separado y sus depósitos nunca se suman entre sí.\n"
+        "• Solo se contabilizan depósitos reportados y validados por este chat."
+    )
+
+
+def upgrade_info_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
+    label = "ℹ️ VIEW UPGRADE CONDITIONS" if lang == "en" else "ℹ️ VER CONDICIONES DE UPGRADE"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data="upgrade_conditions")],
+        *support_rows(lang),
+    ])
+
+
+def _broker_preview_deposit(chat_id: int, broker: str, amount_cents: int, timely: bool):
+    broker = _broker_norm(broker)
+    state = _broker_get(chat_id, broker, create=True) or {}
+    now = utcnow_naive()
+    old_level = state.get("level") or VIP_LEVEL_NONE
+    old_count = int(state.get("deposit_count") or 0)
+    old_accum = int(state.get("upgrade_accum_cents") or 0)
+    first = state.get("first_deposit_at")
+    window_open = _broker_upgrade_window_open(state, now)
+    accumulates = bool(timely and window_open)
+    new_accum = old_accum + int(amount_cents) if accumulates else old_accum
+    candidate = _vip_level_for_total_cents(new_accum if accumulates else amount_cents)
+    new_level = _max_level(old_level, candidate)
+    new_count = old_count + 1
+    first_after = first or now
+    window_closed_after = (
+        new_count >= UPGRADE_ACCUM_MAX_DEPOSITS
+        or now > first_after + timedelta(days=UPGRADE_ACCUM_WINDOW_DAYS)
+    )
+    return {
+        "broker": broker,
+        "amount_cents": int(amount_cents),
+        "timely": bool(timely),
+        "old_level": old_level,
+        "new_level": new_level,
+        "old_count": old_count,
+        "new_count": new_count,
+        "old_accum_cents": old_accum,
+        "new_accum_cents": new_accum,
+        "accumulates": accumulates,
+        "first_after": first_after,
+        "window_closed_after": window_closed_after,
+        "new_validated_total_cents": int(state.get("validated_total_cents") or 0) + int(amount_cents),
+    }
+
+
+def _broker_account_summary(chat_id: int) -> str:
+    parts = []
+    for state in _broker_rows(chat_id):
+        broker = _broker_label(state["broker"]).upper()
+        tid = state.get("trading_id") or state.get("pending_trading_id") or "—"
+        valid = "✅" if state.get("id_validated") else "⏳"
+        parts.append(
+            f"{broker}: {valid} ID {tid} · Nivel {_vip_level_label(state.get('level'), 'es')} · "
+            f"Depósitos validados {state.get('deposit_count', 0)}"
+        )
+    return "\n".join(parts)
+
+
 def _vip_get_state(chat_id: int, create: bool = False):
     try:
         with Session() as session:
@@ -623,13 +918,72 @@ VIP_ACCESS_TOKEN_LOOKUP = {
 }
 
 
+VIP_ACCESS_TITLE_ALIASES = {
+    "vip_main": ("JT TRADERS TEAMS", "JT TRADERS TEAMS VIP", "VIP PRINCIPAL"),
+    "crypto_basic": ("CANAL DE SEÑALES CRYPTOIDX", "SEÑALES CRYPTO IDX", "CRYPTO IDX BASICO", "CRYPTO IDX BÁSICO"),
+    "module3": ("BINARY TEAMS MODULO 3", "BINARY TEAMS MÓDULO 3", "INTRODUCCION AL ANALISIS BURSATIL", "INTRODUCCIÓN AL ANÁLISIS BURSÁTIL"),
+    "signals_premium": ("SEÑALES PREMIUM +300", "SENALES PREMIUM +300", "PREMIUM +300"),
+    "ai_crypto": ("IA PREMIUM AUTOMATICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMÁTICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMATICA CRYPTO IDX 24/7"),
+    "module4": ("BINARY TEAMS MODULO 4", "BINARY TEAMS MÓDULO 4", "SMART MONEY CONCEPT"),
+    "fx_auto": ("DIVISAS AUTOMATICAS 24/7 PREMIUM", "DIVISAS AUTOMÁTICAS 24/7 PREMIUM"),
+    "madness": ("MADNESS TRADING AVANZADO", "METODO ALGO Y LIT", "MÉTODO ALGO Y LIT"),
+}
+
+
+def _norm_title(value: str) -> str:
+    raw = unicodedata.normalize("NFKD", (value or "").upper())
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    return re.sub(r"[^A-Z0-9]+", " ", raw).strip()
+
+
+def _vip_learn_channel(access_key: str, chat) -> None:
+    if not access_key or not chat:
+        return
+    try:
+        with Session() as session:
+            row = session.get(VIPChannelMap, access_key)
+            if not row:
+                row = VIPChannelMap(access_key=access_key)
+                session.add(row)
+            row.chat_id = str(chat.id)
+            row.title = (getattr(chat, "title", None) or getattr(chat, "full_name", None) or "")[:250]
+            row.updated_at = utcnow_naive(); session.commit()
+    except Exception as e:
+        logging.warning("No pude aprender chat_id VIP %s: %s", access_key, e)
+
+
 def _vip_access_key_from_request(req) -> str:
     invite_obj = getattr(req, "invite_link", None)
     invite_link = _normalize_invite_url(getattr(invite_obj, "invite_link", None) or "")
     if invite_link in VIP_ACCESS_LINK_LOOKUP:
-        return VIP_ACCESS_LINK_LOOKUP[invite_link]
+        key = VIP_ACCESS_LINK_LOOKUP[invite_link]
+        _vip_learn_channel(key, getattr(req, "chat", None))
+        return key
     token = _invite_token(invite_link)
-    return VIP_ACCESS_TOKEN_LOOKUP.get(token, "")
+    if token in VIP_ACCESS_TOKEN_LOOKUP:
+        key = VIP_ACCESS_TOKEN_LOOKUP[token]
+        _vip_learn_channel(key, getattr(req, "chat", None))
+        return key
+
+    chat = getattr(req, "chat", None)
+    chat_id = str(getattr(chat, "id", "") or "")
+    if chat_id:
+        try:
+            with Session() as session:
+                row = session.query(VIPChannelMap).filter(VIPChannelMap.chat_id == chat_id).first()
+                if row and row.access_key in VIP_ACCESS_CHANNELS:
+                    return row.access_key
+        except Exception as e:
+            logging.warning("No pude consultar mapa VIP por chat_id %s: %s", chat_id, e)
+
+    title = _norm_title(getattr(chat, "title", None) or "")
+    if title:
+        for key, aliases in VIP_ACCESS_TITLE_ALIASES.items():
+            norm_aliases = [_norm_title(x) for x in aliases]
+            if any(a and (title == a or a in title or title in a) for a in norm_aliases):
+                _vip_learn_channel(key, chat)
+                return key
+    return ""
 
 
 def _vip_channel_allowed(level: str, access_key: str) -> bool:
@@ -655,23 +1009,23 @@ def _vip_access_intro(level: str, lang: str, upgrade: bool = False) -> str:
     if lang == "en":
         if upgrade:
             return (
-                f"🔓 Your new {level_label} access is ready.\n\n"
+                f"🔐 🎉 Congratulations! Your {level_label} level is now active.\n\n"
                 "Use the buttons below to request access to the NEW channels unlocked by your level. "
                 "The bot will approve your requests automatically when they come from this same Telegram account."
             )
         return (
-            f"🔓 Your {level_label} access is ready.\n\n"
+            f"🔐 🎉 Congratulations! Your {level_label} level access is ready.\n\n"
             "Use the buttons below to request access to each channel included in your level. "
             "The bot will approve your requests automatically when they come from this same Telegram account."
         )
     if upgrade:
         return (
-            f"🔓 Ya están listos tus nuevos accesos de nivel {level_label}.\n\n"
+            f"🔐 🎉 ¡Felicidades! Tu nivel {level_label} ya está activo.\n\n"
             "Usa los botones de abajo para solicitar acceso a los NUEVOS canales desbloqueados por tu nivel. "
             "El bot aprobará automáticamente las solicitudes hechas desde esta misma cuenta de Telegram."
         )
     return (
-        f"🔓 Ya están listos tus accesos de nivel {level_label}.\n\n"
+        f"🔐 🎉 ¡Felicidades! Ya están listos tus accesos del nivel {level_label}.\n\n"
         "Usa los botones de abajo para solicitar acceso a cada canal incluido en tu nivel. "
         "El bot aprobará automáticamente las solicitudes hechas desde esta misma cuenta de Telegram."
     )
@@ -737,15 +1091,15 @@ def _vip_activation_message(level: str, total_cents: int, lang: str, upgraded: b
     label = _vip_level_label(level, lang)
     if lang == "en":
         prefix = "✅ Additional deposit confirmed." if upgraded else "✅ Deposit confirmed."
-        body = f"Your validated total is USD {_usd(total_cents)} and your {label} level is now active."
-        next_level, missing = _vip_next_level(level, total_cents)
-        extra = f"\n\nIf you add USD {_usd(missing)}, you will move to { _vip_level_label(next_level, lang) }." if next_level else "\n\n🏆 You are already at the highest level: Prestige."
-        return prefix + "\n\n" + body + extra
+        return (
+            f"{prefix}\n\nYour current level is {label}.\n"
+            "Upgrades are calculated from validated deposits within the enabled level-update period."
+        )
     prefix = "✅ Depósito adicional confirmado." if upgraded else "✅ Depósito confirmado."
-    body = f"Tu total validado es de USD {_usd(total_cents)} y tu nivel {label} ya está activo."
-    next_level, missing = _vip_next_level(level, total_cents)
-    extra = f"\n\nSi completas USD {_usd(missing)} adicionales, pasarás al nivel {_vip_level_label(next_level, lang)}." if next_level else "\n\n🏆 Ya estás en el nivel máximo: Prestige."
-    return prefix + "\n\n" + body + extra
+    return (
+        f"{prefix}\n\nTu nivel actual es {label}.\n"
+        "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
+    )
 
 
 def _vip_insufficient_message(total_cents: int, lang: str) -> str:
@@ -764,24 +1118,25 @@ def _vip_insufficient_message(total_cents: int, lang: str) -> str:
 
 
 def _id_pending_review_message(lang: str) -> str:
-    before_noon = datetime.now(COLOMBIA_TZ).hour < 12
     if lang == "en":
-        if before_noon:
-            return (
-                "✅ ID received. It is now pending validation.\n\n"
-                "ID validations begin at 12:00 p.m. Colombia time. You will receive the confirmation here in this chat once it has been reviewed."
-            )
-        return "✅ ID received. It is now pending validation. I will confirm here once it has been reviewed."
-    if before_noon:
         return (
-            "✅ ID recibido. Ya quedó pendiente de validación.\n\n"
-            "Las validaciones de ID se realizan a partir de las 12:00 p. m. hora Colombia. Recibirás la confirmación por este mismo chat cuando sea revisado."
+            "✅ I received the ID number. Before I leave it for validation, tell me which trading account it belongs to.\n\n"
+            "Choose the broker below:"
         )
-    return "✅ ID recibido. Ya quedó pendiente de validación. Te confirmaré por este mismo chat cuando sea revisado."
+    return (
+        "✅ Recibí el número de ID. Antes de dejarlo en validación necesito saber a qué cuenta de trading corresponde.\n\n"
+        "Elige el broker aquí abajo:"
+    )
 
 
 def _has_pending_id_review(chat_id: int) -> bool:
     try:
+        flow = _broker_flow_get(chat_id)
+        if flow.get("pending_trading_id"):
+            return True
+        for state in _broker_rows(chat_id):
+            if state.get("pending_trading_id"):
+                return True
         with Session() as session:
             row = (
                 session.query(BotEvent.event_type)
@@ -796,6 +1151,7 @@ def _has_pending_id_review(chat_id: int) -> bool:
     except Exception as e:
         logging.warning("No pude comprobar ID pendiente para %s: %s", chat_id, e)
         return False
+
 
 # Mensajes gatillo exactos (los que tú envías cuando validas manualmente)
 GATILLO_ID_OK = """ID validado correctamente. ✅
@@ -1385,35 +1741,13 @@ def _repair_inconsistent_stage(chat_id: int):
 
 
 def _record_submitted_trading_id(chat_id: int, text_value: str, context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Guarda un ID real y registra la evidencia sin confundir otros números con IDs."""
+    """Recibe un ID válido y espera selección BINOMO/STOCKITY antes de guardarlo."""
     trading_id = _extract_candidate_trading_id(text_value)
     if not trading_id:
         return ""
-
-    previous_id = _get_saved_trading_id(chat_id)
-    current_stage, _ = _repair_inconsistent_stage(chat_id)
-
-    try:
-        with Session() as session:
-            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
-            if u:
-                u.binomo_id = trading_id
-                session.commit()
-    except Exception as e:
-        logging.warning("No pude guardar ID de trading para %s: %s", chat_id, e)
-        return ""
-
-    context.user_data["binomo_id"] = trading_id
-    _log_event(chat_id, "ID_SUBMITTED", trading_id)
-    _tracking_fire_event(chat_id, "ID_SUBMITTED", trading_id)
-
-    # Si ya estaba POST y envía un ID DISTINTO, ese nuevo ID necesita validación.
-    if current_stage == STAGE_POST and previous_id and previous_id != trading_id:
-        set_user_stage(chat_id, STAGE_PRE)
-        _cancel_jobs_prefix(context, "B", chat_id)
-        schedule_series_a(chat_id, get_user_lang(chat_id), context)
-        logging.info("ℹ️ Nuevo ID recibido para %s: vuelve a PRE hasta validarlo", chat_id)
-
+    _broker_flow_set(chat_id, pending_trading_id=trading_id)
+    _log_event(chat_id, "ID_SUBMITTED_PENDING_BROKER", trading_id)
+    _tracking_fire_event(chat_id, "ID_SUBMITTED_PENDING_BROKER", trading_id)
     return trading_id
 
 
@@ -1951,6 +2285,21 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
 
     # 2) TRACKING DEL CANAL INFORMATIVO ES — comportamiento anterior intacto.
     if not _is_tracking_info_channel(getattr(req, "chat", None)):
+        chat = getattr(req, "chat", None)
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "⚠️ SOLICITUD VIP NO MAPEADA\n\n"
+                    f"Canal: {getattr(chat, 'title', None) or '(sin título)'}\n"
+                    f"Chat ID: {getattr(chat, 'id', None)}\n"
+                    f"Usuario: {_telegram_display_name(member)} (ID: {member.id})\n\n"
+                    "La solicitud quedó pendiente. Este dato permite asociar el canal por ID sin depender del enlace de invitación."
+                ),
+            )
+        except Exception:
+            pass
+        logging.warning("⚠️ Solicitud VIP no mapeada: chat=%s title=%s user=%s", getattr(chat, "id", None), getattr(chat, "title", None), member.id)
         return
 
     invite_obj = getattr(req, "invite_link", None)
@@ -2304,8 +2653,10 @@ def support_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
 def levels_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     """Estructura completa + soporte, usando el Telegraph oficial actualizado."""
     label = "📄 Full structure" if lang == "en" else "📄 Ver estructura completa"
+    upgrade_label = "ℹ️ View upgrade conditions" if lang == "en" else "ℹ️ Ver condiciones de upgrade"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, url=TELEGRAPH_LEVELS_URL)],
+        [InlineKeyboardButton(upgrade_label, callback_data="upgrade_conditions")],
         *support_rows(lang),
     ])
 
@@ -2514,11 +2865,14 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
     trading = record["trading_id"] or "No registrado en el bot"
     vip_state = _vip_get_state(chat_id, create=False)
     vip_extra = ""
+    broker_summary = _broker_account_summary(chat_id)
     if vip_state:
         vip_extra = (
             f"\nNivel VIP: {_vip_level_label(vip_state['level'], 'es')}"
-            f"\nTotal validado: USD {_usd(vip_state['total_cents'])}"
+            f"\nTotal referencia global: USD {_usd(vip_state['total_cents'])}"
         )
+    if broker_summary:
+        vip_extra += f"\n\n🏦 CUENTAS POR BROKER\n{broker_summary}"
     text_value = (prefix + "\n\n" if prefix else "") + (
         f"👤 {record['nombre']}\n"
         f"Telegram ID: {record['chat_id']}\n"
@@ -2693,7 +3047,7 @@ async def _admin_apply_deposit_confirmation(context: ContextTypes.DEFAULT_TYPE, 
     try:
         if first_activation or rank_up:
             activation_msg = _vip_activation_message(new_level, new_total, lang, upgraded=(was_active and rank_up))
-            await context.bot.send_message(chat_id=chat_id, text=activation_msg, reply_markup=support_keyboard(lang))
+            await context.bot.send_message(chat_id=chat_id, text=activation_msg, reply_markup=upgrade_info_keyboard(lang))
             if new_keys:
                 await context.bot.send_message(
                     chat_id=chat_id,
@@ -2704,18 +3058,16 @@ async def _admin_apply_deposit_confirmation(context: ContextTypes.DEFAULT_TYPE, 
         else:
             next_level, missing = _vip_next_level(new_level, new_total)
             if lang == "en":
-                user_msg = f"✅ Additional deposit confirmed. Your validated total is USD {_usd(new_total)} and your current level remains {_vip_level_label(new_level, lang)}."
-                if next_level:
-                    user_msg += f"\n\nYou still need USD {_usd(missing)} to move to {_vip_level_label(next_level, lang)}."
-                else:
-                    user_msg += "\n\n🏆 You are already at the highest level: Prestige."
+                user_msg = (
+                    f"✅ Additional deposit confirmed. Your current level remains {_vip_level_label(new_level, lang)}.\n\n"
+                    "Upgrades are calculated from validated deposits within the enabled level-update period."
+                )
             else:
-                user_msg = f"✅ Depósito adicional confirmado. Tu total validado es de USD {_usd(new_total)} y mantienes el nivel {_vip_level_label(new_level, lang)}."
-                if next_level:
-                    user_msg += f"\n\nTe faltan USD {_usd(missing)} para pasar al nivel {_vip_level_label(next_level, lang)}."
-                else:
-                    user_msg += "\n\n🏆 Ya estás en el nivel máximo: Prestige."
-            await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=support_keyboard(lang))
+                user_msg = (
+                    f"✅ Depósito adicional confirmado. Tu nivel actual se mantiene en {_vip_level_label(new_level, lang)}.\n\n"
+                    "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
+                )
+            await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=upgrade_info_keyboard(lang))
     except Exception as e:
         logging.warning("Depósito/nivel actualizado para %s, pero no pude enviar todos los avisos: %s", chat_id, e)
 
@@ -2731,6 +3083,394 @@ async def _admin_apply_deposit_confirmation(context: ContextTypes.DEFAULT_TYPE, 
 async def _admin_activate_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     """Compatibilidad con botones antiguos: la activación directa ya no existe sin registrar monto."""
     return False, "ℹ️ El flujo cambió: usa 💰 REVISAR DEPÓSITO, registra el monto confirmado y luego confirma el cálculo."
+
+
+async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not update.effective_user or not _is_private_user_id(update.effective_user.id):
+        return
+    data = q.data or ""
+    await q.answer()
+    chat_id = update.effective_user.id
+    lang = get_user_lang(chat_id)
+
+    m = re.fullmatch(r"broker_id_select:(BINOMO|STOCKITY)", data)
+    if m:
+        broker = m.group(1)
+        flow = _broker_flow_get(chat_id)
+        trading_id = (flow.get("pending_trading_id") or "").strip()
+        if not re.fullmatch(r"\d{6,12}", trading_id):
+            await q.message.reply_text(
+                "⚠️ Ya no encuentro un ID pendiente. Envíamelo nuevamente en texto." if lang == "es" else
+                "⚠️ I can no longer find a pending ID. Please send it again as text.",
+                reply_markup=support_keyboard(lang),
+            )
+            return
+
+        _broker_seed_legacy_if_matching(chat_id, broker, trading_id)
+        try:
+            with Session() as session:
+                row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
+                if not row:
+                    row = BrokerAccountState(account_key=_broker_key(chat_id, broker), telegram_id=str(chat_id), broker=broker)
+                    session.add(row)
+                already_valid = (row.trading_id or "").strip() == trading_id and bool(row.id_validated)
+                row.pending_trading_id = None if already_valid else trading_id
+                row.updated_at = utcnow_naive(); session.commit()
+            _broker_flow_set(chat_id, pending_trading_id="")
+            _log_event(chat_id, "ID_SUBMITTED", f"BROKER={broker} | ID={trading_id}")
+            _tracking_fire_event(chat_id, "ID_SUBMITTED", f"BROKER={broker} | ID={trading_id}")
+        except Exception:
+            logging.exception("No pude guardar ID por broker")
+            await q.message.reply_text("⚠️ No pude guardar ese ID. Intenta nuevamente.", reply_markup=support_keyboard(lang))
+            return
+
+        if already_valid:
+            msg = (
+                f"✅ Ese ID de {_broker_label(broker)} ya estaba validado. Puedes continuar con tu depósito o enviar el comprobante si ya lo realizaste."
+                if lang == "es" else
+                f"✅ That {_broker_label(broker)} ID was already validated. You can continue with your deposit or send the proof if you already made it."
+            )
+            await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+            return
+
+        before_noon = datetime.now(COLOMBIA_TZ).hour < 12
+        if lang == "en":
+            msg = f"✅ Your {_broker_label(broker)} ID has been received and is pending validation."
+            if before_noon:
+                msg += "\n\nID validations begin at 12:00 p.m. Colombia time. You will receive confirmation here once reviewed."
+        else:
+            msg = f"✅ Tu ID de {_broker_label(broker)} fue recibido y quedó pendiente de validación."
+            if before_noon:
+                msg += "\n\nLas validaciones de ID se realizan a partir de las 12:00 p. m. hora Colombia. Recibirás la confirmación por este chat cuando sea revisado."
+        await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"🆔 ID PENDIENTE · {_broker_label(broker).upper()}\nUsuario: {_telegram_display_name(update.effective_user)} (ID: {chat_id})\nID trading: {trading_id}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_broker_validate:{chat_id}:{broker}")],
+                    [InlineKeyboardButton("❌ ID ERRADO", callback_data=f"admin_broker_reject:{chat_id}:{broker}")],
+                    [InlineKeyboardButton("👤 GESTIONAR", callback_data=f"admin_user_open:{chat_id}")],
+                ]),
+            )
+        except Exception as e:
+            logging.warning("No pude avisar ID broker al admin: %s", e)
+        return
+
+    m = re.fullmatch(r"broker_deposit_select:(BINOMO|STOCKITY)", data)
+    if m:
+        broker = m.group(1)
+        state = _broker_get(chat_id, broker, create=False)
+        if not state or not state.get("id_validated"):
+            _broker_bind_legacy_validated_id(chat_id, broker)
+            state = _broker_get(chat_id, broker, create=False)
+        if not state or not state.get("id_validated"):
+            await q.message.reply_text(
+                f"⚠️ Primero necesito tener validado tu ID de {_broker_label(broker)}. Envíame el ID en texto y selecciónalo como {_broker_label(broker)} antes de revisar este depósito." if lang == "es" else
+                f"⚠️ I first need your {_broker_label(broker)} ID to be validated. Send the ID as text and select {_broker_label(broker)} before this deposit is reviewed.",
+                reply_markup=support_keyboard(lang),
+            )
+            return
+        _broker_flow_set(chat_id, pending_deposit_broker=broker)
+        msg = (
+            f"✅ Perfecto. Dejé este depósito identificado como {_broker_label(broker)}. Lo revisaré y te confirmaré por aquí."
+            if lang == "es" else
+            f"✅ Perfect. I marked this deposit as {_broker_label(broker)}. I will review it and confirm here."
+        )
+        await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"💰 DEPÓSITO IDENTIFICADO · {_broker_label(broker).upper()}\nUsuario: {_telegram_display_name(update.effective_user)} (ID: {chat_id})",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                    f"💰 REVISAR DEPÓSITO · {_broker_label(broker).upper()}",
+                    callback_data=f"admin_broker_deposit:{chat_id}:{broker}",
+                )]]),
+            )
+        except Exception:
+            pass
+        return
+
+
+async def _admin_finalize_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str):
+    broker = _broker_norm(broker)
+    state = _broker_get(chat_id, broker, create=False)
+    pending_id = (state or {}).get("pending_trading_id") or ""
+    if not re.fullmatch(r"\d{6,12}", pending_id):
+        return False, "⚠️ Ya no encuentro un ID pendiente válido para ese broker."
+    previous_validated = [b for b in _broker_validated_brokers(chat_id) if b != broker]
+    try:
+        with Session() as session:
+            row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
+            row.trading_id = pending_id
+            row.pending_trading_id = None
+            row.id_validated = 1
+            row.updated_at = utcnow_naive()
+            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            if u:
+                u.binomo_id = pending_id  # compatibilidad histórica: último ID validado
+            session.commit()
+        _log_event(chat_id, "ID_VALIDATED", f"BROKER={broker} | ID={pending_id}")
+        _tracking_fire_event(chat_id, "ID_VALIDATED", f"BROKER={broker} | ID={pending_id}")
+        stage = get_user_stage(chat_id)
+        if stage == STAGE_PRE:
+            set_user_stage(chat_id, STAGE_POST)
+            _cancel_jobs_prefix(context, "A", chat_id)
+            schedule_series_b(chat_id, context)
+        elif stage == STAGE_POST and not previous_validated:
+            _cancel_jobs_prefix(context, "A", chat_id)
+            schedule_series_b(chat_id, context)
+        lang = get_user_lang(chat_id)
+        if lang == "en":
+            msg = f"✅ Your {_broker_label(broker)} ID has been successfully validated.\n\nYou can now make the deposit in that same trading account. When done, send me the proof here."
+        else:
+            msg = f"✅ Tu ID de {_broker_label(broker)} fue validado correctamente.\n\nYa puedes realizar el depósito en esa misma cuenta de trading. Cuando lo hagas, envíame aquí el comprobante."
+        await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=support_keyboard(lang))
+        return True, f"✅ ID {_broker_label(broker)} validado: {pending_id}."
+    except Exception as e:
+        logging.exception("Error validando ID por broker")
+        return False, f"❌ No pude validar el ID: {e}"
+
+
+async def _admin_reject_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str):
+    broker = _broker_norm(broker)
+    state = _broker_get(chat_id, broker, create=False)
+    pending_id = (state or {}).get("pending_trading_id") or ""
+    if not pending_id:
+        return False, "⚠️ Ya no encuentro un ID pendiente para rechazar."
+    try:
+        with Session() as session:
+            row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
+            row.pending_trading_id = None; row.updated_at = utcnow_naive(); session.commit()
+        _log_event(chat_id, "ID_REJECTED", f"BROKER={broker} | ID={pending_id}")
+        _tracking_fire_event(chat_id, "ID_REJECTED", f"BROKER={broker} | ID={pending_id}")
+        stage = get_user_stage(chat_id)
+        if stage != STAGE_DEPOSITED and not _broker_validated_brokers(chat_id):
+            if stage == STAGE_POST:
+                set_user_stage(chat_id, STAGE_PRE)
+                _cancel_jobs_prefix(context, "B", chat_id)
+                schedule_series_a(chat_id, get_user_lang(chat_id), context)
+            else:
+                set_user_stage(chat_id, STAGE_PRE)
+                _cancel_jobs_prefix(context, "B", chat_id)
+                _sync_menu_campaign_for_stage(chat_id, get_user_lang(chat_id), context)
+        lang = get_user_lang(chat_id)
+        template = GATILLO_ID_ERRADO if lang == "es" else GATILLO_ID_ERRADO_EN
+        await context.bot.send_message(chat_id=chat_id, text=_personalize_referral_links(template, chat_id), disable_web_page_preview=True)
+        return True, f"❌ ID {_broker_label(broker)} rechazado."
+    except Exception as e:
+        logging.exception("Error rechazando ID por broker")
+        return False, f"❌ No pude rechazar el ID: {e}"
+
+
+def _broker_deposit_preview_text(chat_id: int, broker: str, preview: dict) -> str:
+    old_global = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+    proposed_global = _max_level(old_global, preview.get("new_level") or VIP_LEVEL_NONE)
+    mode = "ACUMULA dentro de la ventana" if preview.get("accumulates") else "NO acumula; se evalúa como depósito único"
+    status = "CERRADA después de este depósito" if preview.get("window_closed_after") else "ABIERTA"
+    return (
+        f"💰 CONFIRMAR DEPÓSITO · {_broker_label(broker).upper()}\n\n"
+        f"Monto: USD {_usd(preview['amount_cents'])}\n"
+        f"Comprobante ≤72h: {'SÍ' if preview['timely'] else 'NO'}\n"
+        f"Depósito validado nº: {preview['new_count']}\n"
+        f"Regla: {mode}\n"
+        f"Acumulación habilitada: USD {_usd(preview['new_accum_cents'])}\n"
+        f"Ventana 3 depósitos / 30 días: {status}\n\n"
+        f"Nivel en {_broker_label(broker)}: {_vip_level_label(preview['new_level'], 'es')}\n"
+        f"Nivel general JT TRADERS: {_vip_level_label(proposed_global, 'es')}\n\n"
+        "¿Confirmas este depósito validado?"
+    )
+
+
+async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str, preview: dict):
+    broker = _broker_norm(broker)
+    current = _broker_get(chat_id, broker, create=False)
+    if not current or not current.get("id_validated"):
+        return False, "⚠️ Ese broker no tiene un ID validado."
+    if int(current.get("deposit_count") or 0) != int(preview.get("old_count") or 0):
+        return False, "⚠️ El contador de depósitos cambió. Revisa nuevamente para evitar duplicados."
+
+    old_global_state = _vip_get_state(chat_id, create=False) or {}
+    old_global = old_global_state.get("level") or VIP_LEVEL_NONE
+    try:
+        with Session() as session:
+            row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
+            row.validated_total_cents = int(preview["new_validated_total_cents"])
+            row.upgrade_accum_cents = int(preview["new_accum_cents"])
+            row.validated_deposit_count = int(preview["new_count"])
+            row.first_validated_deposit_at = preview.get("first_after") or utcnow_naive()
+            row.level = preview.get("new_level") or VIP_LEVEL_NONE
+            row.updated_at = utcnow_naive(); session.commit()
+    except Exception as e:
+        logging.exception("No pude aplicar depósito broker")
+        return False, f"❌ No pude guardar el depósito: {e}"
+
+    new_global = old_global
+    for state in _broker_rows(chat_id):
+        new_global = _max_level(new_global, state.get("level") or VIP_LEVEL_NONE)
+    rank_up = VIP_LEVEL_RANK.get(new_global, 0) > VIP_LEVEL_RANK.get(old_global, 0)
+    new_keys = _vip_new_channel_keys(old_global, new_global) if rank_up else []
+    existing_pending = list(old_global_state.get("pending_keys") or [])
+    pending_keys = list(dict.fromkeys(existing_pending + new_keys)) if new_keys else existing_pending
+    global_total = max(
+        int(old_global_state.get("total_cents") or 0),
+        int(preview.get("new_accum_cents") or 0),
+        VIP_LEVEL_THRESHOLDS_CENTS.get(new_global, 0),
+    )
+    _vip_set_state(chat_id, global_total, new_global, pending_keys=pending_keys)
+
+    first_activation = old_global == VIP_LEVEL_NONE and new_global != VIP_LEVEL_NONE
+    if first_activation:
+        set_user_stage(chat_id, STAGE_DEPOSITED)
+        _log_event(chat_id, "ACCOUNT_ACTIVATED", f"BROKER={broker} | LEVEL={new_global}")
+        _tracking_fire_event(chat_id, "ACCOUNT_ACTIVATED", f"BROKER={broker} | LEVEL={new_global}")
+    elif rank_up:
+        _log_event(chat_id, "VIP_LEVEL_UPGRADED", f"BROKER={broker} | {old_global}->{new_global}")
+        _tracking_fire_event(chat_id, "VIP_LEVEL_UPGRADED", f"BROKER={broker} | {old_global}->{new_global}")
+
+    detail = f"BROKER={broker} | USD={preview['amount_cents']/100:.2f} | COUNT={preview['new_count']} | TIMELY={preview['timely']} | LEVEL={preview['new_level']}"
+    _log_event(chat_id, "DEPOSIT_VALIDATED", detail)
+    _tracking_fire_event(chat_id, "DEPOSIT_VALIDATED", detail)
+    _broker_flow_set(chat_id, pending_deposit_broker="")
+
+    if new_global != VIP_LEVEL_NONE:
+        _cancel_jobs_prefix(context, "A", chat_id)
+        _cancel_jobs_prefix(context, "B", chat_id)
+
+    lang = get_user_lang(chat_id)
+    broker_level = preview.get("new_level") or VIP_LEVEL_NONE
+    if lang == "en":
+        user_msg = (
+            f"✅ {_broker_label(broker)} deposit confirmed.\n\n"
+            f"Your current level on {_broker_label(broker)} is {_vip_level_label(broker_level, lang)}.\n"
+            f"Your current JT TRADERS level is {_vip_level_label(new_global, lang)}.\n\n"
+            "Upgrades are calculated from validated deposits within the enabled level-update period."
+        )
+    else:
+        user_msg = (
+            f"✅ Depósito de {_broker_label(broker)} confirmado.\n\n"
+            f"Tu nivel actual en {_broker_label(broker)} es {_vip_level_label(broker_level, lang)}.\n"
+            f"Tu nivel actual JT TRADERS es {_vip_level_label(new_global, lang)}.\n\n"
+            "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
+        )
+    await context.bot.send_message(chat_id=chat_id, text=user_msg, reply_markup=upgrade_info_keyboard(lang))
+
+    if new_keys:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=_vip_access_intro(new_global, lang, upgrade=(old_global != VIP_LEVEL_NONE)),
+            reply_markup=_vip_access_keyboard(new_global, lang, keys=new_keys),
+            disable_web_page_preview=True,
+        )
+
+    return True, (
+        f"✅ {_broker_label(broker)}: depósito USD {_usd(preview['amount_cents'])} validado · "
+        f"nivel cuenta {_vip_level_label(broker_level, 'es')} · nivel general {_vip_level_label(new_global, 'es')}."
+    )
+
+
+async def _start_admin_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str):
+    broker = _broker_norm(broker)
+    state = _broker_get(chat_id, broker, create=False)
+    if not state or not state.get("id_validated"):
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ {_broker_label(broker)} no tiene un ID validado para este usuario.")
+        return
+    context.user_data["admin_user_action"] = {"action": "broker_deposit_amount", "chat_id": chat_id, "broker": broker}
+    context.user_data.pop("admin_pending_broker_deposit", None)
+    window = "ABIERTA" if _broker_upgrade_window_open(state) else "CERRADA"
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            f"💰 REVISAR DEPÓSITO · {_broker_label(broker).upper()}\n\n"
+            f"Nivel actual de esta cuenta: {_vip_level_label(state.get('level'), 'es')}\n"
+            f"Depósitos validados: {state.get('deposit_count', 0)}\n"
+            f"Ventana acumulable: {window}\n\n"
+            "Escribe el monto NUEVO que acabas de confirmar en USD."
+        ),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")]]),
+    )
+
+
+async def admin_broker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not update.effective_user or update.effective_user.id != ADMIN_ID:
+        return
+    await q.answer()
+    data = q.data or ""
+    m = re.fullmatch(r"admin_broker_(validate|validate_confirm|reject|reject_confirm|deposit|timely|late|deposit_confirm):(\d+):(BINOMO|STOCKITY)", data)
+    if not m:
+        return
+    action, raw_id, broker = m.groups()
+    chat_id = int(raw_id)
+    state = _broker_get(chat_id, broker, create=False)
+
+    if action in ("validate", "reject"):
+        pending_id = (state or {}).get("pending_trading_id") or ""
+        if not pending_id:
+            await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ Ya no hay un ID pendiente para esa cuenta.")
+            return
+        if action == "validate":
+            text_value = f"✅ VALIDAR ID · {_broker_label(broker).upper()}\n\nID: {pending_id}\n¿Confirmas que ya verificaste que quedó correctamente vinculado?"
+            callback = f"admin_broker_validate_confirm:{chat_id}:{broker}"
+            button = "✅ SÍ, VALIDAR"
+        else:
+            text_value = f"❌ ID ERRADO · {_broker_label(broker).upper()}\n\nID: {pending_id}\n¿Confirmas el rechazo?"
+            callback = f"admin_broker_reject_confirm:{chat_id}:{broker}"
+            button = "❌ SÍ, ID ERRADO"
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=text_value,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(button, callback_data=callback)],
+                [InlineKeyboardButton("↩️ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
+            ]),
+        )
+        return
+
+    if action == "validate_confirm":
+        _, msg = await _admin_finalize_broker_id(context, chat_id, broker)
+        await _show_admin_user(context, chat_id, msg)
+        return
+    if action == "reject_confirm":
+        _, msg = await _admin_reject_broker_id(context, chat_id, broker)
+        await _show_admin_user(context, chat_id, msg)
+        return
+    if action == "deposit":
+        await _start_admin_broker_deposit(context, chat_id, broker)
+        return
+
+    if action in ("timely", "late"):
+        pending = context.user_data.get("admin_pending_broker_deposit") or {}
+        if int(pending.get("chat_id") or 0) != chat_id or pending.get("broker") != broker:
+            await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ Esa revisión ya no está activa. Pulsa REVISAR DEPÓSITO nuevamente.")
+            return
+        timely = action == "timely"
+        preview = _broker_preview_deposit(chat_id, broker, int(pending["amount_cents"]), timely)
+        pending.update({"timely": timely, "preview": preview})
+        context.user_data["admin_pending_broker_deposit"] = pending
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=_broker_deposit_preview_text(chat_id, broker, preview),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ CONFIRMAR DEPÓSITO", callback_data=f"admin_broker_deposit_confirm:{chat_id}:{broker}")],
+                [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
+            ]),
+        )
+        return
+
+    if action == "deposit_confirm":
+        pending = context.user_data.get("admin_pending_broker_deposit") or {}
+        if int(pending.get("chat_id") or 0) != chat_id or pending.get("broker") != broker or not pending.get("preview"):
+            await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ Esa confirmación ya no está activa.")
+            return
+        context.user_data.pop("admin_pending_broker_deposit", None)
+        context.user_data.pop("admin_user_action", None)
+        _, msg = await _admin_apply_broker_deposit(context, chat_id, broker, pending["preview"])
+        # Mantiene limpio el chat administrativo: reutiliza el mensaje de confirmación
+        # y NO despliega la lista de pendientes después de validar un depósito.
+        await _safe_edit_callback_message(query, msg)
+        return
 
 
 async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2867,7 +3607,46 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not record:
             await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ No encontré ese usuario.")
             return
+
+        validated_brokers = _broker_validated_brokers(chat_id)
+        if validated_brokers:
+            preferred = _broker_flow_get(chat_id).get("pending_deposit_broker")
+            if preferred in validated_brokers:
+                await _start_admin_broker_deposit(context, chat_id, preferred)
+                return
+            if len(validated_brokers) == 1:
+                await _start_admin_broker_deposit(context, chat_id, validated_brokers[0])
+                return
+            rows = [[InlineKeyboardButton(
+                f"💰 {_broker_label(b).upper()}", callback_data=f"admin_broker_deposit:{chat_id}:{b}"
+            )] for b in validated_brokers]
+            rows.append([InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")])
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text="💰 ¿A qué broker corresponde este depósito? El usuario tiene más de una cuenta validada.",
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
         current_stage, _ = _repair_inconsistent_stage(chat_id)
+        if current_stage in (STAGE_POST, STAGE_DEPOSITED):
+            preferred = _broker_flow_get(chat_id).get("pending_deposit_broker")
+            # Para usuarios v7.10.21/22 con estado VIP existente, no permitimos
+            # volver al acumulador global: primero se identifica/migra el broker.
+            if _vip_get_state(chat_id, create=False):
+                if preferred in BROKERS and _broker_bind_legacy_validated_id(chat_id, preferred):
+                    await _start_admin_broker_deposit(context, chat_id, preferred)
+                    return
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🏦 Este usuario todavía no tiene el broker asociado a su cuenta anterior. "
+                        "Pídele seleccionar BINOMO/STOCKITY en el mensaje del comprobante o reenviar su ID. "
+                        "No sumé ningún depósito para evitar mezclar brokers."
+                    ),
+                    reply_markup=admin_user_quick_keyboard(chat_id),
+                )
+                return
         if current_stage not in (STAGE_POST, STAGE_DEPOSITED):
             await _show_admin_user(context, chat_id, "⚠️ Primero debes VALIDAR ID antes de revisar un depósito.")
             return
@@ -2913,10 +3692,10 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop("admin_pending_deposit", None)
         context.user_data.pop("admin_user_action", None)
         ok, msg = await _admin_apply_deposit_confirmation(context, chat_id, pending_deposit)
-        if ok and get_user_stage(chat_id) == STAGE_DEPOSITED:
-            await _show_admin_user_list(context, page=0, text_prefix=msg)
-        else:
-            await _show_admin_user(context, chat_id, msg)
+        # Compatibilidad con el flujo anterior: muestra únicamente el resultado de
+        # la validación en el mismo mensaje. La lista de pendientes se abre SOLO
+        # desde Gestión de Usuarios / el menú de administrador.
+        await _safe_edit_callback_message(query, msg)
         return
 
     if action == "activate_confirm":
@@ -2939,6 +3718,34 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     pending = context.user_data.get("admin_user_action") or {}
+    if pending.get("action") == "broker_deposit_amount":
+        chat_id = int(pending.get("chat_id"))
+        broker = _broker_norm(pending.get("broker"))
+        amount_cents = _parse_usd_to_cents(raw)
+        if amount_cents is None:
+            await update.effective_message.reply_text("⚠️ Escribe solo el monto en USD. Ejemplos: 50 · 100 · 200 · 49.50")
+            from telegram.ext import ApplicationHandlerStop
+            raise ApplicationHandlerStop
+        context.user_data.pop("admin_user_action", None)
+        context.user_data["admin_pending_broker_deposit"] = {
+            "chat_id": chat_id, "broker": broker, "amount_cents": amount_cents
+        }
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"🕒 COMPROBANTE · {_broker_label(broker).upper()}\n\n"
+                f"Monto confirmado: USD {_usd(amount_cents)}\n\n"
+                "¿El usuario envió este comprobante dentro de las 72 horas posteriores al depósito?"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ SÍ · DENTRO DE 72H", callback_data=f"admin_broker_timely:{chat_id}:{broker}")],
+                [InlineKeyboardButton("⏰ NO · FUERA DE 72H", callback_data=f"admin_broker_late:{chat_id}:{broker}")],
+                [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
+            ]),
+        )
+        from telegram.ext import ApplicationHandlerStop
+        raise ApplicationHandlerStop
+
     if pending.get("action") == "deposit_amount":
         chat_id = int(pending.get("chat_id"))
         amount_cents = _parse_usd_to_cents(raw)
@@ -3916,6 +4723,11 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     _touch_user_activity(chat_id)
 
+    if q.data == "upgrade_conditions":
+        lang = get_user_lang(chat_id)
+        await q.message.reply_text(upgrade_conditions_text(lang), reply_markup=support_keyboard(lang))
+        return
+
     # Notificar interacción
     await notificar_interaccion(update, context)
 
@@ -4213,8 +5025,8 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 callback_data=f"admin_user_deposit:{chat_id}",
             )])
         elif candidate_id:
-            action_rows.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
-            action_rows.append([InlineKeyboardButton("❌ ID ERRADO", callback_data=f"admin_user_reject:{chat_id}")])
+            # Primero el usuario identifica BINOMO/STOCKITY. Luego llega el bloque admin específico.
+            pass
         action_rows.append([InlineKeyboardButton("👤 Gestionar usuario", callback_data=f"admin_user_open:{chat_id}")])
         admin_markup = InlineKeyboardMarkup(action_rows)
 
@@ -4597,6 +5409,16 @@ NIVELES
 - Si preguntan con cuánto es ideal iniciar, explica que se puede empezar desde 50 USD en Básico. Normalmente recomiendo 200 USD o más si está dentro de las posibilidades del usuario porque Premium habilita una estructura mucho más amplia de señales y herramientas, sin prometer mejores resultados.
 - Explica con buenas palabras que un capital más amplio da mayor margen operativo y más flexibilidad para aplicar gestión de riesgo y distribuir mejor las entradas. Eso puede ayudar a aprovechar mejor la estrategia y las herramientas, pero NO garantiza mejores resultados ni ganancias. Nunca digas que más inversión asegura más rentabilidad.
 - Si un usuario tiene menos de 50 USD, no negocies una excepción ni prometas acceso: el nivel Básico solo se habilita al completar al menos 50 USD. Si ya envió un depósito incompleto, debe completar el faltante y enviar el nuevo comprobante.
+
+BROKERS Y REGLAS DE UPGRADE
+- Binomo y Stockity se gestionan por separado. Los depósitos de brokers distintos NUNCA se suman entre sí para subir de nivel.
+- Cada broker tiene su propio ID validado, depósitos, contador y nivel. El nivel general de la comunidad es el nivel más alto alcanzado individualmente en cualquiera de las cuentas. Registrar un segundo broker nunca baja el nivel que el usuario ya tenía.
+- Los primeros 3 depósitos validados de una misma cuenta/broker pueden acumularse para subir de nivel.
+- Esa ventana de acumulación dura 30 días desde el primer depósito validado.
+- Para entrar en la acumulación, el comprobante debe enviarse dentro de las 72 horas posteriores al depósito.
+- Al completarse el 3.er depósito o vencer los 30 días, los depósitos posteriores ya no se suman: un upgrade exige un nuevo depósito único que por sí solo alcance el monto mínimo completo del nuevo nivel.
+- Solo cuentan depósitos que el usuario reportó y Johanna validó.
+- No bombardees al usuario con cálculos de cuánto le falta. Si pregunta por estas reglas, explícalas de forma breve y remite al botón «ℹ️ VER CONDICIONES DE UPGRADE».
 
 SI YA TIENE CUENTA
 - Si la cuenta actual no fue registrada con los enlaces de Johanna y tiene saldo, puede retirarlo primero si la plataforma y las condiciones de la cuenta lo permiten. Si existe un bono activo, debe revisar antes las condiciones aplicables.
@@ -6134,7 +6956,8 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
         if intent == "ID_SUBMIT":
             _record_submitted_trading_id(chat_id, texto, context)
             block = _id_pending_review_message(lang)
-            blocks.append(block); handled.append(intent); continue
+            await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
+            handled.append(intent); continue
 
         if intent == "DEPOSITO":
             _log_event(chat_id, "DEPOSIT_REPORTED", texto)
@@ -6142,9 +6965,9 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
             stage_now = get_user_stage(chat_id)
             if stage_now == STAGE_DEPOSITED:
                 block = (
-                    "💳 Perfecto. Envíame aquí la captura del depósito adicional y revisaré el nuevo total para confirmar si subes de nivel."
+                    "💳 Perfecto. Envíame aquí la captura del depósito adicional y la revisaré según las condiciones de actualización de nivel."
                     if lang == "es" else
-                    "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review the new total to confirm whether your level changes."
+                    "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review it under the level-update conditions."
                 )
             elif stage_now == STAGE_POST:
                 block = (
@@ -6270,21 +7093,36 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_stage in (STAGE_POST, STAGE_DEPOSITED):
             _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
             _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
-            if current_stage == STAGE_DEPOSITED:
+            brokers = _broker_validated_brokers(chat_id)
+            if len(brokers) > 1:
+                _broker_flow_set(chat_id, pending_deposit_broker="")
                 qtxt = (
-                    "✅ Recibido. Estoy revisando tu depósito adicional. Te confirmaré por este chat si tu nivel cambia o cuánto te falta para el siguiente."
+                    "✅ Recibido. Para revisar correctamente este depósito necesito saber a cuál de tus cuentas corresponde. Elige el broker:"
                     if lang == "es" else
-                    "✅ Received. I’m reviewing your additional deposit. I’ll confirm here if your level changes or how much remains for the next one."
+                    "✅ Received. To review this deposit correctly, tell me which account it belongs to. Choose the broker:"
                 )
-                log_intent = "DEPOSIT_PROOF_TOPUP"
+                await update.message.reply_text(qtxt, reply_markup=_broker_selection_keyboard("deposit", lang))
+                log_intent = "DEPOSIT_PROOF_BROKER_REQUIRED"
+            elif len(brokers) == 1:
+                _broker_flow_set(chat_id, pending_deposit_broker=brokers[0])
+                qtxt = (
+                    f"✅ Recibido. Estoy revisando tu depósito de {_broker_label(brokers[0])}. Te confirmaré por este chat cuando quede validado."
+                    if lang == "es" else
+                    f"✅ Received. I’m reviewing your {_broker_label(brokers[0])} deposit. I’ll confirm here once it is validated."
+                )
+                await update.message.reply_text(qtxt, reply_markup=support_keyboard(lang))
+                log_intent = f"DEPOSIT_PROOF_{brokers[0]}"
             else:
+                # Usuario de una versión anterior: antes de sumar cualquier depósito
+                # debe identificar a qué broker pertenece su cuenta validada.
+                _broker_flow_set(chat_id, pending_deposit_broker="")
                 qtxt = (
-                    "✅ Recibido. Estoy revisando tu depósito. Te confirmaré por este chat el nivel que queda habilitado."
+                    "✅ Recibido. Para separar correctamente tus depósitos necesito identificar el broker de esta cuenta. Elige BINOMO o STOCKITY:"
                     if lang == "es" else
-                    "✅ Received. I’m reviewing your deposit. I’ll confirm here which level is enabled."
+                    "✅ Received. To keep your deposits separated correctly, I need to identify the broker for this account. Choose BINOMO or STOCKITY:"
                 )
-                log_intent = "DEPOSIT_PROOF_POST"
-            await update.message.reply_text(qtxt, reply_markup=support_keyboard(lang))
+                await update.message.reply_text(qtxt, reply_markup=_broker_selection_keyboard("deposit", lang))
+                log_intent = "DEPOSIT_PROOF_LEGACY_BROKER_REQUIRED"
             await send_admin_auto_log(context, update, log_intent, qtxt)
             return
 
@@ -6375,9 +7213,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stage_now = get_user_stage(chat_id)
         if stage_now == STAGE_DEPOSITED:
             msg = (
-                "Perfecto ✅\n\nEnvíame aquí la captura del depósito adicional. Revisaré el nuevo total y te confirmaré si subes de nivel o cuánto te falta para el siguiente."
+                "Perfecto ✅\n\nEnvíame aquí la captura del depósito adicional. La revisaré según las condiciones de actualización de nivel y te confirmaré el resultado."
                 if lang == "es" else
-                "Perfect ✅\n\nSend me the screenshot of the additional deposit. I’ll review the new total and confirm whether your level changes or how much remains for the next one."
+                "Perfect ✅\n\nSend me the screenshot of the additional deposit. I’ll review it under the level-update conditions and confirm the result."
             )
         elif stage_now == STAGE_POST:
             msg = (
@@ -6398,8 +7236,8 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "ID_SUBMIT":
         _record_submitted_trading_id(chat_id, texto, context)
         msg = _id_pending_review_message(lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
-        await send_admin_auto_log(context, update, "ID_SUBMIT", msg)
+        await update.message.reply_text(msg, reply_markup=_broker_selection_keyboard("id", lang))
+        await send_admin_auto_log(context, update, "ID_SUBMIT_PENDING_BROKER", msg)
         return
 
     if intent in ("GESTION_CAPITAL", "VPN", "PAIS"):
@@ -7332,6 +8170,8 @@ if __name__ == "__main__":
     # Panel privado del ADMIN (antes de cualquier callback general).
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel_"))
     app.add_handler(CallbackQueryHandler(admin_user_callback, pattern="^admin_user_"))
+    app.add_handler(CallbackQueryHandler(admin_broker_callback, pattern="^admin_broker_"))
+    app.add_handler(CallbackQueryHandler(broker_user_callback, pattern="^broker_(?:id|deposit)_select:"))
 
     # Confirmación/cancelación LIVE y marketing (antes del callback general).
     app.add_handler(CallbackQueryHandler(live_broadcast_callback, pattern="^(live_broadcast_|live_no_image$)"))
