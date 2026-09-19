@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.34-20260919-VIP-PRIVACY-SERVICE-CLEANUP"
+BOT_VERSION = "v7.10.35-20260919-AI-CONVERSATION-CONTEXT-5MIN"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -96,7 +96,7 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
             text = text[:3900] + "\n\n...(recortado)"
         await context.bot.send_message(chat_id=ADMIN_ID, text=text, disable_web_page_preview=True)
         try:
-            _append_ai_exchange(chat_id, pregunta, respuesta)
+            _append_ai_exchange(chat_id, pregunta, respuesta, assistant_source="auto")
         except Exception:
             pass
     except Exception as e:
@@ -6145,9 +6145,9 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # Si Johanna respondió dentro de la ventana de espera, la IA pendiente se cancela.
                 if pending_cleared_early:
                     if original_question or manual_reply_text:
-                        _append_ai_exchange(destinatario_id, original_question or "", manual_reply_text)
+                        _append_ai_exchange(destinatario_id, original_question or "", manual_reply_text, assistant_source="manual")
                 else:
-                    _cancel_pending_ai(context, destinatario_id, manual_reply=manual_reply_text)
+                    _cancel_pending_ai(context, destinatario_id, manual_reply=manual_reply_text, original_question=original_question)
 
                 # Aprende de la respuesta real (incluida la transcripción de audio, si fue posible).
                 if learned_reply:
@@ -6317,13 +6317,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 # Modelo recomendado para transcribir respuestas de voz de Johanna.
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
-# 3 minutos de prioridad para Johanna. Puede cambiarse en Railway con AI_WAIT_MINUTES.
+# 5 minutos de prioridad para Johanna. Puede cambiarse en Railway con AI_WAIT_MINUTES.
 try:
-    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "3")))
+    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "5")))
 except Exception:
-    AI_WAIT_MINUTES = 3
+    AI_WAIT_MINUTES = 5
 AI_WAIT_SECONDS = AI_WAIT_MINUTES * 60
 AI_HISTORY_MAX_MESSAGES = 16
+# Si Johanna respondió personalmente hace poco, los siguientes mensajes se tratan
+# como continuación de ESA conversación antes de disparar respuestas fijas por palabras clave.
+try:
+    AI_MANUAL_CONTEXT_MINUTES = max(10, int(os.getenv("AI_MANUAL_CONTEXT_MINUTES", "60")))
+except Exception:
+    AI_MANUAL_CONTEXT_MINUTES = 60
 
 JOHA_KNOWLEDGE = os.getenv("JOHA_KNOWLEDGE", "").strip() or f"""
 INFORMACIÓN OFICIAL DE JOHAALETRADER / JT TRADERS TEAMS
@@ -6631,11 +6637,10 @@ def _convert_voice_to_mp3(raw_bytes: bytes):
         return None
 
 
-async def _transcribe_admin_voice(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:
-    """Transcribe una respuesta de voz de Johanna para aprender su estilo/contenido.
+async def _transcribe_telegram_audio(context: ContextTypes.DEFAULT_TYPE, file_id: str, speaker: str = "Johanna") -> str:
+    """Transcribe una nota de voz/audio de Telegram para conservar el contexto real.
 
-    La voz se envía al usuario aunque esta transcripción falle; el aprendizaje de
-    audio es una capa adicional y nunca rompe el flujo principal.
+    Es una capa auxiliar: si falla, el envío principal nunca se rompe.
     """
     if not (HAS_HTTPX and OPENAI_API_KEY and file_id):
         return ""
@@ -6645,20 +6650,22 @@ async def _transcribe_admin_voice(context: ContextTypes.DEFAULT_TYPE, file_id: s
         if not raw:
             return ""
 
-        # Telegram entrega notas de voz normalmente como OGG/Opus; OpenAI admite
-        # formatos como MP3/WAV/WEBM, por eso convertimos de forma local.
         mp3_bytes = await asyncio.to_thread(_convert_voice_to_mp3, raw)
         if not mp3_bytes:
-            logging.warning("Transcripción de voz omitida: Railway necesita ffmpeg (o imageio-ffmpeg) para convertir OGG/Opus.")
+            logging.warning("Transcripción de audio omitida: Railway necesita ffmpeg (o imageio-ffmpeg) para convertir el audio.")
             return ""
         if len(mp3_bytes) > 25 * 1024 * 1024:
-            logging.warning("Nota de voz demasiado grande para transcripción (>25 MB).")
+            logging.warning("Audio demasiado grande para transcripción (>25 MB).")
             return ""
 
-        files_payload = {"file": ("johanna_voice.mp3", mp3_bytes, "audio/mpeg")}
+        files_payload = {"file": ("telegram_audio.mp3", mp3_bytes, "audio/mpeg")}
         data_payload = {
             "model": OPENAI_TRANSCRIBE_MODEL,
-            "prompt": "Conversación de trading de JOHAALETRADER. Términos frecuentes: Stockity, Binomo, CRYPTO IDX, martingala, señales, Premium, Prestige, ID, depósito.",
+            "prompt": (
+                f"Conversación entre un usuario y Johanna / JOHAALETRADER. Hablante actual: {speaker}. "
+                "Términos frecuentes: JT TRADERS TEAMS, Stockity, Binomo, CRYPTO IDX, martingala, "
+                "señales, Premium, Prestige, ID, depósito, gestión de cuenta, gestión de capital, Telegram, canales VIP."
+            ),
         }
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
@@ -6673,8 +6680,18 @@ async def _transcribe_admin_voice(context: ContextTypes.DEFAULT_TYPE, file_id: s
         data = resp.json()
         return str(data.get("text") or "").strip()
     except Exception as e:
-        logging.warning("No pude transcribir respuesta de voz de Johanna: %s", e)
+        logging.warning("No pude transcribir audio de Telegram (%s): %s", speaker, e)
         return ""
+
+
+async def _transcribe_admin_voice(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:
+    """Transcribe una respuesta de voz de Johanna para contexto y aprendizaje."""
+    return await _transcribe_telegram_audio(context, file_id, speaker="Johanna")
+
+
+async def _transcribe_user_audio(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:
+    """Transcribe voz/audio recibido del usuario para que la IA pueda seguir la conversación."""
+    return await _transcribe_telegram_audio(context, file_id, speaker="Usuario")
 
 
 def _load_ai_history(chat_id: int):
@@ -6698,14 +6715,25 @@ def _save_ai_history(chat_id: int, history):
             session.commit()
 
 
-def _append_ai_exchange(chat_id: int, user_text: str, assistant_text: str):
+def _append_ai_exchange(chat_id: int, user_text: str, assistant_text: str, assistant_source: str = "auto"):
+    """Guarda el intercambio y su origen sin cambiar el esquema de BD.
+
+    assistant_source puede ser manual, ai o auto. Las versiones antiguas del
+    historial sin estos metadatos siguen siendo compatibles.
+    """
     if not user_text and not assistant_text:
         return
     history = _load_ai_history(chat_id)
+    stamp = utcnow_naive().isoformat(timespec="seconds")
     if user_text and user_text != "(sin texto)":
-        history.append({"role": "user", "content": str(user_text)[:1800]})
+        history.append({"role": "user", "content": str(user_text)[:1800], "ts": stamp})
     if assistant_text:
-        history.append({"role": "assistant", "content": str(assistant_text)[:2200]})
+        history.append({
+            "role": "assistant",
+            "content": str(assistant_text)[:2200],
+            "source": str(assistant_source or "auto"),
+            "ts": stamp,
+        })
     _save_ai_history(chat_id, history)
 
 
@@ -6713,11 +6741,39 @@ def _history_as_text(chat_id: int) -> str:
     history = _load_ai_history(chat_id)[-12:]
     parts = []
     for item in history:
-        role = "USUARIO" if item.get("role") == "user" else "ASISTENTE"
+        role_value = item.get("role")
+        source = str(item.get("source") or "").lower()
+        if role_value == "user":
+            role = "USUARIO"
+        elif source == "manual":
+            role = "JOHANNA (RESPUESTA PERSONAL REAL)"
+        elif source == "ai":
+            role = "JOHANNA (RESPUESTA IA ANTERIOR)"
+        else:
+            role = "JOHANNA / BOT"
         content = str(item.get("content") or "").strip()
         if content:
             parts.append(f"{role}: {content}")
     return "\n".join(parts)
+
+
+def _has_recent_manual_conversation(chat_id: int, minutes: int = None) -> bool:
+    """True si Johanna respondió personalmente hace poco en este mismo chat."""
+    minutes = int(minutes or AI_MANUAL_CONTEXT_MINUTES)
+    cutoff = utcnow_naive() - timedelta(minutes=minutes)
+    for item in reversed(_load_ai_history(chat_id)):
+        if item.get("role") != "assistant" or str(item.get("source") or "").lower() != "manual":
+            continue
+        raw_ts = str(item.get("ts") or "").strip()
+        if not raw_ts:
+            # Registros antiguos no permiten saber si la conversación sigue activa.
+            continue
+        try:
+            ts = datetime.fromisoformat(raw_ts)
+        except Exception:
+            continue
+        return ts >= cutoff
+    return False
 
 
 def _decode_pending_payload(raw_value: str):
@@ -6806,14 +6862,22 @@ def _cancel_ai_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         pass
 
 
-def _cancel_pending_ai(context: ContextTypes.DEFAULT_TYPE, chat_id: int, manual_reply: str = ""):
+def _cancel_pending_ai(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    manual_reply: str = "",
+    original_question: str = "",
+):
     _cancel_ai_job(context, chat_id)
     pending_text = _clear_pending_ai_db(chat_id)
-    if pending_text and manual_reply:
-        _append_ai_exchange(chat_id, pending_text, manual_reply)
-    elif pending_text:
-        # Conserva la pregunta previa en memoria aunque un nuevo flujo automático la haya dejado obsoleta.
-        _append_ai_exchange(chat_id, pending_text, "")
+    question = (pending_text or original_question or "").strip()
+    if manual_reply:
+        # Una respuesta de Johanna siempre queda como contexto REAL aunque la IA
+        # pendiente ya no exista (por ejemplo, respuestas a conversaciones directas).
+        _append_ai_exchange(chat_id, question, manual_reply, assistant_source="manual")
+    elif question:
+        _append_ai_exchange(chat_id, question, "", assistant_source="auto")
+    return pending_text
 
 
 LIVE_HORARIOS_ES = (
@@ -6927,6 +6991,29 @@ def _is_live_info_query(texto: str) -> bool:
     return False
 
 
+def _is_explicit_where_send_id_query(texto: str) -> bool:
+    """Solo detecta una pregunta/acción clara sobre DÓNDE enviar el ID.
+
+    Evita falsos positivos como “mañana te enviaré la ID, pero entonces no hará falta...”,
+    que es una continuación de conversación y no una consulta de ubicación.
+    """
+    t = _norm(texto or "")
+    if not re.search(r"\bid\b", t):
+        return False
+    location_patterns = (
+        r"(?:por donde|a donde|donde|por aqui|por aca)\b.{0,45}\bid\b",
+        r"\bid\b.{0,45}(?:por donde|a donde|donde|por aqui|por aca)\b",
+    )
+    if any(re.search(p, t) for p in location_patterns):
+        return True
+    # Formas explícitas de pregunta/confirmación de envío, no futuros narrativos.
+    explicit_send = (
+        r"(?:te envio|te mando|puedo enviar|puedo mandarte|debo enviar|debo mandarte)\b.{0,35}\bid\b",
+        r"\bid\b.{0,35}(?:te lo envio|te lo mando|lo envio por aqui|lo mando por aqui)",
+    )
+    return any(re.search(p, t) for p in explicit_send)
+
+
 def detect_intent_es(texto: str) -> str:
     t = _norm(texto)
 
@@ -7024,11 +7111,7 @@ def detect_intent_es(texto: str) -> str:
         return "ID_SUBMIT"
 
     # ---- Dónde enviar el ID / te envío el ID ----
-    if ("id" in t) and any(k in t for k in [
-        "te envio", "te envío", "envio", "envío", "enviar", "mando", "te mando",
-        "por donde", "por dónde", "a donde", "a dónde", "donde te", "dónde te",
-        "por aca", "por acá", "por aqui", "por aquí"
-    ]):
+    if _is_explicit_where_send_id_query(texto):
         return "WHERE_SEND_ID"
 
     if any(k in t for k in ["vpn", "proxy"]):
@@ -7163,10 +7246,7 @@ def detect_all_intents(texto: str):
     ]):
         _add_intent(found, "NEXT_STEP")
 
-    if "id" in t and any(k in t for k in [
-        "te envio", "te envío", "enviar", "mando", "te mando", "por donde", "por dónde", "a donde", "a dónde",
-        "donde te", "dónde te", "por aca", "por acá", "por aqui", "por aquí", "where do i send",
-    ]):
+    if _is_explicit_where_send_id_query(texto) or ("id" in t and "where do i send" in t):
         _add_intent(found, "WHERE_SEND_ID")
 
     if "id" in t and any(k in t for k in [
@@ -7689,6 +7769,8 @@ ESTILO DE JOHANNA
 - PRIORIDAD SEMÁNTICA: entiende la pregunta completa antes de usar una ficha predefinida. Una palabra como “bono”, “nivel”, “bot”, “software” o “señales” NO autoriza por sí sola a soltar una lista genérica.
 - ANCLAJE DE CONTEXTO: identifica primero DE QUÉ SISTEMA habla el usuario y permanece en ese dominio. Si habla de Telegram, canales, enlaces, solicitudes, “unirme”, accesos VIP o “demasiados intentos” al entrar a canales, responde sobre el flujo VIP de Telegram. NO introduzcas Binomo, Stockity, contraseñas, correo, KYC, depósitos o recuperación de cuenta salvo que el mensaje actual los mencione explícitamente.
 - Una referencia como “no me deja ingresar” debe resolverse usando el contexto inmediato. Si el historial y el estado operativo muestran accesos VIP pendientes, “ingresar” significa entrar al canal de Telegram, no iniciar sesión en un broker.
+- PRIORIDAD MÁXIMA AL CONTEXTO HUMANO: si el historial muestra “JOHANNA (RESPUESTA PERSONAL REAL)”, esa respuesta proviene realmente de Johanna por texto o de una nota de voz transcrita. Continúa desde lo que Johanna y el usuario YA acordaron. No reinicies el flujo, no contradigas acuerdos previos y no conviertas una frase de seguimiento en una FAQ aislada por una sola palabra.
+- Antes de responder una continuación (“entonces”, “mañana”, “listo”, “pero”, “en ese caso”, “no haría falta”, etc.), reconstruye mentalmente las últimas intervenciones USUARIO ↔ JOHANNA y responde a ESA conversación.
 - Está PROHIBIDO sugerir “restablecer contraseña” o “ir al sitio del broker” como respuesta a un problema de acceso a canales/enlaces de Telegram.
 - Si preguntan si recomiendo un bono o por sus condiciones/volumen, responde esa situación; no enumeres códigos salvo que pregunten por los códigos/bonos activos.
 - Si preguntan diferencia entre software y bot, explica la diferencia exacta. Software Premium Anticipado = más de 300 señales lun-sáb; bots/IA = alertas automáticas 24/7 según el nivel dentro de mi comunidad.
@@ -7839,7 +7921,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=True,
         )
         _clear_pending_ai_db(chat_id)
-        _append_ai_exchange(chat_id, question, answer)
+        _append_ai_exchange(chat_id, question, answer, assistant_source="ai")
         await _send_scheduled_ai_admin_log(context, chat_id, question, answer)
     except Exception as e:
         if _is_blocked_user_error(e):
@@ -8014,10 +8096,33 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     lang = get_user_lang(chat_id)
 
-    # Voz/audio/video sin texto: revisión humana; la notificación ya fue enviada.
-    if update.message.voice or update.message.audio or update.message.video:
-        if not (update.message.caption or "").strip():
+    # Voz/audio: además de reenviarlo a Johanna, intentamos transcribirlo para que
+    # la IA pueda entender la conversación completa si Johanna no responde.
+    user_audio_transcript = ""
+    if (update.message.voice or update.message.audio) and not (update.message.caption or "").strip():
+        media_obj = update.message.voice or update.message.audio
+        user_audio_transcript = await _transcribe_user_audio(context, media_obj.file_id)
+        if not user_audio_transcript:
+            # Si la transcripción falla, priorizamos revisión humana y no inventamos contexto.
             return
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    f"📝 TRANSCRIPCIÓN DEL AUDIO DEL USUARIO (ID: {chat_id})\n\n"
+                    f"{user_audio_transcript}"
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✏️ Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")],
+                    [InlineKeyboardButton("👤 Gestionar usuario", callback_data=f"admin_user_open:{chat_id}")],
+                ]),
+            )
+        except Exception as e:
+            logging.info("No pude enviar transcripción del usuario al admin: %s", e)
+
+    # Video sin caption se mantiene en revisión humana; no inferimos su contenido.
+    if update.message.video and not (update.message.caption or "").strip():
+        return
 
     # En POST una foto se toma como comprobante inicial; en DEPOSITED se trata como
     # depósito adicional para posible subida de nivel. En ambos casos Johanna revisa
@@ -8078,7 +8183,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_admin_auto_log(context, update, "AUTO_IMAGE", qtxt)
             return
 
-    texto = update.message.text or update.message.caption or ""
+    texto = update.message.text or update.message.caption or user_audio_transcript or ""
     if not texto.strip():
         return
 
@@ -8110,6 +8215,17 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     intents, unknown_parts = _question_analysis(texto)
     meaningful = [i for i in intents if i != "GREETING"]
+
+    # CONTEXTO HUMANO ACTIVO: si Johanna viene conversando personalmente con este
+    # usuario, una frase de seguimiento no debe caer en una FAQ rígida por una sola
+    # palabra (ID, bono, cuenta, etc.). La IA espera la ventana normal y responde
+    # leyendo el historial real, incluidas las respuestas de voz transcritas.
+    # Solo preservamos acciones operativas inequívocas que deben procesarse ya.
+    if _has_recent_manual_conversation(chat_id):
+        operational_now = {"ID_SUBMIT", "DEPOSITO"}
+        if not any(i in operational_now for i in meaningful):
+            schedule_ai_reply(update, context, texto)
+            return
 
     # Gestión de cuenta/capital siempre requiere mi atención personal, incluso si
     # el mismo mensaje menciona bono u otro tema.
@@ -8322,8 +8438,17 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         # Enviar nota de voz
         if update.message.voice:
             await context.bot.send_voice(chat_id=chat_id, voice=update.message.voice.file_id)
-            _cancel_pending_ai(context, chat_id, manual_reply="[Nota de voz enviada por Johanna]")
-            await update.message.reply_text("✅ Nota de voz enviada con éxito.")
+            voice_text = await _transcribe_admin_voice(context, update.message.voice.file_id)
+            _cancel_pending_ai(
+                context,
+                chat_id,
+                manual_reply=voice_text or "[Nota de voz enviada por Johanna]",
+            )
+            if voice_text:
+                _save_johanna_example(chat_id, "", voice_text, get_user_lang(chat_id), response_type="voice")
+                await update.message.reply_text("✅ Nota de voz enviada y transcrita para conservar el contexto.")
+            else:
+                await update.message.reply_text("✅ Nota de voz enviada. La transcripción no estuvo disponible.")
             return
 
         # Si no es archivo multimedia, enviar como texto
