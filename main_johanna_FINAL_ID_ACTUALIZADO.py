@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.50-20260919-AI-SCOPED-CONTEXT-NATURAL-MULTIQUESTION"
+BOT_VERSION = "v7.10.51-20260920-AI-ROUTING-MULTIQUESTION-FACT-GUARD-FIX"
 # v7.10.50: conocimiento IA filtrado por tema, preguntas múltiples naturales y ejemplos solo relevantes.
 # v7.10.49: mejora selección contextual: responde solo el tema preguntado, relaciona fuentes de señales y evita información/horarios innecesarios.
 # v7.10.48: refuerza organización natural en 2 sesiones ~40 min, ~5 operaciones por sesión y precisión +300 señales/día lunes-sábado.
@@ -6764,9 +6764,10 @@ SEÑALES Y SOFTWARE PREMIUM ANTICIPADO
 - Básico: 30–50 señales CRYPTO IDX diarias, de lunes a viernes.
 - Premium y Prestige: Software Premium Anticipado con MÁS DE 300 SEÑALES AL DÍA, de lunes a sábado.
 - Esas +300 señales abarcan CRYPTO IDX, pares de divisas, índices sintéticos y Forex.
-- El listado del Software Premium Anticipado se distribuye durante gran parte del día; normalmente comienza alrededor de las 7:00 a. m. y se extiende aproximadamente hasta las 10:00 p. m. hora Colombia. Presenta ese horario como habitual/aproximado, no como una promesa invariable.
+- El Software Premium Anticipado entrega una LISTA ANTICIPADA Y PREDETERMINADA de señales con el minuto exacto en que se tomará cada entrada. NO describas estas señales como “enviadas manualmente”.
+- El listado se distribuye durante gran parte del día; normalmente comienza alrededor de las 7:00 a. m. y se extiende aproximadamente hasta las 10:00 p. m. hora Colombia. Presenta ese horario como habitual/aproximado, no como una promesa invariable.
 - Esto permite que una persona con horario ocupado elija dentro de la lista el momento en que puede operar.
-- En las señales del Software Premium Anticipado se entra en el minuto exacto indicado por la señal, con expiración de 1 minuto.
+- En las señales del Software Premium Anticipado se entra en el minuto exacto indicado por la señal, con expiración de 1 minuto. La persona realiza la entrada en su cuenta; eso NO significa que las señales sean enviadas manualmente.
 - Cuando pregunten de forma general por las SEÑALES disponibles en un nivel, considera todas las fuentes que realmente generan señales dentro de ese nivel y separa su frecuencia: en Premium/Prestige están las +300 del Software Premium Anticipado (lunes a sábado) y también las alertas del bot IA correspondiente 24/7. No mezcles aquí cursos ni otros beneficios que no sean señales.
 - Si preguntan específicamente por el Software Premium Anticipado, responde solo sobre ese software; si preguntan específicamente por el bot IA, responde solo sobre el bot.
 
@@ -8097,7 +8098,9 @@ def detect_intent_es(texto: str) -> str:
     if _is_bonus_or_promo_mention(texto):
         return "BONO"
 
-    if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
+    # ID debe ser una palabra/token real. Evita falsos positivos como “comunidad” + “cómo”,
+    # que antes podía disparar por error la respuesta fija de ID.
+    if re.search(r"\bid\b", t) and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
         return "ID"
 
     if any(k in t for k in ["retiro", "retirar", "withdraw", "rechaz", "rechazo", "deneg", "no me deja retirar"]):
@@ -8220,7 +8223,7 @@ def detect_all_intents(texto: str):
     if _is_live_info_query(texto):
         _add_intent(found, "LIVE")
 
-    if any(k in t for k in [
+    if re.search(r"\bnivel\b", t) or any(k in t for k in [
         "niveles", "nivel basico", "nivel básico", "nivel premium", "nivel prestige", "planes", "plan basico",
         "plan básico", "plan premium", "plan prestige", "cuanto necesito para entrar", "cuánto necesito para entrar",
         "cuanto debo depositar", "cuánto debo depositar", "inversion minima", "inversión mínima", "minimum investment",
@@ -8504,10 +8507,10 @@ def bono_requiere_guia(texto: str) -> bool:
 
 def respuesta_id_es() -> str:
     return (
-        "🆔 **¿Dónde encuentro mi ID de Stockity o Binomo?**\n\n"
+        "🆔 ¿Dónde encuentro mi ID de Stockity o Binomo?\n\n"
         "1) Entra a tu cuenta (app o web).\n"
-        "2) Ve a tu **perfil / ajustes** (icono de usuario).\n"
-        "3) Busca el campo **ID** o **User ID** y cópialo.\n\n"
+        "2) Ve a tu perfil / ajustes (icono de usuario).\n"
+        "3) Busca el campo ID o User ID y cópialo.\n\n"
         "Si no lo ves, dime si estás en app o navegador y te guío 👇"
     )
 
@@ -8947,6 +8950,20 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
             value, flags=re.I,
         )
 
+        # Software Premium Anticipado: nunca describir la ENTREGA de sus señales como manual.
+        # La entrada la realiza la persona, pero la lista de señales es anticipada y predeterminada.
+        if any(x in q for x in ("senal", "senales", "software premium", "premium anticipado")):
+            value = re.sub(
+                r"(?:las\s+)?señales(?:\s+premium)?\s+(?:son|se\s+env[ií]an|son\s+enviadas)\s+manualmente",
+                "las señales del Software Premium Anticipado son anticipadas y vienen predeterminadas con el minuto exacto de entrada",
+                value, flags=re.I,
+            )
+            value = re.sub(
+                r"enviadas\s+manualmente",
+                "anticipadas y predeterminadas con el minuto exacto de entrada",
+                value, flags=re.I,
+            )
+
         # Guardia factual de formación: Premium termina en Binary Teams Módulo 4; Madness es solo Prestige.
         if "premium" in _norm(value):
             value = re.sub(
@@ -9018,6 +9035,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
         dependency_context = _ai_dependency_context(question, chat_id, lang)
         history_text = _history_as_text(chat_id)
 
+        # v7.10.51: conserva el contexto temático de v7.10.50 y corrige routing multi-pregunta/ID.
         # v7.10.50: entregar al modelo solo las secciones de conocimiento útiles para
         # las preguntas pendientes. La base completa sigue intacta en JOHA_KNOWLEDGE;
         # aquí solo evitamos contaminar una duda de cursos con señales, una duda de
@@ -9178,6 +9196,7 @@ Habla SIEMPRE en primera persona como Johanna. Nunca digas que eres una IA, un b
 OBJETIVO PRINCIPAL
 - Conversa de forma humana, natural y contextual. NO respondas como una FAQ rígida ni copies la base de conocimiento como plantilla.
 - La base oficial contiene HECHOS que debes comprender y aplicar según la pregunta; redacta libremente con palabras naturales.
+- NO completes huecos con suposiciones sobre cómo funciona una herramienta. Si la base no dice que algo es manual, automático, instantáneo, personalizado, etc., no lo inventes. Distingue siempre entre CÓMO SE GENERA/ENTREGA una señal y CÓMO la persona ejecuta la entrada.
 - RESPUESTA MÍNIMA SUFICIENTE: contesta exactamente lo que preguntaron y termina. No anticipes preguntas futuras ni descargues todo lo que sabes del tema.
 - FILTRO DE RELEVANCIA: antes de redactar, separa cada duda pendiente, identifica su categoría (formación/cursos, señales, bots, niveles, registro, depósito, promos, horarios, acceso, etc.) y responde SOLO con los hechos necesarios para ESA duda.
 - El bloque de conocimiento que recibes ya está filtrado por temas relevantes. NO tienes que mencionar todo lo que aparece allí: úsalo como referencia factual, no como checklist.
@@ -9780,8 +9799,11 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # MULTI-PREGUNTA GENERAL: una sola respuesta contextual de IA, sin disparar
-    # varias fichas genéricas. Flujos operativos mantienen su acuse inmediato.
-    if len(meaningful) >= 2 or (meaningful and unknown_parts):
+    # varias fichas genéricas. No dependemos únicamente del detector de intenciones:
+    # dos o más preguntas explícitas deben analizarse juntas aunque compartan palabras
+    # de una misma categoría (por ejemplo nivel + cursos + señales + organización).
+    explicit_multi_question = (texto.count("?") >= 2) or (texto.count("¿") >= 2)
+    if explicit_multi_question or len(meaningful) >= 2 or (meaningful and unknown_parts):
         await _handle_multi_question(update, context, texto, lang, intents, unknown_parts)
         return
 
