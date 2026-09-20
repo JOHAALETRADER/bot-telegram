@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.43-20260919-AI-NATURAL-KNOWLEDGE-PROMO-ADMIN"
+BOT_VERSION = "v7.10.44-20260919-AI-CONTEXT-PRECISION-FIXES"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -3604,15 +3604,24 @@ def personal_chat_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
         [InlineKeyboardButton(label, url=SUPPORT_URL)],
     ])
 
-def _ai_needs_levels_button(question: str) -> bool:
+def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) -> bool:
     """Muestra niveles solo cuando realmente ayudan a la duda actual.
 
-    Una simple mención de Premium/Prestige dentro de una conversación (p. ej.
-    "mañana veo, creo que Premium me sirve") no debe volver a empujar el botón.
+    Un miembro Prestige no necesita el botón por preguntar por SUS bots o señales;
+    sí puede verlo en una consulta general/hipotética sobre niveles de otra persona.
     """
     t = _norm(question or "")
     if not t:
         return False
+
+    explicit_general = any(x in t for x in (
+        "que niveles", "qué niveles", "niveles disponibles", "todos los niveles",
+        "diferencia entre niveles", "diferencia de niveles", "planes disponibles",
+        "si otra persona", "si una persona", "si alguien", "para otra persona",
+    ))
+    if current_level == VIP_LEVEL_PRESTIGE and not explicit_general:
+        return False
+
     direct = (
         "nivel", "niveles", "plan", "planes", "que incluye", "qué incluye",
         "que recibo", "qué recibo", "diferencia", "cuanto necesito", "cuánto necesito",
@@ -3626,10 +3635,16 @@ def _ai_needs_levels_button(question: str) -> bool:
     return t.strip() in {"basico", "básico", "premium", "prestige"}
 
 
-def ai_context_keyboard(question: str, lang: str = "es"):
+def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual mínimo: no añade soporte genérico a cada respuesta de IA."""
+    current_level = VIP_LEVEL_NONE
+    if chat_id is not None:
+        try:
+            current_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        except Exception:
+            current_level = VIP_LEVEL_NONE
     rows = []
-    if _ai_needs_levels_button(question):
+    if _ai_needs_levels_button(question, current_level=current_level):
         label = "📊 VIEW MY COMMUNITY LEVELS" if lang == "en" else "📊 MIRA LOS NIVELES DE MI COMUNIDAD"
         callback = "levels_plans_en" if lang == "en" else "niveles_planes"
         rows.append([InlineKeyboardButton(label, callback_data=callback)])
@@ -3729,6 +3744,10 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
         level = state.get("level") or VIP_LEVEL_NONE
         if level != VIP_LEVEL_NONE:
             lines.append(f"Nivel JT TRADERS TEAMS activo: {_vip_level_label(level, lang)}")
+            if level == VIP_LEVEL_PREMIUM:
+                lines.append("Bots IA incluidos en su nivel: CRYPTO IDX 24/7")
+            elif level == VIP_LEVEL_PRESTIGE:
+                lines.append("Bots IA incluidos en su nivel: CRYPTO IDX 24/7 + pares de divisas 24/7")
             pending = _vip_pending_keys(chat_id)
             if pending:
                 names = []
@@ -6682,6 +6701,7 @@ FORMACIÓN / CURSOS
 - Madness Trading Avanzado: formación avanzada con método ALGO & LIT.
 - La formación incluye además material de estudio/apoyo según nivel, PDFs/guías, tablas de plan de trading y gestión de riesgo, sesiones en vivo y acompañamiento de la comunidad.
 - No enumeres todos los módulos si no hace falta. Ejemplo resumido para Premium: "formación de cero a pro, desde Módulo 1 hasta Módulo 4 Smart Money Concept".
+- Si preguntan específicamente "qué cursos/formación tengo" en Premium o Prestige, después de indicar los módulos añade en UNA frase breve que también hay material de estudio/apoyo, PDFs/guías, plan de trading, gestión de riesgo, sesiones en vivo y acompañamiento según el nivel.
 
 SEÑALES Y SOFTWARE PREMIUM ANTICIPADO
 - Básico: 30–50 señales CRYPTO IDX diarias, de lunes a viernes.
@@ -6700,12 +6720,15 @@ BOTS IA 24/7
 - Para una alerta del bot IA 24/7: la alerta indica ACTIVO + DIRECCIÓN (compra o venta). La entrada se toma al MINUTO SIGUIENTE de recibirse la alerta. Ejemplo: alerta en minuto 10 → entrada en minuto 11. La expiración es siempre de 1 minuto.
 - MG1 y MG2 son opcionales; nunca digas que son obligatorios.
 - Si alguien pregunta solamente si puede tener el bot, limita la respuesta a disponibilidad por nivel. No expliques funcionamiento, panel o registro salvo que lo pregunte.
+- Si el ESTADO OPERATIVO indica Premium y preguntan qué/cuántos bots tiene la persona, menciona CRYPTO IDX 24/7. Si indica Prestige y preguntan qué/cuántos bots tiene, menciona SIEMPRE los dos: CRYPTO IDX 24/7 + pares de divisas 24/7.
+- Si la conversación inmediatamente anterior habla de bots y luego preguntan "cuando me llega una señal, ¿qué hago?", interpreta que se refiere a la alerta del bot y puedes decir brevemente "si te refieres a las alertas de los bots..." antes de explicar minuto +1 y expiración de 1 minuto.
 
 PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE
 - La interfaz visual/panel que Johanna utiliza en sus lives es una herramienta privada de uso interno.
 - No es lo que se instala o entrega a los miembros: mantenerla requeriría instalación, configuración, mantenimiento y actualizaciones, principalmente en computador.
 - Los miembros reciben las señales correspondientes por Telegram, lo que permite usarlas cómodamente desde celular o cualquier dispositivo.
 - SOLO explica esta diferencia si el usuario pregunta por el panel/interfaz que ve en live o si pregunta si recibirá exactamente ese software. No la metas en cada pregunta sobre bots.
+- Cuando sí lo pregunten, incluye brevemente el motivo práctico: el panel requiere instalación/configuración/actualizaciones en computador; Telegram evita depender de un solo equipo y permite recibir las señales desde cualquier dispositivo y lugar.
 
 GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
 - MG1 y MG2 son opcionales. Se pueden utilizar con una gestión de riesgo bien calculada y capital suficiente, pero no garantizan recuperación.
@@ -6754,6 +6777,7 @@ PREGUNTAS MÚLTIPLES Y DEPENDENCIAS
 - Si una decisión depende de un dato que aún no está validado, NO asumas ese dato. Resuelve primero el requisito pendiente.
 - Ejemplo: "tengo cuenta de hace meses / creo que fue contigo / quiero depositar 300 / no sé si usar bono / quiero retirar pronto" → primero pide el ID para verificar si esa cuenta está vinculada. No asumas que corresponde bono 70%, ni que ya puede depositar, hasta resolver esa validación. Puedes añadir brevemente que si piensa retirar en pocos días probablemente le convenga no activar bono, pero deja claro que primero hay que validar la cuenta.
 - Si el usuario envía varias frases cortadas dentro de la ventana de 5 minutos, interprétalas como una misma conversación cuando sean continuidad clara.
+- Si el mensaje actual abre claramente un caso hipotético/de otra persona (por ejemplo "si una persona...", "si otra persona...", "si alguien..."), responde ese caso como tema nuevo y NO arrastres una validación personal de ID/cuenta anterior salvo que el propio mensaje la conecte explícitamente.
 
 LIVES
 - Los lives públicos suelen realizarse de lunes a sábado.
@@ -7277,6 +7301,12 @@ def _clean_ai_text_after_operations(text_value: str, resolved_topics=None) -> st
                     kept.append(tail)
                 continue
 
+        # Cuenta antigua/vinculación ya atendida por el motor.
+        if "YA_TENGO_CUENTA" in topics and _looks_like_existing_account_query(unit):
+            if tail:
+                kept.append(tail)
+            continue
+
         # Depósito/redepósito ya atendido por el motor.
         if "DEPOSITO" in topics and _is_deposit_report_intent(unit):
             if tail:
@@ -7625,13 +7655,116 @@ def _is_deposit_report_intent(texto: str) -> bool:
     ))
 
 
+def _is_min_50_intent(texto: str) -> bool:
+    """Detecta montos realmente menores al mínimo sin confundir 30 con 300.
+
+    Las versiones anteriores usaban coincidencias de subcadenas como
+    ``"depositar 30" in texto`` y por eso ``depositar 300`` podía activar MIN_50.
+    Aquí los números se comparan como tokens completos.
+    """
+    raw = (texto or "").strip()
+    t = _norm(raw)
+    if not t:
+        return False
+
+    explicit = (
+        "no tengo 50", "no tengo cincuenta", "puedo con menos", "puedo iniciar con menos",
+        "puedo empezar con menos", "puedo depositar menos", "puedo depositar con menos",
+        "puedo depositar menos de 50", "menos de 50", "menos de cincuenta",
+        "deposito minimo", "depósito mínimo", "monto minimo", "monto mínimo",
+        "minimo de deposito", "mínimo de depósito",
+    )
+    if any(x in t for x in explicit):
+        return True
+
+    # Solo 10/20/30/40 como valores completos. El (?!\\d) evita 30 -> 300.
+    amount = re.search(r"(?<!\d)(10|20|30|40)(?:[.,]0+)?(?!\d)", t)
+    if not amount:
+        return False
+    context_terms = (
+        "tengo", "solo tengo", "puedo con", "con ", "deposit", "iniciar", "empezar",
+        "dolar", "dólar", "usd", "$",
+    )
+    return any(x in t for x in context_terms)
+
+
+def _is_hypothetical_other_person(texto: str) -> bool:
+    """True cuando la pregunta habla claramente de otra persona/caso general."""
+    t = _norm(texto or "")
+    markers = (
+        "si otra persona", "si una persona", "para otra persona", "una persona que",
+        "alguien que", "si alguien", "en el caso de otra persona", "hipoteticamente",
+        "hipotéticamente", "another person", "if someone", "if another person",
+    )
+    return any(x in t for x in markers)
+
+
+def _question_depends_on_account_validation(texto: str) -> bool:
+    """Indica si la duda actual depende de validar una cuenta antigua propia."""
+    if _is_hypothetical_other_person(texto):
+        return False
+    t = _norm(texto or "")
+    if _looks_like_existing_account_query(texto):
+        return True
+    terms = (
+        "quiero depositar", "voy a depositar", "puedo depositar", "hacer deposito", "hacer depósito",
+        "mi cuenta", "esa cuenta", "esta cuenta", "mi id", "el id",
+        "activar mi", "activar la cuenta", "seguir con el deposito", "seguir con el depósito",
+    )
+    return any(x in t for x in terms)
+
+
+def _recent_account_validation_required(chat_id: int, minutes: int = 20) -> bool:
+    """Detecta una solicitud reciente de validar una cuenta vieja aún sin ID nuevo.
+
+    Se usa solo como contexto conversacional y nunca cambia el estado real del usuario.
+    """
+    cutoff = utcnow_naive() - timedelta(minutes=max(1, int(minutes)))
+    history = _load_ai_history(chat_id)
+    marker_index = -1
+    for idx, item in enumerate(history):
+        raw_ts = str(item.get("ts") or "").strip()
+        if raw_ts:
+            try:
+                if datetime.fromisoformat(raw_ts) < cutoff:
+                    continue
+            except Exception:
+                pass
+        if item.get("role") != "assistant":
+            continue
+        content = _norm(str(item.get("content") or ""))
+        if any(x in content for x in (
+            "enviame primero el id de esa cuenta", "envíame primero el id de esa cuenta",
+            "primero enviame el id", "primero envíame el id",
+            "send me the id of that account first", "send me the account id first",
+        )):
+            marker_index = idx
+
+    if marker_index < 0:
+        return False
+
+    # Si después de ese punto el usuario ya envió un ID candidato, la dependencia
+    # deja de estar pendiente para efectos conversacionales.
+    for item in history[marker_index + 1:]:
+        if item.get("role") == "user" and _extract_candidate_trading_id(str(item.get("content") or "")):
+            return False
+        if item.get("role") == "assistant":
+            c = _norm(str(item.get("content") or ""))
+            if any(x in c for x in ("id validado", "id correctamente validado", "id successfully validated")):
+                return False
+    return True
+
+
 def _looks_like_existing_account_query(texto: str) -> bool:
     t = _norm(texto or "")
     terms = (
         "ya tengo una cuenta", "ya tengo cuenta", "cuenta vieja", "cuenta antigua",
         "cuenta de hace meses", "cuenta de hace tiempo", "cuenta registrada contigo",
         "cuenta registrada con tu enlace", "la registre contigo", "la registré contigo",
-        "fue contigo", "no fue con tu enlace", "no fue contigo", "already have an account",
+        "fue contigo", "fue registrada contigo", "fue registrado contigo",
+        "creo que fue registrada contigo", "creo que fue registrado contigo",
+        "no se si fue registrada contigo", "no sé si fue registrada contigo",
+        "no fue con tu enlace", "no fue contigo", "already have an account",
         "old account", "registered with you", "registered through your link",
     )
     return any(x in t for x in terms)
@@ -7645,8 +7778,10 @@ def _existing_account_relation(texto: str) -> str:
     """
     t = _norm(texto or "")
     uncertain = (
-        "creo que fue contigo", "creo que la registre contigo", "creo que la registré contigo",
+        "creo que fue contigo", "creo que fue registrada contigo", "creo que fue registrado contigo",
+        "creo que la registre contigo", "creo que la registré contigo",
         "no estoy seguro", "no estoy segura", "no se si fue contigo", "no sé si fue contigo",
+        "no se si fue registrada contigo", "no sé si fue registrada contigo",
         "no recuerdo si fue contigo", "quizas fue contigo", "quizás fue contigo",
         "i think it was with you", "not sure if", "i don't remember if",
     )
@@ -7698,10 +7833,21 @@ def _existing_account_reply(texto: str, lang: str, chat_id: int) -> str:
 
 
 def _ai_dependency_context(question: str, chat_id: int, lang: str = "es") -> str:
-    """Añade una prioridad explícita cuando varias dudas dependen de una validación previa."""
-    if not _looks_like_existing_account_query(question):
+    """Prioriza validaciones previas solo cuando la pregunta ACTUAL depende de ellas.
+
+    Así una cuenta antigua pendiente sigue bloqueando "quiero depositar 300", pero
+    una pregunta nueva e hipotética como "si una persona está empezando..." no
+    arrastra el ID de la conversación anterior.
+    """
+    direct_existing = _looks_like_existing_account_query(question)
+    relation = _existing_account_relation(question) if direct_existing else ""
+    recent_dependency = (
+        _recent_account_validation_required(chat_id)
+        and _question_depends_on_account_validation(question)
+    )
+    if not direct_existing and not recent_dependency:
         return ""
-    relation = _existing_account_relation(question)
+
     if relation == "NOT_LINKED":
         return (
             "PRIORIDAD DE DEPENDENCIA: el usuario confirmó que su cuenta vieja NO está vinculada. "
@@ -7712,10 +7858,10 @@ def _ai_dependency_context(question: str, chat_id: int, lang: str = "es") -> str
         )
     return (
         "PRIORIDAD DE DEPENDENCIA: la vinculación de la cuenta antigua todavía NO está validada. "
-        "El siguiente paso obligatorio es pedir el ID y validarlo. No asumas que corresponde bono 70%, no recomiendes hacer el depósito todavía y no saltes a activación. "
-        "Si también pregunta por retirar pronto, puedes dar esa orientación de forma secundaria, dejando claro que primero se valida la cuenta."
+        "El siguiente paso obligatorio es pedir el ID y validarlo. No asumas qué bono corresponde, no recomiendes hacer el depósito todavía y no saltes a activación. "
+        "Esta prioridad aplica solo a la duda actual relacionada con ESA cuenta; si el mensaje actual es una pregunta hipotética o cambia de tema, responde el nuevo tema sin arrastrar el ID anterior."
         if lang == "es" else
-        "DEPENDENCY PRIORITY: the old account linkage is NOT validated yet. The required next step is to request the ID and validate it. Do not assume the 70% bonus applies, do not tell them to deposit yet, and do not jump to activation. If they also ask about withdrawing soon, you may answer that secondarily while making clear the account must be validated first."
+        "DEPENDENCY PRIORITY: the old account linkage is NOT validated yet. The required next step is to request and validate the ID. Do not assume a bonus, do not tell them to deposit yet, and do not jump to activation. This priority applies only to the current question about THAT account; if the current message is hypothetical or changes topic, answer the new topic without dragging the old ID forward."
     )
 
 
@@ -7775,21 +7921,7 @@ def detect_intent_es(texto: str) -> str:
         return "DEP_LATER"
 
     # ---- Mínimo 50 / puedo con menos ----
-    if any(k in t for k in [
-        "no tengo 50", "no tengo cincuenta", "puedo con menos", "puedo iniciar con menos",
-        "puedo empezar con menos", "con menos", "tengo 10", "solo tengo 10", "tengo diez",
-        "puedo empezar con 10", "puedo iniciar con 10", "puedo con 10", "10 dolares", "10 dólares",
-        "tengo 20", "tengo 30", "tengo 40", "puedo con 20", "puedo con 30", "puedo con 40",
-        "con 20", "con 30", "con 40", "menos de 50", "menos de cincuenta",
-        "puedo depositar 10", "puedo depositar 20", "puedo depositar 30", "puedo depositar 40",
-        "puedo depositar menos", "puedo depositar con menos", "puedo depositar menos de 50",
-        "depositar 10", "depositar 20", "depositar 30", "depositar 40",
-        "deposito 10", "deposito 20", "deposito 30", "deposito 40",
-        "puedo hacer un deposito de 10", "puedo hacer un deposito de 20", "puedo hacer un deposito de 30", "puedo hacer un deposito de 40",
-        "puedo hacer deposito de 10", "puedo hacer deposito de 20", "puedo hacer deposito de 30", "puedo hacer deposito de 40",
-        "deposito minimo", "depósito mínimo", "monto minimo", "monto mínimo", "minimo de deposito", "mínimo de depósito",
-        "con 10 dolares", "con 20 dolares", "con 30 dolares", "con 40 dolares",
-    ]):
+    if _is_min_50_intent(texto):
         return "MIN_50"
 
     # ---- Depósito realizado / redepósito / acceso VIP ----
@@ -7928,12 +8060,7 @@ def detect_all_intents(texto: str):
     ]):
         _add_intent(found, "DEP_LATER")
 
-    if any(k in t for k in [
-        "no tengo 50", "no tengo cincuenta", "puedo con menos", "puedo iniciar con menos",
-        "puedo empezar con menos", "menos de 50", "menos de cincuenta", "solo tengo 10", "tengo 10",
-        "tengo 20", "tengo 30", "tengo 40", "puedo con 10", "puedo con 20", "puedo con 30", "puedo con 40",
-        "depositar 10", "depositar 20", "depositar 30", "depositar 40",
-    ]):
+    if _is_min_50_intent(texto):
         _add_intent(found, "MIN_50")
 
     if _is_deposit_report_intent(texto) or any(k in t for k in [
@@ -8630,6 +8757,16 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
     if lang == "es":
         value = re.sub(r"(?:más de\s*)?\+?300\s+señales\s+semanales", "+300 señales al día, de lunes a sábado", value, flags=re.I)
         value = re.sub(r"300\+?\s+señales\s+semanales", "+300 señales al día, de lunes a sábado", value, flags=re.I)
+
+        # Nunca dejar "+300 señales" como cantidad ambigua: la cifra oficial es AL DÍA.
+        pat_300 = re.compile(r"((?:más de\s*)?\+?300\s+señales)(?!\s+(?:al\s+d[ií]a|diarias?))", re.I)
+        def _daily_300(m):
+            tail = value[m.end():m.end()+45]
+            if re.search(r"de\s+lunes\s+a\s+s[aá]bado", tail, re.I):
+                return m.group(1) + " al día"
+            return m.group(1) + " al día, de lunes a sábado"
+        value = pat_300.sub(_daily_300, value)
+
         if "bot" in q or "automatic" in q or "automático" in q or "automatico" in q:
             value = re.sub(r"(?:está|esta) disponible para todos los miembros de mi comunidad", "está disponible desde el nivel Premium dentro de mi comunidad", value, flags=re.I)
             value = re.sub(r"(?:opera|operar|ejecuta|ejecutar) (?:las )?operaciones? automáticamente", "envía alertas automáticamente; las entradas se realizan manualmente", value, flags=re.I)
@@ -8694,6 +8831,7 @@ VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 - Si una respuesta depende de un dato todavía no validado, NO asumas ese dato. Resuelve primero el requisito pendiente y después responde lo que sí pueda contestarse sin inventar.
 - Temas ya atendidos automáticamente antes de llamarte: {answered_note}. No los repitas salvo una referencia mínima necesaria.
 - Responde únicamente a lo que aparece en MENSAJE(S) PENDIENTE(S); el historial sirve para contexto, no para reabrir preguntas ya contestadas.
+- CAMBIO DE TEMA: si el pendiente empieza un caso hipotético o habla explícitamente de "otra persona / una persona / alguien", no arrastres al nuevo tema un ID, depósito o cuenta personal pendiente de una conversación anterior.
 
 ESTILO Y CTA
 - Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas.
@@ -8895,7 +9033,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=chat_id,
             text=answer,
-            reply_markup=personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang),
+            reply_markup=personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang, chat_id),
             disable_web_page_preview=True,
         )
         _clear_pending_ai_db(chat_id)
@@ -9247,6 +9385,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "YA_TENGO_CUENTA":
+        _prune_pending_ai_after_operation(context, chat_id, ["YA_TENGO_CUENTA"], reason="cuenta antigua/vinculación atendida")
         msg = _existing_account_reply(texto, lang, chat_id)
         await _send_user_blocks(update, msg)
         await send_admin_auto_log(context, update, "YA_TENGO_CUENTA", msg)
