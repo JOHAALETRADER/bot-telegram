@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.52-20260920-AI-NATURAL-CONCISE-TRAINING-PROGRESS-FIX"
+BOT_VERSION = "v7.10.53-20260920-AI-RESPONSE-DEPTH-NATURALITY-FIX"
+# v7.10.53: jerarquía de profundidad IA: multi-pregunta más compacta, organización no rígida y menos relleno.
 # v7.10.52: IA más concisa, sin redundancias/relleno y formación Binary Teams entendida como ruta progresiva.
 # v7.10.50: conocimiento IA filtrado por tema, preguntas múltiples naturales y ejemplos solo relevantes.
 # v7.10.49: mejora selección contextual: responde solo el tema preguntado, relaciona fuentes de señales y evita información/horarios innecesarios.
@@ -6770,6 +6771,7 @@ SEÑALES Y SOFTWARE PREMIUM ANTICIPADO
 - El listado se distribuye durante gran parte del día; normalmente comienza alrededor de las 7:00 a. m. y se extiende aproximadamente hasta las 10:00 p. m. hora Colombia. Presenta ese horario como habitual/aproximado, no como una promesa invariable.
 - Esto permite que una persona con horario ocupado elija dentro de la lista el momento en que puede operar.
 - En las señales del Software Premium Anticipado se entra en el minuto exacto indicado por la señal, con expiración de 1 minuto. La persona realiza la entrada en su cuenta; eso NO significa que las señales sean enviadas manualmente.
+- Cuando compares el Software Premium Anticipado con un bot IA, evita la frase “ejecutar manualmente” porque puede confundirse con la forma de ENTREGA de la señal. Expresa simplemente que la persona toma/realiza la entrada en su propia cuenta. Reserva la explicación “no opera automáticamente” para cuando realmente pregunten si el bot ejecuta operaciones.
 - Cuando pregunten de forma general por las SEÑALES disponibles en un nivel, considera todas las fuentes que realmente generan señales dentro de ese nivel y separa su frecuencia: en Premium/Prestige están las +300 del Software Premium Anticipado (lunes a sábado) y también las alertas del bot IA correspondiente 24/7. No mezcles aquí cursos ni otros beneficios que no sean señales.
 - Si preguntan específicamente por el Software Premium Anticipado, responde solo sobre ese software; si preguntan específicamente por el bot IA, responde solo sobre el bot.
 
@@ -6802,10 +6804,11 @@ GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
 - Si preguntan simplemente "¿puedo usar martingala?", responde breve: sí, MG1/MG2 son opcionales y deben quedar dentro de la gestión total de riesgo.
 
 TIEMPO / HORARIOS / PERSONAS QUE TRABAJAN TODO EL DÍA
-- Si alguien pregunta cómo organizar sus horarios para operar, dice que trabaja todo el día o que tiene poco tiempo, responde BREVE y práctico; no conviertas la respuesta en una lista larga.
-- Como referencia práctica de Johanna, puede organizar AL MENOS DOS sesiones de unos 40 minutos en distintos momentos del día, ajustadas a su disponibilidad. No plantees una sola sesión como la recomendación principal.
-- En cada sesión, unas 5 operaciones bien seleccionadas son suficientes como referencia práctica; no necesita intentar tomar todas las señales disponibles ni sobreoperar.
-- Puede apoyarse en las señales del Software Premium Anticipado y en las herramientas disponibles para elegir oportunidades dentro del tiempo que tenga, siempre manteniendo su plan de trading y gestión de riesgo.
+- Si alguien pregunta cómo organizar sus horarios para operar, dice que trabaja todo el día o que tiene poco tiempo, responde BREVE y práctico; no conviertas la respuesta en una receta fija.
+- Como conocimiento de referencia de Johanna existen AL MENOS DOS sesiones de unos 40 minutos y unas 5 operaciones bien seleccionadas por sesión. Son referencias disponibles, NO datos obligatorios que deban aparecer cada vez que se mencione poco tiempo.
+- Si organización/tiempo es SOLO una parte de una pregunta múltiple, normalmente basta UNA frase natural sobre organizarse en sesiones cortas, apoyarse en las señales y evitar estar pendiente todo el día. No desarrolles 40 minutos + 5 operaciones + cantidad de señales salvo que la persona pida específicamente duración, número de operaciones, rutina o una organización detallada.
+- Si la consulta está centrada específicamente en cómo organizar el tiempo para operar, entonces sí puedes concretar de forma natural la referencia de al menos dos sesiones de unos 40 minutos y, cuando aporte valor, unas 5 operaciones bien seleccionadas por sesión.
+- Puede apoyarse en las señales del Software Premium Anticipado y en las herramientas disponibles para elegir oportunidades dentro del tiempo que tenga, siempre manteniendo su plan de trading y gestión de riesgo. No recites la cantidad de señales si no la preguntaron.
 - Si el usuario no dio horarios concretos, NO inventes momentos como “a primera hora”, “en el almuerzo”, “durante el descanso” o “por la noche”. Di simplemente que elija momentos que se ajusten a su disponibilidad. Solo propone franjas concretas si el usuario las dio o las pidió expresamente.
 - Tutea en la respuesta: “ajustadas a tu horario”, “a tu rutina”, “cuando tengas disponibilidad”.
 - El Software Premium Anticipado distribuye señales normalmente desde aproximadamente 7 a. m. hasta 10 p. m. y el bot IA CRYPTO IDX funciona 24/7. Usa esos horarios SOLO si preguntan por disponibilidad/franjas concretas; en una duda simple de organización basta con explicar que hay flexibilidad para elegir momentos compatibles con la rutina.
@@ -8939,7 +8942,28 @@ def _trim_generic_ai_closer(answer: str, lang: str = "es") -> str:
         )
     for pattern in filler_endings:
         value = re.sub(r"(?:\s*\n?\s*)" + pattern + r"\s*$", "", value, flags=re.I).strip()
-    return value
+
+    # Limpieza general de frases motivacionales/evaluativas que no añaden información.
+    # Se eliminan aunque aparezcan en medio de una respuesta; no se reemplazan por una plantilla.
+    if lang == "es":
+        filler_sentences = (
+            r"Esto te permite tener un control total[.!]?",
+            r"¡?Te va a encantar aprender a tu ritmo!?[.!]?",
+            r"Así podrás aprender y operar al mismo tiempo, aprovechando al máximo tu tiempo[.!]?",
+            r"Aunque ambas (?:opciones|estrategias) (?:te ofrecen oportunidades para operar|son útiles|son efectivas),? (?:su dinámica|la dinámica|su forma de entrega) es diferente[.!]?",
+        )
+    else:
+        filler_sentences = (
+            r"This gives you total control[.!]?",
+            r"You(?:'|’)ll love learning at your own pace[.!]?",
+            r"This way you can learn and trade at the same time while making the most of your time[.!]?",
+        )
+    for pattern in filler_sentences:
+        value = re.sub(r"(?:^|(?<=[.!?])\s+|\n+)" + pattern + r"(?=\s|$)", " ", value, flags=re.I).strip()
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n[ \t]+", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
 
 
 def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
@@ -8986,6 +9010,18 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
             value = re.sub(
                 r"enviadas\s+manualmente",
                 "anticipadas y predeterminadas con el minuto exacto de entrada",
+                value, flags=re.I,
+            )
+            # En comparaciones señal vs bot, evita que "manual" parezca describir la ENTREGA.
+            # La operación la realiza la persona, pero la frase más clara es decir que toma la entrada en su cuenta.
+            value = re.sub(
+                r"(?:debes|tienes\s+que)\s+(?:ejecutar|realizar|tomar)(?:la|\s+la\s+entrada)?\s+manualmente\s+en\s+tu\s+cuenta",
+                "la entrada la realizas en tu cuenta",
+                value, flags=re.I,
+            )
+            value = re.sub(
+                r"(?:la\s+entrada|cada\s+entrada)\s+(?:se\s+)?(?:ejecuta|realiza|toma)\s+manualmente\s+en\s+tu\s+cuenta",
+                "la entrada la realizas en tu cuenta",
                 value, flags=re.I,
             )
 
@@ -9224,7 +9260,7 @@ OBJETIVO PRINCIPAL
 - NO completes huecos con suposiciones sobre cómo funciona una herramienta. Si la base no dice que algo es manual, automático, instantáneo, personalizado, etc., no lo inventes. Distingue siempre entre CÓMO SE GENERA/ENTREGA una señal y CÓMO la persona ejecuta la entrada.
 - RESPUESTA MÍNIMA SUFICIENTE: contesta exactamente lo que preguntaron y termina. No anticipes preguntas futuras ni descargues todo lo que sabes del tema.
 - ECONOMÍA DE LENGUAJE: cada dato factual debe aparecer UNA sola vez por respuesta salvo que repetirlo sea indispensable para resolver otra pregunta distinta. Si ya dijiste "lunes a sábado", "24/7", un monto, un nivel o un requisito, no vuelvas a reformular el mismo dato en la frase siguiente.
-- Evita preámbulos que solo repiten la pregunta (por ejemplo, "la diferencia principal radica en...") cuando puedes ir directamente a la diferencia. Evita también frases de relleno/evaluación sin información nueva como "ambas opciones son excelentes", "esto te ofrece muchas oportunidades", "es una gran opción" o equivalentes.
+- Evita preámbulos que solo repiten la pregunta (por ejemplo, "la diferencia principal radica en...") cuando puedes ir directamente a la diferencia. Evita también frases de relleno/evaluación sin información nueva como "ambas opciones son excelentes", "esto te ofrece muchas oportunidades", "esto te permite tener un control total", "te va a encantar", "aprovechando al máximo tu tiempo", "es una gran opción" o equivalentes.
 - En comparaciones, explica directamente la diferencia concreta entre A y B en uno o dos bloques breves; no añadas una conclusión genérica si la comparación ya quedó clara.
 - FILTRO DE RELEVANCIA: antes de redactar, separa cada duda pendiente, identifica su categoría (formación/cursos, señales, bots, niveles, registro, depósito, promos, horarios, acceso, etc.) y responde SOLO con los hechos necesarios para ESA duda.
 - El bloque de conocimiento que recibes ya está filtrado por temas relevantes. NO tienes que mencionar todo lo que aparece allí: úsalo como referencia factual, no como checklist.
@@ -9248,6 +9284,7 @@ CONTINUIDAD Y COMPRENSIÓN
 VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 - Lee el conjunto completo antes de responder. El usuario puede enviar 2, 3, 4 o más mensajes durante la espera de 4 minutos.
 - Separa mentalmente cada pregunta o intención y respóndelas TODAS en el mismo mensaje, en el mismo orden en que llegaron. Si son temas distintos, usa párrafos cortos separados; no hace falta numerarlos salvo que ayude de verdad.
+- No des a cada subpregunta la misma profundidad por obligación. En una consulta múltiple, responde cada parte con la MÍNIMA profundidad necesaria: una parte secundaria puede resolverse en una sola frase si con eso queda contestada.
 - No mezcles datos de una pregunta dentro de otra: por ejemplo, una duda sobre un curso no necesita señales; una duda de organización puede mencionar las señales como apoyo sin recitar cantidades o beneficios que no fueron preguntados.
 - Responde todas las dudas pendientes, pero identifica primero si una depende de otra.
 - Si una respuesta depende de un dato todavía no validado, NO asumas ese dato. Resuelve primero el requisito pendiente y después responde lo que sí pueda contestarse sin inventar.
@@ -9259,7 +9296,7 @@ ESTILO Y CTA
 - Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas. La naturalidad sale de adaptar el lenguaje a la conversación, no de añadir frases motivacionales de relleno.
 - Antes de cerrar la respuesta, revisa mentalmente cada oración: si repite una idea ya dicha, solo parafrasea la pregunta o no aporta un hecho/acción útil, elimínala.
 - No uses listas largas para una duda simple. Si el usuario NO pidió "pasos", "lista" o "guía", responde en prosa breve y NO uses numeración; usa lista solo si realmente la pidió o es imprescindible para claridad.
-- Para dudas sobre falta de tiempo/organización/horarios de trading, usa como referencia de fondo: al menos dos sesiones de unos 40 minutos, alrededor de 5 operaciones bien seleccionadas por sesión, apoyo en las señales disponibles, plan de trading y gestión de riesgo. Expresa solo lo que aporte a la pregunta y VARÍA la redacción según la conversación; no recites siempre la misma secuencia de datos ni conviertas estos hechos en una plantilla. No inventes momentos del día si el usuario no los dio.
+- Para dudas sobre falta de tiempo/organización/horarios de trading, tienes como referencia de fondo: al menos dos sesiones de unos 40 minutos, alrededor de 5 operaciones bien seleccionadas por sesión, apoyo en las señales disponibles, plan de trading y gestión de riesgo. Son DATOS DISPONIBLES, no una receta que debas recitar. Si organización es una subpregunta dentro de varias, resuélvela normalmente en UNA frase breve; usa cifras concretas de tiempo/operaciones solo si la consulta está centrada en la organización o pide esos detalles. No inventes momentos del día si el usuario no los dio.
 - No repitas enlaces/CTA si ya se enviaron recientemente. Muestra registro, niveles u otro CTA solo cuando el usuario lo pida o sea el siguiente paso realmente necesario.
 - Si preguntan por un monto concreto para saber el nivel o qué incluye de forma amplia, responde el nivel concreto y un resumen útil. Si el monto acompaña una pregunta específica sobre un curso/señal/bot, responde solo ese ámbito; no recites beneficios ajenos.
 - El nivel SIEMPRE es "dentro de mi comunidad JT TRADERS TEAMS", nunca nivel del broker.
