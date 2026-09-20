@@ -55,7 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.53-20260920-AI-RESPONSE-DEPTH-NATURALITY-FIX"
+BOT_VERSION = "v7.10.55-20260920-AI-STATE-INTENT-LANGUAGE-ORCHESTRATOR"
+# v7.10.55: orquestación IA por estado + intención, aislamiento factual/promos, idioma EN garantizado y multi-pregunta natural.
+# v7.10.54: corrige routing semántico de la interfaz mostrada en lives y evita confundirla con bots entregables por nivel.
 # v7.10.53: jerarquía de profundidad IA: multi-pregunta más compacta, organización no rígida y menos relleno.
 # v7.10.52: IA más concisa, sin redundancias/relleno y formación Binary Teams entendida como ruta progresiva.
 # v7.10.50: conocimiento IA filtrado por tema, preguntas múltiples naturales y ejemplos solo relevantes.
@@ -3634,6 +3636,12 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) 
     bare_level_amount = bool(re.search(
         r"\b(?:con|entro con|entrar con|deposito de|depósito de|depositar|capital de)\s+\$?\s*\d{2,5}(?:[.,]\d{1,2})?\b", t
     ))
+    workflow_amount = bool(re.search(
+        r"\b(?:tengo|cuento con|dispongo de|tendria|tendría)\s+\$?\s*\d{2,5}(?:[.,]\d{1,2})?\b", t
+    )) and any(x in t for x in (
+        "que me toca", "qué me toca", "que hago", "qué hago", "como sigo", "cómo sigo",
+        "por donde empiezo", "por dónde empiezo", "what do i do", "what next", "how do i start",
+    ))
     level_related_detail = any(x in t for x in (
         "premium", "prestige", "basico", "básico", "nivel", "que incluye", "qué incluye",
         "madness", "modulo", "módulo", "curso", "formacion", "formación",
@@ -3645,7 +3653,7 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) 
         "que incluye premium", "qué incluye premium", "que incluye prestige", "qué incluye prestige",
         "que incluye basico", "qué incluye básico", "beneficios premium", "beneficios prestige",
     ))
-    if current_level == VIP_LEVEL_PRESTIGE and not (explicit_general or explicit_level_planning):
+    if current_level == VIP_LEVEL_PRESTIGE and not (explicit_general or explicit_level_planning or workflow_amount):
         return False
 
     direct = (
@@ -3656,7 +3664,7 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) 
         "acceso a las señales", "acceso a las senales",
         "con 50", "con 100", "con 200", "con 300", "con 500",
     )
-    if any(x in t for x in direct):
+    if workflow_amount or any(x in t for x in direct):
         return True
     return t.strip() in {"basico", "básico", "premium", "prestige"}
 
@@ -3776,29 +3784,80 @@ def _vip_rate_limit_message(lang: str = "es") -> str:
 
 
 def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
-    """Contexto operativo real para que la IA no cambie de tema ni invente pasos.
+    """Contexto operativo REAL y de solo lectura para decisiones de la IA.
 
-    Solo expone estado del flujo dentro del propio bot: etapa, nivel JT, accesos
-    pendientes y pausa de Telegram. No modifica ningún dato.
+    Expone etapa, estado de validación, brokers y nivel sin modificar ningún dato.
+    La IA debe decidir el siguiente paso a partir de este estado antes de usar la
+    base comercial/general.
     """
-    lines = [f"Etapa del bot: {get_user_stage(chat_id)}"]
+    stage_now = get_user_stage(chat_id)
+    if lang == "en":
+        lines = [f"Bot stage: {stage_now}"]
+        stage_labels = {
+            STAGE_PRE: "PRE = registration/ID validation not completed yet",
+            STAGE_POST: "POST = ID validated; waiting for deposit/proof",
+            STAGE_DEPOSITED: "DEPOSITED = account active; do not restart registration/ID",
+        }
+        lines.append(stage_labels.get(stage_now, stage_now))
+    else:
+        lines = [f"Etapa del bot: {stage_now}"]
+        stage_labels = {
+            STAGE_PRE: "PRE = registro/validación de ID todavía no completados",
+            STAGE_POST: "POST = ID validado; pendiente depósito/comprobante",
+            STAGE_DEPOSITED: "DEPOSITED = cuenta activa; no reiniciar registro/ID",
+        }
+        lines.append(stage_labels.get(stage_now, stage_now))
+
+    try:
+        pending_review = _has_pending_id_review(chat_id)
+        strict_valid = _strict_validated_id_state(chat_id)
+        if lang == "en":
+            lines.append(f"ID currently pending admin review: {'yes' if pending_review else 'no'}")
+            lines.append(f"Strict validated-ID evidence: {'yes' if strict_valid else 'no'}")
+        else:
+            lines.append(f"ID actualmente pendiente de revisión admin: {'sí' if pending_review else 'no'}")
+            lines.append(f"Evidencia estricta de ID validado: {'sí' if strict_valid else 'no'}")
+    except Exception:
+        pass
+
+    try:
+        rows = _broker_rows(chat_id)
+        if rows:
+            broker_parts = []
+            for state in rows:
+                label = _broker_label(state.get("broker"))
+                if state.get("id_validated"):
+                    status = "validated" if lang == "en" else "validado"
+                elif state.get("pending_trading_id"):
+                    status = "pending review" if lang == "en" else "pendiente de revisión"
+                else:
+                    status = "not validated" if lang == "en" else "no validado"
+                broker_parts.append(f"{label}: ID {status}; {_vip_level_label(state.get('level'), lang)}")
+            lines.append(("Broker/account states: " if lang == "en" else "Estado por broker/cuenta: ") + "; ".join(broker_parts))
+    except Exception:
+        pass
+
     try:
         with Session() as session:
             row = session.query(Usuario.nombre).filter(Usuario.telegram_id == str(chat_id)).first()
             visible_name = (row[0] or "").strip() if row else ""
         if visible_name:
-            lines.append(f"Nombre visible del usuario: {visible_name}. Puedes usarlo ocasionalmente si suena natural; no lo repitas en cada respuesta.")
+            if lang == "en":
+                lines.append(f"Visible user name: {visible_name}. Use it only occasionally when natural.")
+            else:
+                lines.append(f"Nombre visible del usuario: {visible_name}. Puedes usarlo ocasionalmente si suena natural; no lo repitas en cada respuesta.")
     except Exception:
         pass
+
     try:
         state = _vip_get_state(chat_id, create=False) or {}
         level = state.get("level") or VIP_LEVEL_NONE
         if level != VIP_LEVEL_NONE:
-            lines.append(f"Nivel JT TRADERS TEAMS activo: {_vip_level_label(level, lang)}")
+            lines.append(("Active JT TRADERS TEAMS level: " if lang == "en" else "Nivel JT TRADERS TEAMS activo: ") + _vip_level_label(level, lang))
             if level == VIP_LEVEL_PREMIUM:
-                lines.append("Bots IA incluidos en su nivel: CRYPTO IDX 24/7")
+                lines.append("Included AI bots: CRYPTO IDX 24/7" if lang == "en" else "Bots IA incluidos en su nivel: CRYPTO IDX 24/7")
             elif level == VIP_LEVEL_PRESTIGE:
-                lines.append("Bots IA incluidos en su nivel: CRYPTO IDX 24/7 + pares de divisas 24/7")
+                lines.append("Included AI bots: CRYPTO IDX 24/7 + currency pairs 24/7" if lang == "en" else "Bots IA incluidos en su nivel: CRYPTO IDX 24/7 + pares de divisas 24/7")
             pending = _vip_pending_keys(chat_id)
             if pending:
                 names = []
@@ -3806,18 +3865,21 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                     info = VIP_ACCESS_CHANNELS.get(key) or {}
                     name = info.get("name_en") if lang == "en" else info.get("name_es")
                     names.append(name or key)
-                lines.append("Accesos VIP pendientes: " + "; ".join(names))
+                lines.append(("Pending VIP accesses: " if lang == "en" else "Accesos VIP pendientes: ") + "; ".join(names))
             else:
-                lines.append("Accesos VIP pendientes: ninguno")
+                lines.append("Pending VIP accesses: none" if lang == "en" else "Accesos VIP pendientes: ninguno")
             pause = _vip_get_pause(chat_id)
             if pause and pause.get("due_at") and pause["due_at"] > utcnow_naive():
                 seconds_left = max(1, int((pause["due_at"] - utcnow_naive()).total_seconds()))
                 minutes_left = max(1, (seconds_left + 59) // 60)
-                lines.append(f"Pausa anti-límite de Telegram activa: aproximadamente {minutes_left} min restantes")
+                lines.append(
+                    f"Telegram anti-limit pause active: about {minutes_left} min remaining"
+                    if lang == "en" else
+                    f"Pausa anti-límite de Telegram activa: aproximadamente {minutes_left} min restantes"
+                )
     except Exception as e:
         logging.info("No pude construir contexto operativo IA para %s: %s", chat_id, e)
     return "\n".join(lines)
-
 
 def remarketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     """Teclado exclusivo del remarketing: registro + soporte + regreso al menú."""
@@ -6738,6 +6800,9 @@ REGISTRO Y ACCESO
   {ENLACE_REFERIDO}
 - En inglés usa "🔗 Stockity — primary option:" y "🔗 Binomo — secondary option:".
 - Nunca confirmes por tu cuenta que un ID, afiliación, depósito o acceso quedó validado; eso depende del sistema/validación de Johanna.
+- Cuando la persona pregunte de forma natural “¿qué me toca?”, “¿qué hago ahora?”, “¿cómo sigo?”, “¿por dónde empiezo?” o equivalente, interpreta primero que está preguntando por el SIGUIENTE PASO del flujo, no automáticamente por beneficios, nivel o promociones. Usa el ESTADO OPERATIVO REAL: PRE → registro correcto + envío/validación de ID antes de depositar; POST → ID validado, corresponde depósito en esa misma cuenta + comprobante; DEPOSITED → no reinicies registro/ID, continúa desde su nivel/acceso real.
+- Si en esa pregunta de siguiente paso aparece un monto, puedes mencionar DESPUÉS del paso operativo qué nivel correspondería a ese capital, pero no conviertas el monto en una explicación de bonos ni en una lista de beneficios. Para los detalles del nivel existe el botón de niveles.
+- Si ya existe un ID enviado y pendiente de revisión, no pidas otro registro ni otro ID y no indiques depositar todavía: informa brevemente que primero debe terminar la validación del ID.
 
 NIVELES DENTRO DE JT TRADERS TEAMS
 - El nivel pertenece a la comunidad JT TRADERS TEAMS, NO al broker. Se determina por el capital/deposito validado que la persona mantiene en su propia cuenta de trading.
@@ -6747,6 +6812,7 @@ NIVELES DENTRO DE JT TRADERS TEAMS
 - Si preguntan por un monto concreto PARA SABER EL NIVEL o preguntan de forma amplia qué incluye, responde el nivel correspondiente y un resumen útil de sus beneficios. Ejemplo factual: 300 USD = Premium.
 - Si el monto aparece dentro de una pregunta ESPECÍFICA sobre un curso, señal, bot u otra herramienta, úsalo solo para ubicar el nivel y responde únicamente ese tema; no conviertas el monto en una excusa para listar beneficios no preguntados.
 - Si preguntan por todos los niveles, sí puedes compararlos.
+- Un monto por sí solo NO significa “háblame del bono” ni “enumera beneficios”. El sentido lo define la intención completa: siguiente paso, nivel, curso, señales, depósito, etc.
 
 FORMACIÓN / CURSOS
 - Básico recibe Binary Teams Módulos 1, 2 y 3.
@@ -6780,8 +6846,8 @@ BOTS IA 24/7
 - Premium: bot IA CRYPTO IDX 24/7.
 - Prestige: bot IA CRYPTO IDX 24/7 + bot IA de pares de divisas 24/7.
 - "Automático" significa que el sistema GENERA Y ENVÍA ALERTAS automáticamente 24/7. NO abre ni ejecuta operaciones automáticamente dentro de la cuenta del usuario.
-- Cada entrada se realiza MANUALMENTE por la persona para conservar control de gestión de riesgo, capital y plan de trading.
-- Para una alerta del bot IA 24/7: la alerta indica ACTIVO + DIRECCIÓN (compra o venta). La entrada se toma al MINUTO SIGUIENTE de recibirse la alerta. Ejemplo: alerta en minuto 10 → entrada en minuto 11. La expiración es siempre de 1 minuto.
+- El bot NO abre ni ejecuta operaciones dentro de la cuenta. La persona realiza la entrada en su propia cuenta, manteniendo el control de gestión de riesgo, capital y plan de trading.
+- Para una alerta del bot IA 24/7: la alerta indica ACTIVO + DIRECCIÓN (compra o venta) y la entrada se toma al MINUTO SIGUIENTE de recibirse la alerta. Ejemplo: alerta en minuto 10 → entrada en minuto 11. La expiración es siempre de 1 minuto. NO digas “tú decides cuándo entrar”, porque el momento de entrada sí está definido por la alerta.
 - MG1 y MG2 son opcionales; nunca digas que son obligatorios.
 - Si alguien pregunta solamente si puede tener el bot, limita la respuesta a disponibilidad por nivel. No expliques funcionamiento, panel o registro salvo que lo pregunte.
 - Si el ESTADO OPERATIVO indica Premium y preguntan qué/cuántos bots tiene la persona, menciona CRYPTO IDX 24/7. Si indica Prestige y preguntan qué/cuántos bots tiene, menciona SIEMPRE los dos: CRYPTO IDX 24/7 + pares de divisas 24/7.
@@ -6790,8 +6856,10 @@ BOTS IA 24/7
 PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE
 - La interfaz visual/panel que Johanna utiliza en sus lives es una herramienta privada de uso interno.
 - No es lo que se instala o entrega a los miembros: mantenerla requeriría instalación, configuración, mantenimiento y actualizaciones, principalmente en computador.
-- Los miembros reciben las señales correspondientes por Telegram, lo que permite usarlas cómodamente desde celular o cualquier dispositivo.
-- SOLO explica esta diferencia si el usuario pregunta por el panel/interfaz que ve en live o si pregunta si recibirá exactamente ese software. No la metas en cada pregunta sobre bots.
+- Los miembros reciben las MISMAS señales operativas correspondientes por Telegram, lo que permite usarlas cómodamente desde celular o cualquier dispositivo, sin instalar ni configurar esa interfaz.
+- REFERENCIA SEMÁNTICA IMPORTANTE: si alguien dice “el bot que muestras en los lives”, “el programa que usas en vivo”, “eso que se ve en tu pantalla”, “el software que muestras” o una frase equivalente, interpreta que se refiere a ESTA interfaz visual privada, aunque use la palabra “bot”, salvo que nombre de forma explícita el bot IA CRYPTO IDX 24/7 o el bot IA de pares de divisas 24/7.
+- No presentes esta interfaz como beneficio de Premium o Prestige ni digas que se obtiene subiendo de nivel. No se entrega a usuarios.
+- SOLO explica esta diferencia si el usuario pregunta por el panel/interfaz/herramienta que ve en live o si pregunta si recibirá exactamente ese software. No la metas en cada pregunta general sobre bots.
 - Cuando sí lo pregunten, incluye brevemente el motivo práctico: el panel requiere instalación/configuración/actualizaciones en computador; Telegram evita depender de un solo equipo y permite recibir las señales desde cualquier dispositivo y lugar.
 
 GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
@@ -6834,6 +6902,7 @@ BROKERS Y UPGRADES
 - Solo cuentan depósitos reportados y validados.
 
 BONOS — REGLAS GENERALES
+- AISLAMIENTO ESTRICTO: bonos, códigos, 70%, 100%, volumen y condiciones de retiro SOLO pueden aparecer si la pregunta pendiente menciona de forma explícita bonos/promociones/códigos o pregunta directamente por ellos. Un monto aislado, una duda de nivel o una pregunta de siguiente paso NO autoriza a hablar de promociones, aunque el historial o ejemplos anteriores sí las mencionen.
 - Los códigos vigentes y la fecha actual se suministran en el CONTEXTO PROMOCIONAL ACTUAL; esa información manda sobre ejemplos antiguos.
 - Bono 100%: solo primer depósito y un solo uso.
 - Bono 70%: depósitos posteriores.
@@ -8062,7 +8131,10 @@ def detect_intent_es(texto: str) -> str:
         "que sigue", "qué sigue", "que paso sigue", "qué paso sigue", "paso sigue",
         "y ahora que", "y ahora qué", "entonces que sigue", "entonces qué sigue",
         "ok gracias entonces", "ok gracias", "ya me registre que hago", "ya me registré que hago",
-        "que hago ahora", "qué hago ahora", "siguiente paso"
+        "que hago ahora", "qué hago ahora", "siguiente paso",
+        "que me toca", "qué me toca", "como sigo", "cómo sigo",
+        "por donde empiezo", "por dónde empiezo", "como empiezo", "cómo empiezo",
+        "what do i do", "what next", "what's next", "how do i continue", "how do i start"
     ]):
         return "NEXT_STEP"
 
@@ -8205,7 +8277,9 @@ def detect_all_intents(texto: str):
 
     if any(k in t for k in [
         "que sigue", "qué sigue", "y ahora que", "y ahora qué", "siguiente paso", "que hago ahora", "qué hago ahora",
-        "what next", "next step",
+        "que me toca", "qué me toca", "como sigo", "cómo sigo", "por donde empiezo", "por dónde empiezo",
+        "como empiezo", "cómo empiezo", "what do i do", "what next", "what's next", "next step",
+        "how do i continue", "how do i start",
     ]):
         _add_intent(found, "NEXT_STEP")
 
@@ -9057,7 +9131,11 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
 
         if "bot" in q or "automatic" in q or "automático" in q or "automatico" in q:
             value = re.sub(r"(?:está|esta) disponible para todos los miembros de mi comunidad", "está disponible desde el nivel Premium dentro de mi comunidad", value, flags=re.I)
-            value = re.sub(r"(?:opera|operar|ejecuta|ejecutar) (?:las )?operaciones? automáticamente", "envía alertas automáticamente; las entradas se realizan manualmente", value, flags=re.I)
+            value = re.sub(r"(?:opera|operar|ejecuta|ejecutar) (?:las )?operaciones? automáticamente", "genera y envía alertas automáticamente; la persona realiza la entrada en su propia cuenta", value, flags=re.I)
+            value = re.sub(
+                r"(?:tú|tu)\s+decides\s+(?:cu[aá]ndo|cuando)\s+(?:realizar|tomar|hacer|ejecutar)\s+(?:la\s+)?entrada",
+                "la entrada se toma al minuto siguiente de recibir la alerta", value, flags=re.I,
+            )
     else:
         value = re.sub(r"300\+?\s+signals\s+(?:per\s+week|weekly)", "300+ signals per day, Monday to Saturday", value, flags=re.I)
         if "premium" in _norm(value):
@@ -9068,6 +9146,7 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
             )
         if "bot" in q or "automatic" in q:
             value = re.sub(r"available to all members of my community", "available from the Premium level in my community", value, flags=re.I)
+            value = re.sub(r"you decide when to (?:enter|take|place|execute) (?:the )?(?:entry|trade)", "you take the entry on the minute immediately after the alert", value, flags=re.I)
     return value.strip()
 
 
@@ -9090,34 +9169,134 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
 - El usuario seleccionó ESPAÑOL en el bot.
 - Escribe TODA la respuesta final en español natural.
 """.strip()
-        real_examples = _johanna_examples_as_text(question=question, limit=8, lang=lang)
         runtime_context = _ai_runtime_context(chat_id, lang)
-        promo_context = _promo_ai_context(lang)
         dependency_context = _ai_dependency_context(question, chat_id, lang)
         history_text = _history_as_text(chat_id)
-
-        # v7.10.51: conserva el contexto temático de v7.10.50 y corrige routing multi-pregunta/ID.
-        # v7.10.50: entregar al modelo solo las secciones de conocimiento útiles para
-        # las preguntas pendientes. La base completa sigue intacta en JOHA_KNOWLEDGE;
-        # aquí solo evitamos contaminar una duda de cursos con señales, una duda de
-        # horarios con niveles, etc. Si llegan varias preguntas, se usa la unión de temas.
         q_norm = _norm(question or "")
-        strong_current_topic = any(x in q_norm for x in (
-            "premium", "prestige", "basico", "nivel", "madness", "curso", "modulo", "formacion",
-            "senal", "software premium", "bot", "crypto idx", "registro", "registrarme", "deposito",
-            "bono", "codigo promo", "live", "panel", "interfaz", "martingala", "riesgo", "organizar",
-            "poco tiempo", "trabajo todo el dia", "cuenta antigua", "cuenta vieja", "acceso vip",
+
+        # v7.10.55: ORQUESTADOR IA. Primero clasifica la intención semántica del
+        # conjunto pendiente usando el modelo; después selecciona solo los bloques
+        # factuales necesarios. Si el planificador falla, conserva heurísticas locales.
+        planner = {}
+        planner_intents = set()
+        planner_primary = ""
+        planner_amount = None
+        try:
+            planner_payload = {
+                "model": OPENAI_MODEL,
+                "instructions": (
+                    "Classify the user's pending Telegram message(s) for a trading-community support workflow. "
+                    "Return ONLY one compact JSON object, no markdown and no explanation. "
+                    "Allowed intents: next_step, registration, level, broad_benefits, courses, signals, ai_bot, "
+                    "live_panel, time_management, risk, existing_account, broker_upgrade, promo, live_schedule, "
+                    "vip_access, personal_review, other. Use ALL intents that are actually asked. "
+                    "Important semantics: phrases such as 'qué me toca', 'qué hago ahora', 'cómo sigo', 'por dónde empiezo' "
+                    "normally mean next_step unless the user explicitly asks which level/benefits. "
+                    "'the bot/program/software you show in your live/on screen' means live_panel unless CRYPTO IDX 24/7 "
+                    "or the currency-pair AI bot is explicitly named. A money amount alone does NOT mean promo. "
+                    "Set promo only when bonuses/promo codes/70%/100% are explicitly asked. "
+                    "Schema: {\"primary\":\"intent\",\"intents\":[\"...\"],\"amount_usd\":number_or_null,"
+                    "\"multi_question\":true_or_false}."
+                ),
+                "input": (
+                    f"USER SELECTED LANGUAGE: {lang}\n"
+                    f"BOT STAGE: {stage}\n"
+                    f"REAL OPERATIONAL CONTEXT:\n{runtime_context}\n\n"
+                    f"RECENT HISTORY (context only):\n{history_text[-3000:] if history_text else '(none)'}\n\n"
+                    f"PENDING MESSAGE(S):\n{question.strip()}"
+                ),
+                "max_output_tokens": 180,
+                "store": False,
+            }
+            async with httpx.AsyncClient(timeout=25) as client:
+                planner_resp = await client.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={"Authorization": "Bearer " + OPENAI_API_KEY, "Content-Type": "application/json"},
+                    json=planner_payload,
+                )
+            if planner_resp.status_code == 200:
+                planner_raw = _responses_api_text(planner_resp.json()).strip()
+                planner_raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", planner_raw, flags=re.I | re.S).strip()
+                match_json = re.search(r"\{.*\}", planner_raw, flags=re.S)
+                if match_json:
+                    parsed = json.loads(match_json.group(0))
+                    if isinstance(parsed, dict):
+                        planner = parsed
+                        allowed = {
+                            "next_step", "registration", "level", "broad_benefits", "courses", "signals",
+                            "ai_bot", "live_panel", "time_management", "risk", "existing_account",
+                            "broker_upgrade", "promo", "live_schedule", "vip_access", "personal_review", "other",
+                        }
+                        planner_intents = {str(x).strip() for x in (planner.get("intents") or []) if str(x).strip() in allowed}
+                        planner_primary = str(planner.get("primary") or "").strip()
+                        if planner_primary not in allowed:
+                            planner_primary = ""
+                        raw_amount = planner.get("amount_usd")
+                        if isinstance(raw_amount, (int, float)) and 0 < float(raw_amount) <= 1000000:
+                            planner_amount = float(raw_amount)
+            else:
+                logging.info("Planificador IA devolvió %s; uso heurísticas locales", planner_resp.status_code)
+        except Exception as e:
+            logging.info("Planificador IA no disponible; uso heurísticas locales: %s", e)
+
+        explicit_bonus = _is_bonus_or_promo_mention(question)
+        explicit_level_question = any(x in q_norm for x in (
+            "que nivel", "qué nivel", "cual nivel", "cuál nivel", "nivel me toca", "nivel tendria",
+            "nivel tendría", "que incluye", "qué incluye", "beneficios", "what level", "which level", "what is included",
         ))
-        # El historial solo participa en la selección temática cuando el mensaje actual
-        # es un seguimiento corto/anafórico ("eso", "ese", "y cómo funciona", etc.).
-        # En preguntas explícitas nuevas manda únicamente el pendiente actual para no
-        # arrastrar temas viejos como señales/cursos de pruebas anteriores.
+        next_step_heuristic = (
+            any(x in q_norm for x in (
+                "que me toca", "qué me toca", "que hago ahora", "qué hago ahora", "que hago", "qué hago",
+                "como sigo", "cómo sigo", "por donde empiezo", "por dónde empiezo", "como empiezo", "cómo empiezo",
+                "what do i do", "what next", "what's next", "how do i continue", "how do i start",
+            ))
+            and not explicit_level_question
+        )
+        if next_step_heuristic:
+            planner_intents.add("next_step")
+            if not planner_primary or planner_primary == "other":
+                planner_primary = "next_step"
+
+        live_reference = any(x in q_norm for x in ("live", "en vivo", "en vivos", "transmision", "directo", "on live", "livestream"))
+        shown_tool_reference = any(x in q_norm for x in (
+            "que muestras", "que usas", "que utilizas", "que se ve", "que aparece", "muestras en los",
+            "en tu pantalla", "de tu pantalla", "you show", "you use", "on your screen",
+        ))
+        tool_reference = any(x in q_norm for x in ("bot", "software", "programa", "sistema", "herramienta", "panel", "interfaz", "pantalla", "tool"))
+        explicit_member_ai_bot = any(x in q_norm for x in (
+            "bot ia", "ia crypto", "crypto idx 24/7", "bot de crypto", "bot crypto", "bot de pares",
+            "pares de divisas 24/7", "ai bot", "currency pair bot", "automatic alert", "alerta automatica",
+        ))
+        panel_topic = ("live_panel" in planner_intents) or (live_reference and shown_tool_reference and tool_reference and not explicit_member_ai_bot)
+        if panel_topic:
+            planner_intents.add("live_panel")
+            if planner_primary in ("", "other", "ai_bot") and not explicit_member_ai_bot:
+                planner_primary = "live_panel"
+
+        strong_current_topic = bool(planner_intents - {"other"}) or any(x in q_norm for x in (
+            "premium", "prestige", "basico", "nivel", "curso", "modulo", "formacion", "senal",
+            "bot", "crypto idx", "registro", "deposito", "bono", "live", "panel", "interfaz",
+            "riesgo", "organizar", "poco tiempo", "cuenta antigua", "acceso vip",
+        ))
         ambiguous_followup = (not strong_current_topic) and len(q_norm.split()) <= 14 and any(x in q_norm for x in (
             "eso", "ese ", "esa ", "esos ", "esas ", "y como", "y que", "y cuando",
             "como funciona", "como se usa", "y el ", "y la ", "tambien", "entonces",
         ))
-        scope_norm = q_norm + ("\n" + _norm(history_text[-3500:]) if ambiguous_followup and history_text else "")
-        multi_pending = question.count("?") >= 2 or len([x for x in re.split(r"[\n\r]+", question or "") if x.strip()]) >= 2
+        scope_norm = q_norm + ("\n" + _norm(history_text[-3000:]) if ambiguous_followup and history_text else "")
+        multi_pending = bool(planner.get("multi_question")) or question.count("?") >= 2 or len([x for x in re.split(r"[\n\r]+", question or "") if x.strip()]) >= 2
+
+        amount_usd = planner_amount
+        if amount_usd is None:
+            amount_match = re.search(
+                r"(?:\$\s*)?(\d{2,5}(?:[.,]\d{1,2})?)(?:\s*(?:usd|dolares|dólares))?",
+                q_norm,
+            )
+            if amount_match and (explicit_level_question or next_step_heuristic or any(x in q_norm for x in ("tengo ", "cuento con", "dispongo de", "deposit"))):
+                try:
+                    amount_usd = float(amount_match.group(1).replace(",", "."))
+                except Exception:
+                    amount_usd = None
+
         knowledge_text = (JOHA_KNOWLEDGE or "").strip()
         section_titles = [
             "IDENTIDAD Y PRINCIPIO DE RESPUESTA",
@@ -9145,61 +9324,39 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             stop = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(knowledge_text)
             knowledge_sections[match.group(1)] = knowledge_text[match.start():stop].strip()
 
-        selected_titles = {"IDENTIDAD Y PRINCIPIO DE RESPUESTA", "LÍMITES"}
-        broad_benefits = any(x in scope_norm for x in (
-            "que incluye", "que recibo", "que trae", "beneficios", "todo lo que incluye",
-            "que ofrece", "que tienen los niveles", "que tiene premium", "que tiene prestige",
-            "que tiene basico", "comunidad completa", "que hay en la comunidad",
+        broad_benefits = ("broad_benefits" in planner_intents) or any(x in q_norm for x in (
+            "que incluye", "qué incluye", "que recibo", "qué recibo", "que trae", "beneficios",
+            "todo lo que incluye", "que ofrece", "what is included", "what do i get",
         ))
-        level_topic = broad_benefits or any(x in scope_norm for x in (
-            "nivel", "basico", "premium", "prestige", "deposito minimo", "monto", "capital para entrar",
-        )) or bool(re.search(r"\b\d{2,5}(?:[.,]\d{1,2})?\s*(?:usd|dolares?)\b", scope_norm))
-        course_topic = any(x in scope_norm for x in (
-            "curso", "cursos", "formacion", "modulo", "modulos", "binary teams", "madness",
-            "smart money", "algo & lit", "algo y lit", "audiolibro", "pdf", "material de estudio",
+        next_step_topic = "next_step" in planner_intents or next_step_heuristic
+        level_topic = "level" in planner_intents or broad_benefits or explicit_level_question
+        course_topic = "courses" in planner_intents or any(x in scope_norm for x in (
+            "curso", "cursos", "formacion", "modulo", "binary teams", "madness", "smart money", "algo & lit", "audiolibro", "material de estudio",
         ))
-        signal_topic = any(x in scope_norm for x in (
-            "senal", "senales", "software premium", "premium anticipado", "cuantas senales", "lista de senales",
+        signal_topic = "signals" in planner_intents or any(x in scope_norm for x in ("senal", "senales", "software premium", "premium anticipado", "lista de senales", "signals"))
+        bot_topic = ("ai_bot" in planner_intents or explicit_member_ai_bot) and not (panel_topic and not explicit_member_ai_bot)
+        time_topic = "time_management" in planner_intents or any(x in scope_norm for x in (
+            "organizarme", "organizar", "poco tiempo", "solo tengo un rato", "trabajo todo el dia", "cuanto tiempo", "rutina para operar", "2 horas", "dos horas",
         ))
-        bot_topic = any(x in scope_norm for x in (
-            "bot", "bots", "ia 24/7", "ia crypto", "crypto idx 24/7", "alerta automatica", "alertas automaticas",
-        ))
-        panel_topic = any(x in scope_norm for x in ("panel", "interfaz", "software que usas", "software del live", "instalar el software"))
-        time_topic = any(x in scope_norm for x in (
-            "organizarme", "organizar", "poco tiempo", "solo tengo un rato", "trabajo todo el dia",
-            "horario para operar", "horarios para operar", "rutina para operar", "cuanto tiempo", "sesiones de trading",
-        ))
-        risk_topic = any(x in scope_norm for x in (
-            "gestion de riesgo", "riesgo", "martingala", "mg1", "mg2", "sobreoper", "cuantas operaciones", "porcentaje del capital",
-        ))
-        account_topic = any(x in scope_norm for x in (
-            "cuenta antigua", "cuenta vieja", "ya tengo cuenta", "cuenta existente", "vinculada", "vinculado", "registrada contigo", "registrado contigo",
-        ))
-        registration_topic = account_topic or any(x in scope_norm for x in (
-            "registrarme", "registro", "registrar", "enlace", "link", "id de binomo", "id de stockity", "validar id", "afiliad",
-        ))
-        broker_topic = any(x in scope_norm for x in (
-            "upgrade", "subir de nivel", "otro deposito", "depositos acumul", "acumular depositos",
-            "mismo broker", "dos brokers", "ambos brokers", "depositos de binomo", "depositos de stockity",
-        ))
-        bonus_topic = any(x in scope_norm for x in ("bono", "bonos", "codigo promo", "codigo promocional", "promocion", "70%", "100%"))
-        live_topic = any(x in scope_norm for x in ("live", "en vivo", "transmision", "tiktok live", "youtube live"))
-        vip_access_topic = any(x in scope_norm for x in (
-            "acceso vip", "canal vip", "canales vip", "demasiados intentos", "solicitud de acceso", "entrar al canal",
-        ))
-        personal_topic = any(x in scope_norm for x in (
-            "gestion de cuenta", "gestionar mi cuenta", "gestion de capital", "plataforma no disponible", "restriccion por pais",
-        ))
+        risk_topic = "risk" in planner_intents or any(x in scope_norm for x in ("gestion de riesgo", "martingala", "mg1", "mg2", "sobreoper", "cuantas operaciones"))
+        account_topic = "existing_account" in planner_intents or any(x in scope_norm for x in ("cuenta antigua", "cuenta vieja", "ya tengo cuenta", "cuenta existente", "vinculada", "registrada contigo"))
+        registration_topic = "registration" in planner_intents or account_topic or next_step_topic or any(x in scope_norm for x in ("registrarme", "registro", "enlace", "validar id", "id de binomo", "id de stockity"))
+        broker_topic = "broker_upgrade" in planner_intents or any(x in scope_norm for x in ("upgrade", "subir de nivel", "otro deposito", "depositos acumul", "mismo broker", "dos brokers"))
+        bonus_topic = bool(explicit_bonus)
+        live_topic = "live_schedule" in planner_intents or any(x in q_norm for x in ("horario del live", "cuando es el live", "a que hora el live", "tiktok live", "youtube live"))
+        vip_access_topic = "vip_access" in planner_intents or any(x in scope_norm for x in ("acceso vip", "canal vip", "demasiados intentos", "solicitud de acceso", "entrar al canal"))
+        personal_topic = "personal_review" in planner_intents or any(x in scope_norm for x in ("gestion de cuenta", "gestion de capital", "plataforma no disponible", "restriccion por pais"))
 
-        if level_topic:
+        selected_titles = {"IDENTIDAD Y PRINCIPIO DE RESPUESTA", "LÍMITES"}
+        if registration_topic:
+            selected_titles.add("REGISTRO Y ACCESO")
+        if level_topic or (next_step_topic and amount_usd is not None):
             selected_titles.add("NIVELES DENTRO DE JT TRADERS TEAMS")
         if course_topic or broad_benefits:
             selected_titles.add("FORMACIÓN / CURSOS")
         if signal_topic or broad_benefits:
             selected_titles.add("SEÑALES Y SOFTWARE PREMIUM ANTICIPADO")
-        # Una pregunta general por señales de Premium/Prestige debe conocer también
-        # las fuentes 24/7; una pregunta concreta por software no obliga a hablar del bot.
-        if bot_topic or broad_benefits or (signal_topic and any(x in scope_norm for x in ("premium", "prestige", "nivel"))):
+        if bot_topic or broad_benefits or (signal_topic and any(x in q_norm for x in ("premium", "prestige", "nivel"))):
             selected_titles.add("BOTS IA 24/7")
         if panel_topic:
             selected_titles.add("PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE")
@@ -9210,8 +9367,6 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             selected_titles.add("GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA")
         if account_topic:
             selected_titles.add("CUENTAS EXISTENTES / ANTIGUAS")
-        if registration_topic:
-            selected_titles.add("REGISTRO Y ACCESO")
         if broker_topic:
             selected_titles.add("BROKERS Y UPGRADES")
         if bonus_topic:
@@ -9224,17 +9379,12 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             selected_titles.add("CASOS QUE SIEMPRE VAN A JOHANNA")
         if multi_pending:
             selected_titles.add("PREGUNTAS MÚLTIPLES Y DEPENDENCIAS")
-
-        # Preguntas amplias sobre la comunidad/nivel sí pueden requerir varias categorías.
         if broad_benefits:
             selected_titles.update({
                 "NIVELES DENTRO DE JT TRADERS TEAMS", "FORMACIÓN / CURSOS",
                 "SEÑALES Y SOFTWARE PREMIUM ANTICIPADO", "BOTS IA 24/7",
             })
 
-        # Si la base fue reemplazada desde Railway y ya no conserva estos encabezados,
-        # mantenemos compatibilidad usando la base completa. De lo contrario usamos solo
-        # las secciones seleccionadas y nunca obligamos al modelo a mencionar todas.
         if knowledge_sections:
             ordered_sections = [knowledge_sections[t] for t in section_titles if t in selected_titles and t in knowledge_sections]
             scoped_knowledge = "\n\n".join(ordered_sections).strip()
@@ -9243,9 +9393,92 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
         if not scoped_knowledge:
             scoped_knowledge = knowledge_text
 
+        real_examples = _johanna_examples_as_text(question=question, limit=4, lang=lang)
+        if next_step_topic or panel_topic or (not bonus_topic and _is_bonus_or_promo_mention(real_examples)):
+            real_examples = ""
+
+        promo_context = _promo_ai_context(lang) if bonus_topic else ""
         promo_context_for_prompt = promo_context if bonus_topic else (
-            "(not needed for the pending questions)" if lang == "en" else "(no requerido para las preguntas pendientes)"
+            "(PROMOTIONS BLOCKED: not requested in the pending message)" if lang == "en"
+            else "(PROMOCIONES BLOQUEADAS: no fueron solicitadas en el mensaje pendiente)"
         )
+
+        decision_lines = []
+        if not bonus_topic:
+            decision_lines.append(
+                "PROMO ISOLATION: Do not mention bonuses, promo codes, 70%, 100%, turnover or bonus withdrawal conditions."
+                if lang == "en" else
+                "AISLAMIENTO PROMO: no menciones bonos, códigos, 70%, 100%, volumen ni condiciones de retiro por bono."
+            )
+        try:
+            pending_id_review = _has_pending_id_review(chat_id)
+        except Exception:
+            pending_id_review = False
+
+        prospective_level = VIP_LEVEL_NONE
+        if amount_usd is not None:
+            try:
+                prospective_level = _vip_level_for_total_cents(int(round(float(amount_usd) * 100)))
+            except Exception:
+                prospective_level = VIP_LEVEL_NONE
+
+        if next_step_topic:
+            if pending_id_review:
+                decision_lines.append(
+                    "NEXT STEP: the user already sent an ID and it is pending validation. Do not ask them to register/send another ID and do not tell them to deposit yet; briefly say validation must finish first."
+                    if lang == "en" else
+                    "SIGUIENTE PASO: el usuario ya envió un ID y está pendiente de validación. No pidas otro registro/ID ni indiques depositar todavía; explica brevemente que primero debe terminar la validación."
+                )
+            elif stage == STAGE_PRE:
+                decision_lines.append(
+                    "NEXT STEP (PRE): first explain that they must register a Binomo or Stockity account with my official link and send the ID for validation BEFORE depositing. Include the official registration links because they are the necessary next action, unless the message says they are already registered with me. If they already have an account registered with me, ask them to send that ID for validation. Do not jump to deposit."
+                    if lang == "en" else
+                    "SIGUIENTE PASO (PRE): primero explica que debe registrar una cuenta de Binomo o Stockity con mi enlace oficial y enviarme el ID para validarlo ANTES de depositar. Incluye los enlaces oficiales porque son la acción necesaria, salvo que el mensaje diga que ya tiene una cuenta registrada conmigo. Si ya tiene una cuenta registrada conmigo, debe enviarme ese ID para validarlo. No saltes al depósito."
+                )
+            elif stage == STAGE_POST:
+                decision_lines.append(
+                    "NEXT STEP (POST): the ID is already validated. Do not repeat registration or ask for the ID again. The next step is the deposit in that validated account and then sending the proof here."
+                    if lang == "en" else
+                    "SIGUIENTE PASO (POST): el ID ya está validado. No repitas registro ni pidas el ID otra vez. El siguiente paso es realizar el depósito en esa cuenta validada y luego enviar aquí el comprobante."
+                )
+            elif stage == STAGE_DEPOSITED:
+                decision_lines.append(
+                    "NEXT STEP (DEPOSITED): the account is already active. Never restart registration/ID. Continue from the active level/access state; if the user means an additional deposit, treat it as an upgrade/deposit follow-up only when the message actually says so."
+                    if lang == "en" else
+                    "SIGUIENTE PASO (DEPOSITED): la cuenta ya está activa. Nunca reinicies registro/ID. Continúa desde el nivel/accesos activos; solo trata el monto como depósito adicional/upgrade si el mensaje realmente lo indica."
+                )
+            if amount_usd is not None and prospective_level != VIP_LEVEL_NONE:
+                decision_lines.append(
+                    f"AMOUNT CONTEXT: USD {amount_usd:g} would correspond to {_vip_level_label(prospective_level, lang)} inside JT TRADERS TEAMS. Mention that briefly AFTER the next-step instruction, without listing all benefits; the levels button can show details."
+                    if lang == "en" else
+                    f"CONTEXTO DE MONTO: USD {amount_usd:g} correspondería a {_vip_level_label(prospective_level, lang)} dentro de JT TRADERS TEAMS. Menciónalo brevemente DESPUÉS del siguiente paso, sin listar todos los beneficios; el botón de niveles muestra los detalles."
+                )
+        elif explicit_level_question and amount_usd is not None and prospective_level != VIP_LEVEL_NONE:
+            decision_lines.append(
+                f"LEVEL QUESTION: USD {amount_usd:g} corresponds to {_vip_level_label(prospective_level, lang)}. Answer the level asked; do not turn it into promo advice."
+                if lang == "en" else
+                f"CONSULTA DE NIVEL: USD {amount_usd:g} corresponde a {_vip_level_label(prospective_level, lang)}. Responde el nivel solicitado; no lo conviertas en recomendación de bonos."
+            )
+        if panel_topic and not explicit_member_ai_bot:
+            decision_lines.append(
+                "LIVE PANEL: the tool shown on screen in lives is Johanna's private internal interface. It is not delivered at any level. Members receive the corresponding same operational signals through Telegram for easier use on any device."
+                if lang == "en" else
+                "PANEL DEL LIVE: la herramienta que se muestra en pantalla en los lives es la interfaz privada de uso interno de Johanna. No se entrega en ningún nivel. Los miembros reciben por Telegram las señales operativas correspondientes para usarlas con facilidad desde cualquier dispositivo."
+            )
+        if bot_topic:
+            decision_lines.append(
+                "AI BOT FACT: alerts are generated automatically 24/7, but the bot does not operate the user's account. The entry time is NOT freely chosen: take the entry on the minute immediately after the alert."
+                if lang == "en" else
+                "HECHO BOT IA: las alertas se generan automáticamente 24/7, pero el bot no opera la cuenta. El momento de entrada NO se elige libremente: la entrada se toma al minuto siguiente de recibir la alerta."
+            )
+        if multi_pending:
+            decision_lines.append(
+                "MULTI-QUESTION: answer every pending question once, in arrival order, using short paragraphs and proportional depth. Do not let one topic contaminate another."
+                if lang == "en" else
+                "MULTIPREGUNTA: responde cada duda pendiente una sola vez, en el orden de llegada, con párrafos cortos y profundidad proporcional. No dejes que un tema contamine otro."
+            )
+        decision_context = "\n".join(f"- {x}" for x in decision_lines) or ("- No special decision constraint." if lang == "en" else "- Sin restricción especial adicional.")
+
         already_answered = already_answered or []
         answered_note = ", ".join(already_answered) if already_answered else ("none" if lang == "en" else "ninguno")
         system = f"""
@@ -9262,10 +9495,15 @@ OBJETIVO PRINCIPAL
 - ECONOMÍA DE LENGUAJE: cada dato factual debe aparecer UNA sola vez por respuesta salvo que repetirlo sea indispensable para resolver otra pregunta distinta. Si ya dijiste "lunes a sábado", "24/7", un monto, un nivel o un requisito, no vuelvas a reformular el mismo dato en la frase siguiente.
 - Evita preámbulos que solo repiten la pregunta (por ejemplo, "la diferencia principal radica en...") cuando puedes ir directamente a la diferencia. Evita también frases de relleno/evaluación sin información nueva como "ambas opciones son excelentes", "esto te ofrece muchas oportunidades", "esto te permite tener un control total", "te va a encantar", "aprovechando al máximo tu tiempo", "es una gran opción" o equivalentes.
 - En comparaciones, explica directamente la diferencia concreta entre A y B en uno o dos bloques breves; no añadas una conclusión genérica si la comparación ya quedó clara.
+- ORDEN DE DECISIÓN OBLIGATORIO: 1) ESTADO OPERATIVO REAL del usuario, 2) intención completa del mensaje pendiente, 3) conocimiento oficial relevante. No inviertas ese orden. El estado determina qué paso corresponde; las palabras sueltas no.
 - FILTRO DE RELEVANCIA: antes de redactar, separa cada duda pendiente, identifica su categoría (formación/cursos, señales, bots, niveles, registro, depósito, promos, horarios, acceso, etc.) y responde SOLO con los hechos necesarios para ESA duda.
+- HISTORIAL NO AUTORITATIVO: una respuesta IA/BOT anterior puede estar equivocada o pertenecer a otro tema. Úsala solo para continuidad conversacional; los hechos válidos vienen del ESTADO OPERATIVO REAL + CONOCIMIENTO OFICIAL + PRIORIDAD DE DECISIÓN ACTUAL.
+- PROMOCIONES CERRADAS POR DEFECTO: si la prioridad actual dice que promociones están bloqueadas, está PROHIBIDO mencionar bonos, códigos, 70%, 100%, volumen o retiro por bono aunque aparezcan en el historial o en ejemplos antiguos.
 - El bloque de conocimiento que recibes ya está filtrado por temas relevantes. NO tienes que mencionar todo lo que aparece allí: úsalo como referencia factual, no como checklist.
 - PRINCIPIO DE MISMA CATEGORÍA: si preguntan por un curso, responde sobre cursos; si preguntan por señales, responde sobre las fuentes de señales; si preguntan por bots, responde sobre bots. Solo cruza categorías cuando sea necesario para contestar correctamente o cuando la pregunta sea amplia sobre beneficios/qué incluye.
+- REFERENCIAS A LO QUE SE VE EN LIVE: si el usuario habla del “bot/software/programa/herramienta que muestras o usas en vivo”, resuelve primero esa referencia como la interfaz visual privada del live. NO la conviertas en un bot de Premium/Prestige ni en un beneficio por nivel, salvo que la persona nombre explícitamente CRYPTO IDX 24/7 o el bot de pares de divisas 24/7.
 - Un monto o el nombre “Premium/Prestige/Básico” NO significa automáticamente “dime todos los beneficios”. Si la pregunta es específica, el nivel/monto solo sirve para ubicar la respuesta.
+- “Qué me toca / qué hago / cómo sigo / por dónde empiezo” es lenguaje de FLUJO/SIGUIENTE PASO salvo que el mensaje diga explícitamente “qué nivel” o pregunte beneficios. Responde desde el estado operativo y luego, si hay monto, menciona el nivel de forma breve. No conviertas esto en una plantilla: redacta natural según la conversación.
 - Pregunta simple: normalmente 1–3 frases y preferiblemente 20–55 palabras. NO conviertas una duda sencilla en una lista de 4–5 puntos. Si el usuario no pidió pasos/lista/guía, NO numeres la respuesta.
 - Responde en TEXTO PLANO: no uses Markdown decorativo (**negritas**, __subrayados__, títulos con # ni `código`) porque Telegram mostrará esos símbolos literalmente en este flujo.
 - Si una explicación necesita más detalle porque el usuario lo pidió, puedes ampliarla.
@@ -9332,6 +9570,9 @@ CONTEXTO PROMOCIONAL ACTUAL:
 PRIORIDAD ESPECIAL PARA ESTA PREGUNTA:
 {dependency_context or '(sin dependencia especial)'}
 
+PRIORIDAD DE DECISIÓN ACTUAL (ESTADO + INTENCIÓN):
+{decision_context}
+
 CONOCIMIENTO OFICIAL RELEVANTE PARA LAS PREGUNTAS PENDIENTES:
 {scoped_knowledge}
 
@@ -9360,13 +9601,6 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             logging.warning("OpenAI Responses API devolvió %s: %s", resp.status_code, resp.text[:500])
             return ""
         answer = _responses_api_text(resp.json())
-        # Cinturón de seguridad: si un usuario EN recibe una salida claramente española
-        # por influencia del historial/base de conocimiento, la traducimos una sola vez
-        # antes de enviarla. Normalmente no se ejecuta gracias a la regla estricta arriba.
-        if lang == "en" and _looks_spanish_for_english_user(answer):
-            translated = await _translate_to_english(answer)
-            if translated:
-                answer = translated
 
         # Cinturón adicional: el modelo no puede crear acuerdos personales de gestión
         # ni afirmar pasos completados sin evidencia conversacional explícita.
@@ -9383,6 +9617,17 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
 
         # Presentación estable de links para Telegram: sin Markdown literal y con separación.
         answer = _organize_ai_registration_links(answer, lang)
+
+        # v7.10.55 — idioma EN es una condición DURA y se valida al FINAL de toda
+        # reescritura factual/estilo, justo antes de devolver el texto que irá a Telegram.
+        # Así ninguna guardia posterior puede volver a introducir español.
+        if lang == "en":
+            translated = await _translate_to_english(answer)
+            if not translated:
+                logging.warning("Guardia FINAL de idioma EN no pudo normalizar respuesta para %s", chat_id)
+                return ""
+            answer = _clean_ai_plain_text_format(translated)
+
         return answer
     except Exception as e:
         logging.warning("Error generando respuesta IA: %s", e)
@@ -9962,7 +10207,13 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, intent, msg)
         return
 
-    if intent in ("NEXT_STEP", "WHERE_SEND_ID", "LIVE", "ID"):
+    if intent == "NEXT_STEP":
+        # El siguiente paso depende del estado REAL (PRE/POST/DEPOSITED y revisión de ID),
+        # por eso ya no usamos una ficha estática que podía pedir un ID ya procesado.
+        schedule_ai_reply(update, context, texto)
+        return
+
+    if intent in ("WHERE_SEND_ID", "LIVE", "ID"):
         msg = _immediate_block(intent, lang)
         if msg:
             keyboard = live_keyboard(lang) if intent == "LIVE" else None
