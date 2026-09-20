@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.45-20260919-AI-FACTS-PROMO-WAIT4-STABILIZATION"
+BOT_VERSION = "v7.10.46-20260919-AI-EDIT-NEUTRAL-PREMIUM-POLISH"
 # v7.10.45: promo lookup inmediato ampliado, guard factual Premium y espera IA máxima de 4 min.
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
@@ -6662,7 +6662,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 # Modelo recomendado para transcribir respuestas de voz de Johanna.
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
-# v7.10.45: prioridad para Johanna reducida a un máximo de 4 minutos.
+# v7.10.46: prioridad para Johanna mantiene un máximo de 4 minutos.
 # Si Railway conserva una variable antigua AI_WAIT_MINUTES=5, el código la limita a 4.
 # Se permiten valores enteros menores (por ejemplo 3) sin superar el máximo actual.
 try:
@@ -6797,7 +6797,7 @@ PREGUNTAS MÚLTIPLES Y DEPENDENCIAS
 - Si llegan varias preguntas seguidas, agrúpalas y responde todas, pero primero identifica dependencias.
 - Si una decisión depende de un dato que aún no está validado, NO asumas ese dato. Resuelve primero el requisito pendiente.
 - Ejemplo: "tengo cuenta de hace meses / creo que fue contigo / quiero depositar 300 / no sé si usar bono / quiero retirar pronto" → primero pide el ID para verificar si esa cuenta está vinculada. No asumas que corresponde bono 70%, ni que ya puede depositar, hasta resolver esa validación. Puedes añadir brevemente que si piensa retirar en pocos días probablemente le convenga no activar bono, pero deja claro que primero hay que validar la cuenta.
-- Si el usuario envía varias frases cortadas dentro de la ventana de 5 minutos, interprétalas como una misma conversación cuando sean continuidad clara.
+- Si el usuario envía varias frases cortadas dentro de la ventana de 4 minutos, interprétalas como una misma conversación cuando sean continuidad clara.
 - Si el mensaje actual abre claramente un caso hipotético/de otra persona (por ejemplo "si una persona...", "si otra persona...", "si alguien..."), responde ese caso como tema nuevo y NO arrastres una validación personal de ID/cuenta anterior salvo que el propio mensaje la conecte explícitamente.
 
 LIVES
@@ -7156,25 +7156,40 @@ def _has_recent_manual_conversation(chat_id: int, minutes: int = None) -> bool:
 def _decode_pending_payload(raw_value: str):
     raw_value = (raw_value or "").strip()
     if not raw_value:
-        return {"messages": [], "answered_topics": []}
+        return {"messages": [], "message_ids": [], "answered_topics": []}
     try:
         data = json.loads(raw_value)
         if isinstance(data, dict) and isinstance(data.get("messages"), list):
+            raw_messages = [str(x) for x in data.get("messages", []) if str(x).strip()]
+            raw_ids = [str(x) for x in (data.get("message_ids") or [])]
+            # Mantener alineación con mensajes incluso para payloads v2 sin IDs.
+            if len(raw_ids) < len(raw_messages):
+                raw_ids.extend([""] * (len(raw_messages) - len(raw_ids)))
+            elif len(raw_ids) > len(raw_messages):
+                raw_ids = raw_ids[-len(raw_messages):]
             return {
-                "messages": [str(x) for x in data.get("messages", []) if str(x).strip()],
+                "messages": raw_messages,
+                "message_ids": raw_ids,
                 "answered_topics": [str(x) for x in data.get("answered_topics", []) if str(x).strip()],
             }
     except Exception:
         pass
     # Compatibilidad con pendientes creados por versiones anteriores.
-    return {"messages": [raw_value], "answered_topics": []}
+    return {"messages": [raw_value], "message_ids": [""], "answered_topics": []}
 
 
-def _encode_pending_payload(messages, answered_topics):
+def _encode_pending_payload(messages, answered_topics, message_ids=None):
+    clean_messages = [str(x)[:5000] for x in messages if str(x).strip()][-8:]
+    raw_ids = [str(x) for x in (message_ids or [])]
+    if len(raw_ids) < len(clean_messages):
+        raw_ids.extend([""] * (len(clean_messages) - len(raw_ids)))
+    elif len(raw_ids) > len(clean_messages):
+        raw_ids = raw_ids[-len(clean_messages):]
     return json.dumps(
         {
-            "v": 2,
-            "messages": [str(x)[:5000] for x in messages if str(x).strip()][-8:],
+            "v": 3,
+            "messages": clean_messages,
+            "message_ids": raw_ids,
             "answered_topics": list(dict.fromkeys(str(x) for x in answered_topics if str(x).strip()))[-30:],
         },
         ensure_ascii=False,
@@ -7188,16 +7203,60 @@ def _set_pending_ai(chat_id: int, text_value: str, message_id: int, answered_top
         u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
         if not u:
             return due_at
-        payload = {"messages": [], "answered_topics": []}
+        payload = {"messages": [], "message_ids": [], "answered_topics": []}
         if u.ai_pending_text and u.ai_pending_due_at and u.ai_pending_due_at >= utcnow_naive():
             payload = _decode_pending_payload(u.ai_pending_text)
         payload["messages"].append(text_value.strip())
+        payload["message_ids"].append(str(message_id))
         payload["answered_topics"].extend(answered_topics)
-        u.ai_pending_text = _encode_pending_payload(payload["messages"], payload["answered_topics"])
+        u.ai_pending_text = _encode_pending_payload(
+            payload["messages"], payload["answered_topics"], payload["message_ids"]
+        )
         u.ai_pending_message_id = str(message_id)
         u.ai_pending_due_at = due_at
         session.commit()
     return due_at
+
+
+def _replace_pending_ai_edited_message(chat_id: int, message_id: int, new_text: str) -> bool:
+    """Reemplaza una pregunta pendiente por su edición sin reiniciar el reloj de IA."""
+    edited = (new_text or "").strip()
+    if not edited:
+        return False
+    mid = str(message_id)
+    try:
+        with Session() as session:
+            u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            if not u or not u.ai_pending_text or not u.ai_pending_due_at:
+                return False
+            payload = _decode_pending_payload(u.ai_pending_text)
+            messages = list(payload.get("messages") or [])
+            message_ids = list(payload.get("message_ids") or [])
+            if len(message_ids) < len(messages):
+                message_ids.extend([""] * (len(messages) - len(message_ids)))
+
+            idx = None
+            for i, saved_mid in enumerate(message_ids):
+                if saved_mid == mid:
+                    idx = i
+                    break
+            # Compatibilidad v2: el último pendiente tenía su ID en la columna histórica.
+            if idx is None and str(u.ai_pending_message_id or "") == mid and messages:
+                idx = len(messages) - 1
+                message_ids[idx] = mid
+            if idx is None:
+                return False
+
+            messages[idx] = edited
+            u.ai_pending_text = _encode_pending_payload(
+                messages, payload.get("answered_topics") or [], message_ids
+            )
+            # IMPORTANTE: conserva ai_pending_due_at. Editar no reinicia los 4 minutos.
+            session.commit()
+            return True
+    except Exception as e:
+        logging.warning("No pude actualizar mensaje editado pendiente IA de %s: %s", chat_id, e)
+        return False
 
 
 def _get_pending_ai(chat_id: int):
@@ -7209,6 +7268,7 @@ def _get_pending_ai(chat_id: int):
         return {
             "text": "\n".join(payload["messages"]).strip(),
             "messages": payload["messages"],
+            "message_ids": payload.get("message_ids") or [],
             "answered_topics": payload["answered_topics"],
             "message_id": u.ai_pending_message_id,
             "due_at": u.ai_pending_due_at,
@@ -7368,7 +7428,7 @@ def _prune_pending_ai_after_operation(
 ):
     """Limpia residuos operativos sin borrar preguntas conversacionales pendientes.
 
-    Mantiene el vencimiento original de 5 minutos. Si queda una pregunta válida,
+    Mantiene el vencimiento original de 4 minutos. Si queda una pregunta válida,
     reprograma la misma IA para el tiempo que faltaba; si solo quedaba la acción
     operativa ya resuelta, elimina el pendiente por completo.
     """
@@ -7378,13 +7438,19 @@ def _prune_pending_ai_after_operation(
 
     topics = [str(x).upper() for x in (resolved_topics or []) if str(x).strip()]
     cleaned_messages = []
+    cleaned_message_ids = []
+    original_messages = list(pending.get("messages") or [])
+    original_ids = list(pending.get("message_ids") or [])
+    if len(original_ids) < len(original_messages):
+        original_ids.extend([""] * (len(original_messages) - len(original_ids)))
     changed = False
-    for original in pending.get("messages") or []:
+    for idx, original in enumerate(original_messages):
         cleaned = _clean_ai_text_after_operations(original, topics)
         if cleaned != (original or "").strip():
             changed = True
         if cleaned:
             cleaned_messages.append(cleaned)
+            cleaned_message_ids.append(original_ids[idx] if idx < len(original_ids) else "")
 
     if not changed:
         return (pending.get("text") or "").strip()
@@ -7405,7 +7471,7 @@ def _prune_pending_ai_after_operation(
         with Session() as session:
             u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
             if u:
-                u.ai_pending_text = _encode_pending_payload(cleaned_messages, answered)
+                u.ai_pending_text = _encode_pending_payload(cleaned_messages, answered, cleaned_message_ids)
                 u.ai_pending_message_id = message_id or u.ai_pending_message_id
                 u.ai_pending_due_at = due_at
                 session.commit()
@@ -8724,13 +8790,24 @@ def _strip_redundant_ai_greeting(answer: str, question: str, history_text: str, 
 
 
 def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
-    """Evita género asumido en frases frecuentes sin volver artificial la respuesta."""
+    """Evita género asumido en segunda persona sin volver artificial la respuesta."""
     value = (answer or "").strip()
     if not value or lang != "es":
         return value
     replacements = (
         (r"\bpara un principiante\b", "si estás empezando"),
         (r"\bpara una principiante\b", "si estás empezando"),
+        (r"\bsi eres (?:un |una )?nuev[oa]\b", "si estás empezando"),
+        (r"\bsi eres nuev[oa] en esto\b", "si estás empezando"),
+        (r"\bmantenerte enfocad[oa]\b", "mantener tu enfoque"),
+        (r"\bte mantendr[aá]s enfocad[oa]\b", "mantendrás tu enfoque"),
+        (r"\bpara mantenerte enfocad[oa]\b", "para mantener tu enfoque"),
+        (r"\bdebes estar atent[oa]\b", "debes prestar atención"),
+        (r"\bmantente atent[oa]\b", "presta atención"),
+        (r"\best[aá] atento[oa]?\b", "presta atención"),
+        (r"\bcuando est[eé]s list[oa]\b", "cuando quieras continuar"),
+        (r"\bsi est[aá]s list[oa]\b", "si quieres continuar"),
+        (r"\bsi ya est[aá]s registrad[oa]\b", "si ya completaste el registro"),
         (r"\btú mismo\b", "directamente"),
         (r"\btu mismo\b", "directamente"),
         (r"\btú misma\b", "directamente"),
@@ -8796,6 +8873,18 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
                 value, flags=re.I
             )
 
+        # Si la pregunta es amplia sobre QUÉ INCLUYE Premium, no omitir el material educativo de apoyo.
+        premium_broad = "premium" in q and any(x in q for x in (
+            "que incluye", "que recibo", "beneficios", "que trae", "incluye premium", "recibo con premium",
+        ))
+        if premium_broad and not re.search(
+            r"(?:material de (?:estudio|apoyo)|pdf|audiolibro|plan de trading|gesti[oó]n de riesgo)",
+            value, re.I
+        ):
+            value = value.rstrip() + (
+                " También incluye material de estudio y apoyo, como PDFs, audiolibros y tablas de plan de trading y gestión de riesgo."
+            )
+
         if "bot" in q or "automatic" in q or "automático" in q or "automatico" in q:
             value = re.sub(r"(?:está|esta) disponible para todos los miembros de mi comunidad", "está disponible desde el nivel Premium dentro de mi comunidad", value, flags=re.I)
             value = re.sub(r"(?:opera|operar|ejecuta|ejecutar) (?:las )?operaciones? automáticamente", "envía alertas automáticamente; las entradas se realizan manualmente", value, flags=re.I)
@@ -8847,7 +8936,7 @@ OBJETIVO PRINCIPAL
 - Conversa de forma humana, natural y contextual. NO respondas como una FAQ rígida ni copies la base de conocimiento como plantilla.
 - La base oficial contiene HECHOS que debes comprender y aplicar según la pregunta; redacta libremente con palabras naturales.
 - RESPUESTA MÍNIMA SUFICIENTE: contesta exactamente lo que preguntaron y termina. No anticipes preguntas futuras ni descargues todo lo que sabes del tema.
-- Pregunta simple: normalmente 1–3 frases o aprox. 20–70 palabras. Varias dudas reales: normalmente 80–180 palabras, solo lo necesario.
+- Pregunta simple: normalmente 1–3 frases y preferiblemente 20–55 palabras. NO conviertas una duda sencilla en una lista de 4–5 puntos. Varias dudas reales: normalmente 70–160 palabras, solo lo necesario.
 - Si una explicación necesita más detalle porque el usuario lo pidió, puedes ampliarla.
 
 CONTINUIDAD Y COMPRENSIÓN
@@ -8856,12 +8945,12 @@ CONTINUIDAD Y COMPRENSIÓN
 - Si el usuario dice "eso", "ese nivel", "y qué recibo", "entonces", etc., resuelve la referencia con el contexto reciente SOLO cuando sea clara.
 - Si la referencia es ambigua, haz una sola pregunta breve de aclaración; no inventes.
 - No vuelvas a saludar con "Hola" en cada turno. Saluda solo si el usuario saluda o si realmente es el primer intercambio.
-- No asumas género. Usa formulaciones neutrales: "si estás empezando", "cuando completes", "tú realizas la entrada".
+- NO asumas género, aunque el nombre parezca masculino o femenino. Evita "nuevo/nueva", "enfocado/enfocada", "atento/atenta", "listo/lista" y equivalentes dirigidos al usuario. Reformula de manera neutra: "si estás empezando", "mantener tu enfoque", "presta atención", "cuando quieras continuar".
 - No cierres por costumbre con "si tienes más preguntas", "estoy aquí para ayudarte", "¿cómo deseas proceder?" u otros cierres genéricos. Úsalos solo si aportan algo real.
 - Usa emojis con moderación. Si el usuario manda solo emojis/reacciones, responde como máximo con una reacción breve y no inventes emociones o intención de compra.
 
 VARIAS PREGUNTAS / MENSAJES SEGUIDOS
-- Lee el conjunto completo antes de responder. El usuario puede enviar 2, 3, 4 o más mensajes durante la espera de 5 minutos.
+- Lee el conjunto completo antes de responder. El usuario puede enviar 2, 3, 4 o más mensajes durante la espera de 4 minutos.
 - Responde todas las dudas pendientes, pero identifica primero si una depende de otra.
 - Si una respuesta depende de un dato todavía no validado, NO asumas ese dato. Resuelve primero el requisito pendiente y después responde lo que sí pueda contestarse sin inventar.
 - Temas ya atendidos automáticamente antes de llamarte: {answered_note}. No los repitas salvo una referencia mínima necesaria.
@@ -8870,7 +8959,7 @@ VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 
 ESTILO Y CTA
 - Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas.
-- No uses listas largas para una duda simple. Usa lista solo si realmente mejora claridad.
+- No uses listas largas para una duda simple. Si el usuario NO pidió "pasos", "lista" o "guía", responde en prosa breve; usa lista solo si realmente mejora claridad.
 - No repitas enlaces/CTA si ya se enviaron recientemente. Muestra registro, niveles u otro CTA solo cuando el usuario lo pida o sea el siguiente paso realmente necesario.
 - Si preguntan por un monto concreto, responde el nivel concreto y un resumen útil; no recites los tres niveles.
 - El nivel SIEMPRE es "dentro de mi comunidad JT TRADERS TEAMS", nunca nivel del broker.
@@ -8922,7 +9011,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             "model": OPENAI_MODEL,
             "instructions": system,
             "input": user_input,
-            "max_output_tokens": 550,
+            "max_output_tokens": 450,
             "store": False,
         }
         async with httpx.AsyncClient(timeout=35) as client:
@@ -9030,7 +9119,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Reacciones/emojis solos: no inventamos intención ni repetimos una respuesta comercial.
-    # Se conserva la espera de 5 minutos para dar prioridad a una respuesta personal de Johanna.
+    # Se conserva la espera configurada para dar prioridad a una respuesta personal de Johanna.
     if _is_reaction_only_message(question):
         personal_review = False
         answer = "🙏💜"
@@ -9058,9 +9147,20 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
             personal_review = True
             answer = answer.lstrip()[len(marker):].lstrip()
 
-    # Verificación final inmediatamente antes de enviar, por si Johanna respondió mientras se generaba la respuesta.
+    # Verificación final inmediatamente antes de enviar, por si Johanna respondió o el usuario
+    # editó la pregunta mientras OpenAI estaba generando la respuesta.
     latest = _get_pending_ai(chat_id)
     if not latest or str(latest.get("message_id") or "") != expected_message_id:
+        return
+    latest_question = (latest.get("text") or "").strip()
+    if latest_question and latest_question != question:
+        if context.job_queue:
+            context.job_queue.run_once(
+                delayed_ai_reply,
+                when=1,
+                data={"chat_id": chat_id, "message_id": expected_message_id},
+                name=f"AI_REPLY_{chat_id}",
+            )
         return
 
     try:
@@ -9243,11 +9343,40 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
         schedule_ai_reply(update, context, ai_text, answered_topics=handled_operational)
     return True
 
+async def _handle_edited_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Actualiza una pregunta IA pendiente cuando el usuario edita su mensaje.
+
+    No vuelve a notificar a Johanna, no duplica historial y no reinicia el reloj.
+    Si el mensaje ya fue respondido/no está pendiente, la edición se ignora.
+    """
+    edited = update.edited_message
+    if edited is None or update.effective_chat is None:
+        return
+    if update.effective_chat.type != "private" or update.effective_user is None:
+        return
+    chat_id = update.effective_chat.id
+    if chat_id == ADMIN_ID or not _is_private_user_id(chat_id):
+        return
+    new_text = (edited.text or edited.caption or "").strip()
+    if not new_text:
+        return
+    if _replace_pending_ai_edited_message(chat_id, edited.message_id, new_text):
+        logging.info(
+            "✏️ Mensaje editado actualizado en IA pendiente · chat=%s · message_id=%s",
+            chat_id, edited.message_id,
+        )
+
+
 # Nueva función para manejar mensajes de usuarios (texto o media)
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Los filtros de PTB pueden hacer match también con mensajes editados.
-    # Si no hay update.message normal, se ignora para no duplicar respuestas ni generar NoneType.
-    if update.message is None or update.effective_chat is None:
+    # Los filtros de PTB también pueden entregar mensajes editados. Si la edición
+    # corresponde a una pregunta IA todavía pendiente, reemplazamos el texto viejo
+    # sin duplicar la consulta ni reiniciar el reloj de espera.
+    if update.message is None:
+        if update.edited_message is not None:
+            await _handle_edited_user_message(update, context)
+        return
+    if update.effective_chat is None:
         return
 
     # PRIORIDAD ABSOLUTA: Johanna recibe el mensaje inmediatamente.
