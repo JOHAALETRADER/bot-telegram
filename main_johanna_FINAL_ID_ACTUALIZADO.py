@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.49-20260919-AI-RELEVANCE-SCOPE-CONTEXT-FIX"
+BOT_VERSION = "v7.10.50-20260919-AI-SCOPED-CONTEXT-NATURAL-MULTIQUESTION"
+# v7.10.50: conocimiento IA filtrado por tema, preguntas múltiples naturales y ejemplos solo relevantes.
 # v7.10.49: mejora selección contextual: responde solo el tema preguntado, relaciona fuentes de señales y evita información/horarios innecesarios.
 # v7.10.48: refuerza organización natural en 2 sesiones ~40 min, ~5 operaciones por sesión y precisión +300 señales/día lunes-sábado.
 # v7.10.47: pulido de estilo IA, tuteo, sesiones ~40 min, limpieza Markdown y botón de niveles contextual.
@@ -6804,7 +6805,7 @@ TIEMPO / HORARIOS / PERSONAS QUE TRABAJAN TODO EL DÍA
 - Puede apoyarse en las señales del Software Premium Anticipado y en las herramientas disponibles para elegir oportunidades dentro del tiempo que tenga, siempre manteniendo su plan de trading y gestión de riesgo.
 - Si el usuario no dio horarios concretos, NO inventes momentos como “a primera hora”, “en el almuerzo”, “durante el descanso” o “por la noche”. Di simplemente que elija momentos que se ajusten a su disponibilidad. Solo propone franjas concretas si el usuario las dio o las pidió expresamente.
 - Tutea en la respuesta: “ajustadas a tu horario”, “a tu rutina”, “cuando tengas disponibilidad”.
-- El Software Premium Anticipado distribuye señales normalmente desde aproximadamente 7 a. m. hasta 10 p. m. y el bot IA CRYPTO IDX funciona 24/7, por lo que existe flexibilidad para elegir momentos compatibles con la rutina.
+- El Software Premium Anticipado distribuye señales normalmente desde aproximadamente 7 a. m. hasta 10 p. m. y el bot IA CRYPTO IDX funciona 24/7. Usa esos horarios SOLO si preguntan por disponibilidad/franjas concretas; en una duda simple de organización basta con explicar que hay flexibilidad para elegir momentos compatibles con la rutina.
 - Puedes destacar la flexibilidad de horario del trading, pero NO prometas libertad financiera, dejar el empleo, mayor efectividad por operar a determinada hora ni ganancias determinadas.
 - Para una pregunta simple sobre organización/horarios, normalmente bastan 2–3 frases que integren de forma NATURAL lo relevante: al menos 2 sesiones de ~40 minutos, unas 5 operaciones seleccionadas por sesión, apoyo en las señales y gestión de riesgo. NO copies una frase fija ni enumeres estos puntos si no hace falta.
 
@@ -6936,24 +6937,14 @@ def _memory_keywords(question: str):
 
 
 def _johanna_examples_as_text(question: str = "", limit: int = 28, lang: str | None = None) -> str:
-    """Recupera memoria relevante + ejemplos recientes de cómo responde Johanna.
+    """Recupera SOLO ejemplos realmente relacionados con la consulta actual.
 
-    Si conocemos el idioma del usuario, priorizamos ejemplos guardados en ese mismo
-    idioma para evitar que ejemplos españoles arrastren una respuesta EN hacia ES.
+    Los ejemplos sirven para tono y continuidad, nunca para arrastrar contenido de
+    otro tema ni para convertir respuestas recientes en una plantilla repetitiva.
     """
     try:
-        limit = max(4, min(limit, 40))
+        limit = max(2, min(limit, 12))
         with Session() as session:
-            recent_query = session.query(JohannaExample)
-            if lang in ("es", "en"):
-                recent_query = recent_query.filter(JohannaExample.lang == lang)
-            recent = (
-                recent_query
-                .order_by(JohannaExample.created_at.desc())
-                .limit(max(3, min(5, limit // 2)))
-                .all()
-            )
-
             relevant = []
             keywords = _memory_keywords(question)
             if keywords:
@@ -6967,12 +6958,11 @@ def _johanna_examples_as_text(question: str = "", limit: int = 28, lang: str | N
                 candidates = (
                     relevant_query
                     .order_by(JohannaExample.created_at.desc())
-                    .limit(max(40, limit * 4))
+                    .limit(max(30, limit * 4))
                     .all()
                 )
-                # Un solo término genérico (por ejemplo “ingresar”) no basta para
-                # arrastrar una respuesta de otro tema. Exigimos coincidencia más
-                # fuerte cuando la pregunta aporta varios términos útiles.
+                # Exige coincidencia temática suficiente. Nunca completamos con
+                # ejemplos recientes no relacionados: eso contaminaba respuestas.
                 threshold = 2 if len(keywords) >= 3 else 1
                 scored = []
                 for row in candidates:
@@ -6980,30 +6970,18 @@ def _johanna_examples_as_text(question: str = "", limit: int = 28, lang: str | N
                     score = sum(1 for kw in keywords if _norm(kw) in hay)
                     if score >= threshold:
                         scored.append((score, row))
-                scored.sort(key=lambda item: item[0], reverse=True)
-                relevant = [row for _score, row in scored[:limit]]
-
-        # Primero los ejemplos realmente relacionados; completamos con pocos ejemplos
-        # recientes SOLO para estilo, para no contaminar el tema de la respuesta.
-        rows = []
-        seen = set()
-        for r in relevant + recent:
-            if r.id in seen:
-                continue
-            seen.add(r.id)
-            rows.append(r)
-            if len(rows) >= limit:
-                break
+                scored.sort(key=lambda item: (item[0], item[1].created_at or datetime.min), reverse=True)
+                relevant = [row for _score, row in scored[:min(limit, 4)]]
 
         parts = []
         total = 0
-        for r in rows:
+        for r in relevant:
             q = (r.user_text or "").strip()
             a = (r.response_text or "").strip()
             if not a:
                 continue
             piece = (f"USUARIO: {q}\n" if q else "") + f"JOHANNA: {a}"
-            if total + len(piece) > 14000:
+            if total + len(piece) > 6000:
                 continue
             parts.append(piece)
             total += len(piece)
@@ -7011,7 +6989,6 @@ def _johanna_examples_as_text(question: str = "", limit: int = 28, lang: str | N
     except Exception as e:
         logging.info("No pude cargar ejemplos de Johanna: %s", e)
         return ""
-
 
 def _extract_question_from_admin_message(base_text: str) -> str:
     """Intenta recuperar la pregunta original desde la notificación enviada al admin."""
@@ -8879,43 +8856,44 @@ def _clean_ai_plain_text_format(answer: str) -> str:
 
 
 def _time_management_style_guard(answer: str, question: str, lang: str = "es") -> str:
-    """Evita listas largas en preguntas simples sobre tiempo/horarios y usa la guía de ~40 min.
+    """Guardia ligera para tiempo/organización sin reescribir la respuesta como plantilla.
 
-    Solo interviene cuando el modelo volvió a generar una respuesta larga/listada; si la
-    respuesta ya es breve y natural, se conserva tal cual.
+    La redacción queda a cargo del modelo. Solo elimina franjas concretas inventadas
+    cuando el usuario no dio ni pidió horarios específicos.
     """
     value = (answer or "").strip()
     if not value or lang != "es":
         return value
     q = _norm(question or "")
     time_topic = (
-        any(x in q for x in ("horario", "horarios", "organizarme", "organizar", "rutina", "tiempo", "trabajo todo el dia", "trabajo todo el día"))
-        and any(x in q for x in ("operar", "trading", "señal", "senal", "bot"))
+        any(x in q for x in ("horario", "horarios", "organizarme", "organizar", "rutina", "tiempo", "trabajo todo el dia", "solo tengo un rato"))
+        and any(x in q for x in ("operar", "trading", "senal", "bot", "operaciones"))
     )
     if not time_topic:
         return value
-    user_requested_detail = any(x in q for x in (
-        "paso a paso", "pasos", "hazme una lista", "dame una lista", "guia detallada", "guía detallada", "detalladamente",
-    ))
-    if user_requested_detail:
-        return value
-    word_count = len(re.findall(r"\b\w+\b", value, flags=re.UNICODE))
-    looks_listed = bool(re.search(r"(?m)^\s*(?:\d+[.)]|[-•])\s+", value))
-    if word_count <= 90 and not looks_listed:
+
+    # Si la persona sí indicó o pidió una franja, respetamos la respuesta del modelo.
+    explicit_time = any(x in q for x in (
+        "primera hora", "manana", "madrugada", "mediodia", "almuerzo", "descanso",
+        "tarde", "noche", "antes del trabajo", "despues del trabajo", "a. m.", "p. m.",
+        "que hora", "que horario", "franja",
+    )) or bool(re.search(r"\b(?:am|pm)\b|\b(?:[01]?\d|2[0-3])[:.]?[0-5]\d\b", q))
+    if explicit_time:
         return value
 
-    starting = any(x in q for x in ("estoy empezando", "apenas estoy empezando", "principiante", "soy nuevo", "soy nueva"))
-    first = (
-        "Si estás empezando, no necesitas pasar horas operando. "
-        if starting else
-        "No necesitas pasar horas operando. "
+    invented = (
+        r"a primera hora|durante tu descanso|durante el descanso|en tu descanso|"
+        r"en el almuerzo|durante el almuerzo|a la hora del almuerzo|por la noche|"
+        r"antes de trabajar|despues del trabajo|después del trabajo"
     )
-    return (
-        first
-        + "Puedes organizar al menos dos sesiones de unos 40 minutos, ajustadas a tu horario y a tu rutina. "
-        + "Apóyate en las señales para seleccionar oportunidades: unas 5 operaciones bien elegidas por sesión son suficientes como referencia, siempre dentro de tu plan de trading y gestión de riesgo. 😊"
+    value = re.sub(
+        rf"(?:{invented})(?:\s*(?:,|o|y)\s*(?:{invented}))*",
+        "cuando tengas disponibilidad",
+        value,
+        flags=re.I,
     )
-
+    value = re.sub(r"(?:cuando tengas disponibilidad)(?:\s*(?:,|o|y)\s*cuando tengas disponibilidad)+", "cuando tengas disponibilidad", value, flags=re.I)
+    return value.strip()
 
 def _trim_generic_ai_closer(answer: str, lang: str = "es") -> str:
     """Quita solo cierres de atención al cliente que no aportan contenido."""
@@ -9038,6 +9016,157 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
         runtime_context = _ai_runtime_context(chat_id, lang)
         promo_context = _promo_ai_context(lang)
         dependency_context = _ai_dependency_context(question, chat_id, lang)
+        history_text = _history_as_text(chat_id)
+
+        # v7.10.50: entregar al modelo solo las secciones de conocimiento útiles para
+        # las preguntas pendientes. La base completa sigue intacta en JOHA_KNOWLEDGE;
+        # aquí solo evitamos contaminar una duda de cursos con señales, una duda de
+        # horarios con niveles, etc. Si llegan varias preguntas, se usa la unión de temas.
+        q_norm = _norm(question or "")
+        strong_current_topic = any(x in q_norm for x in (
+            "premium", "prestige", "basico", "nivel", "madness", "curso", "modulo", "formacion",
+            "senal", "software premium", "bot", "crypto idx", "registro", "registrarme", "deposito",
+            "bono", "codigo promo", "live", "panel", "interfaz", "martingala", "riesgo", "organizar",
+            "poco tiempo", "trabajo todo el dia", "cuenta antigua", "cuenta vieja", "acceso vip",
+        ))
+        # El historial solo participa en la selección temática cuando el mensaje actual
+        # es un seguimiento corto/anafórico ("eso", "ese", "y cómo funciona", etc.).
+        # En preguntas explícitas nuevas manda únicamente el pendiente actual para no
+        # arrastrar temas viejos como señales/cursos de pruebas anteriores.
+        ambiguous_followup = (not strong_current_topic) and len(q_norm.split()) <= 14 and any(x in q_norm for x in (
+            "eso", "ese ", "esa ", "esos ", "esas ", "y como", "y que", "y cuando",
+            "como funciona", "como se usa", "y el ", "y la ", "tambien", "entonces",
+        ))
+        scope_norm = q_norm + ("\n" + _norm(history_text[-3500:]) if ambiguous_followup and history_text else "")
+        multi_pending = question.count("?") >= 2 or len([x for x in re.split(r"[\n\r]+", question or "") if x.strip()]) >= 2
+        knowledge_text = (JOHA_KNOWLEDGE or "").strip()
+        section_titles = [
+            "IDENTIDAD Y PRINCIPIO DE RESPUESTA",
+            "REGISTRO Y ACCESO",
+            "NIVELES DENTRO DE JT TRADERS TEAMS",
+            "FORMACIÓN / CURSOS",
+            "SEÑALES Y SOFTWARE PREMIUM ANTICIPADO",
+            "BOTS IA 24/7",
+            "PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE",
+            "GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA",
+            "TIEMPO / HORARIOS / PERSONAS QUE TRABAJAN TODO EL DÍA",
+            "CUENTAS EXISTENTES / ANTIGUAS",
+            "BROKERS Y UPGRADES",
+            "BONOS — REGLAS GENERALES",
+            "PREGUNTAS MÚLTIPLES Y DEPENDENCIAS",
+            "LIVES",
+            "ACCESOS VIP EN TELEGRAM",
+            "CASOS QUE SIEMPRE VAN A JOHANNA",
+            "LÍMITES",
+        ]
+        heading_pattern = r"(?m)^(" + "|".join(re.escape(x) for x in section_titles) + r")\s*$"
+        heading_matches = list(re.finditer(heading_pattern, knowledge_text))
+        knowledge_sections = {}
+        for idx, match in enumerate(heading_matches):
+            stop = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(knowledge_text)
+            knowledge_sections[match.group(1)] = knowledge_text[match.start():stop].strip()
+
+        selected_titles = {"IDENTIDAD Y PRINCIPIO DE RESPUESTA", "LÍMITES"}
+        broad_benefits = any(x in scope_norm for x in (
+            "que incluye", "que recibo", "que trae", "beneficios", "todo lo que incluye",
+            "que ofrece", "que tienen los niveles", "que tiene premium", "que tiene prestige",
+            "que tiene basico", "comunidad completa", "que hay en la comunidad",
+        ))
+        level_topic = broad_benefits or any(x in scope_norm for x in (
+            "nivel", "basico", "premium", "prestige", "deposito minimo", "monto", "capital para entrar",
+        )) or bool(re.search(r"\b\d{2,5}(?:[.,]\d{1,2})?\s*(?:usd|dolares?)\b", scope_norm))
+        course_topic = any(x in scope_norm for x in (
+            "curso", "cursos", "formacion", "modulo", "modulos", "binary teams", "madness",
+            "smart money", "algo & lit", "algo y lit", "audiolibro", "pdf", "material de estudio",
+        ))
+        signal_topic = any(x in scope_norm for x in (
+            "senal", "senales", "software premium", "premium anticipado", "cuantas senales", "lista de senales",
+        ))
+        bot_topic = any(x in scope_norm for x in (
+            "bot", "bots", "ia 24/7", "ia crypto", "crypto idx 24/7", "alerta automatica", "alertas automaticas",
+        ))
+        panel_topic = any(x in scope_norm for x in ("panel", "interfaz", "software que usas", "software del live", "instalar el software"))
+        time_topic = any(x in scope_norm for x in (
+            "organizarme", "organizar", "poco tiempo", "solo tengo un rato", "trabajo todo el dia",
+            "horario para operar", "horarios para operar", "rutina para operar", "cuanto tiempo", "sesiones de trading",
+        ))
+        risk_topic = any(x in scope_norm for x in (
+            "gestion de riesgo", "riesgo", "martingala", "mg1", "mg2", "sobreoper", "cuantas operaciones", "porcentaje del capital",
+        ))
+        account_topic = any(x in scope_norm for x in (
+            "cuenta antigua", "cuenta vieja", "ya tengo cuenta", "cuenta existente", "vinculada", "vinculado", "registrada contigo", "registrado contigo",
+        ))
+        registration_topic = account_topic or any(x in scope_norm for x in (
+            "registrarme", "registro", "registrar", "enlace", "link", "id de binomo", "id de stockity", "validar id", "afiliad",
+        ))
+        broker_topic = any(x in scope_norm for x in (
+            "upgrade", "subir de nivel", "otro deposito", "depositos acumul", "acumular depositos",
+            "mismo broker", "dos brokers", "ambos brokers", "depositos de binomo", "depositos de stockity",
+        ))
+        bonus_topic = any(x in scope_norm for x in ("bono", "bonos", "codigo promo", "codigo promocional", "promocion", "70%", "100%"))
+        live_topic = any(x in scope_norm for x in ("live", "en vivo", "transmision", "tiktok live", "youtube live"))
+        vip_access_topic = any(x in scope_norm for x in (
+            "acceso vip", "canal vip", "canales vip", "demasiados intentos", "solicitud de acceso", "entrar al canal",
+        ))
+        personal_topic = any(x in scope_norm for x in (
+            "gestion de cuenta", "gestionar mi cuenta", "gestion de capital", "plataforma no disponible", "restriccion por pais",
+        ))
+
+        if level_topic:
+            selected_titles.add("NIVELES DENTRO DE JT TRADERS TEAMS")
+        if course_topic or broad_benefits:
+            selected_titles.add("FORMACIÓN / CURSOS")
+        if signal_topic or broad_benefits:
+            selected_titles.add("SEÑALES Y SOFTWARE PREMIUM ANTICIPADO")
+        # Una pregunta general por señales de Premium/Prestige debe conocer también
+        # las fuentes 24/7; una pregunta concreta por software no obliga a hablar del bot.
+        if bot_topic or broad_benefits or (signal_topic and any(x in scope_norm for x in ("premium", "prestige", "nivel"))):
+            selected_titles.add("BOTS IA 24/7")
+        if panel_topic:
+            selected_titles.add("PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE")
+        if time_topic:
+            selected_titles.add("TIEMPO / HORARIOS / PERSONAS QUE TRABAJAN TODO EL DÍA")
+            selected_titles.add("GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA")
+        elif risk_topic:
+            selected_titles.add("GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA")
+        if account_topic:
+            selected_titles.add("CUENTAS EXISTENTES / ANTIGUAS")
+        if registration_topic:
+            selected_titles.add("REGISTRO Y ACCESO")
+        if broker_topic:
+            selected_titles.add("BROKERS Y UPGRADES")
+        if bonus_topic:
+            selected_titles.add("BONOS — REGLAS GENERALES")
+        if live_topic:
+            selected_titles.add("LIVES")
+        if vip_access_topic:
+            selected_titles.add("ACCESOS VIP EN TELEGRAM")
+        if personal_topic:
+            selected_titles.add("CASOS QUE SIEMPRE VAN A JOHANNA")
+        if multi_pending:
+            selected_titles.add("PREGUNTAS MÚLTIPLES Y DEPENDENCIAS")
+
+        # Preguntas amplias sobre la comunidad/nivel sí pueden requerir varias categorías.
+        if broad_benefits:
+            selected_titles.update({
+                "NIVELES DENTRO DE JT TRADERS TEAMS", "FORMACIÓN / CURSOS",
+                "SEÑALES Y SOFTWARE PREMIUM ANTICIPADO", "BOTS IA 24/7",
+            })
+
+        # Si la base fue reemplazada desde Railway y ya no conserva estos encabezados,
+        # mantenemos compatibilidad usando la base completa. De lo contrario usamos solo
+        # las secciones seleccionadas y nunca obligamos al modelo a mencionar todas.
+        if knowledge_sections:
+            ordered_sections = [knowledge_sections[t] for t in section_titles if t in selected_titles and t in knowledge_sections]
+            scoped_knowledge = "\n\n".join(ordered_sections).strip()
+        else:
+            scoped_knowledge = knowledge_text
+        if not scoped_knowledge:
+            scoped_knowledge = knowledge_text
+
+        promo_context_for_prompt = promo_context if bonus_topic else (
+            "(not needed for the pending questions)" if lang == "en" else "(no requerido para las preguntas pendientes)"
+        )
         already_answered = already_answered or []
         answered_note = ", ".join(already_answered) if already_answered else ("none" if lang == "en" else "ninguno")
         system = f"""
@@ -9050,7 +9179,8 @@ OBJETIVO PRINCIPAL
 - Conversa de forma humana, natural y contextual. NO respondas como una FAQ rígida ni copies la base de conocimiento como plantilla.
 - La base oficial contiene HECHOS que debes comprender y aplicar según la pregunta; redacta libremente con palabras naturales.
 - RESPUESTA MÍNIMA SUFICIENTE: contesta exactamente lo que preguntaron y termina. No anticipes preguntas futuras ni descargues todo lo que sabes del tema.
-- FILTRO DE RELEVANCIA: antes de redactar, decide qué categoría está preguntando realmente el usuario (formación/cursos, señales, bots, niveles, registro, depósito, promos, horarios, acceso, etc.). Usa el resto de la base solo como contexto interno.
+- FILTRO DE RELEVANCIA: antes de redactar, separa cada duda pendiente, identifica su categoría (formación/cursos, señales, bots, niveles, registro, depósito, promos, horarios, acceso, etc.) y responde SOLO con los hechos necesarios para ESA duda.
+- El bloque de conocimiento que recibes ya está filtrado por temas relevantes. NO tienes que mencionar todo lo que aparece allí: úsalo como referencia factual, no como checklist.
 - PRINCIPIO DE MISMA CATEGORÍA: si preguntan por un curso, responde sobre cursos; si preguntan por señales, responde sobre las fuentes de señales; si preguntan por bots, responde sobre bots. Solo cruza categorías cuando sea necesario para contestar correctamente o cuando la pregunta sea amplia sobre beneficios/qué incluye.
 - Un monto o el nombre “Premium/Prestige/Básico” NO significa automáticamente “dime todos los beneficios”. Si la pregunta es específica, el nivel/monto solo sirve para ubicar la respuesta.
 - Pregunta simple: normalmente 1–3 frases y preferiblemente 20–55 palabras. NO conviertas una duda sencilla en una lista de 4–5 puntos. Si el usuario no pidió pasos/lista/guía, NO numeres la respuesta.
@@ -9070,6 +9200,8 @@ CONTINUIDAD Y COMPRENSIÓN
 
 VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 - Lee el conjunto completo antes de responder. El usuario puede enviar 2, 3, 4 o más mensajes durante la espera de 4 minutos.
+- Separa mentalmente cada pregunta o intención y respóndelas TODAS en el mismo mensaje, en el mismo orden en que llegaron. Si son temas distintos, usa párrafos cortos separados; no hace falta numerarlos salvo que ayude de verdad.
+- No mezcles datos de una pregunta dentro de otra: por ejemplo, una duda sobre un curso no necesita señales; una duda de organización puede mencionar las señales como apoyo sin recitar cantidades o beneficios que no fueron preguntados.
 - Responde todas las dudas pendientes, pero identifica primero si una depende de otra.
 - Si una respuesta depende de un dato todavía no validado, NO asumas ese dato. Resuelve primero el requisito pendiente y después responde lo que sí pueda contestarse sin inventar.
 - Temas ya atendidos automáticamente antes de llamarte: {answered_note}. No los repitas salvo una referencia mínima necesaria.
@@ -9079,11 +9211,11 @@ VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 ESTILO Y CTA
 - Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas.
 - No uses listas largas para una duda simple. Si el usuario NO pidió "pasos", "lista" o "guía", responde en prosa breve y NO uses numeración; usa lista solo si realmente la pidió o es imprescindible para claridad.
-- Para dudas sobre falta de tiempo/organización/horarios de trading, integra de forma natural la referencia de Johanna: AL MENOS DOS sesiones de aproximadamente 40 minutos ajustadas a TU horario/rutina, unas 5 operaciones bien seleccionadas por sesión como suficiente, apoyo en las señales disponibles, plan de trading y gestión de riesgo. No lo redactes como plantilla ni como lista salvo que el usuario la pida. No afirmes que una hora concreta da “mayor efectividad” ni inventes momentos del día si el usuario no los dio.
+- Para dudas sobre falta de tiempo/organización/horarios de trading, usa como referencia de fondo: al menos dos sesiones de unos 40 minutos, alrededor de 5 operaciones bien seleccionadas por sesión, apoyo en las señales disponibles, plan de trading y gestión de riesgo. Expresa solo lo que aporte a la pregunta y VARÍA la redacción según la conversación; no recites siempre la misma secuencia de datos ni conviertas estos hechos en una plantilla. No inventes momentos del día si el usuario no los dio.
 - No repitas enlaces/CTA si ya se enviaron recientemente. Muestra registro, niveles u otro CTA solo cuando el usuario lo pida o sea el siguiente paso realmente necesario.
 - Si preguntan por un monto concreto para saber el nivel o qué incluye de forma amplia, responde el nivel concreto y un resumen útil. Si el monto acompaña una pregunta específica sobre un curso/señal/bot, responde solo ese ámbito; no recites beneficios ajenos.
 - El nivel SIEMPRE es "dentro de mi comunidad JT TRADERS TEAMS", nunca nivel del broker.
-- Los ejemplos reales de Johanna sirven para tono y ritmo. La BASE OFICIAL y el ESTADO OPERATIVO mandan sobre ejemplos antiguos.
+- Los ejemplos reales de Johanna sirven SOLO para tono y ritmo. No copies su estructura ni los uses como lista de contenido. La BASE OFICIAL y el ESTADO OPERATIVO mandan sobre ejemplos antiguos.
 
 CONTEXTO HUMANO Y OPERATIVO
 - Si el historial muestra "JOHANNA (RESPUESTA PERSONAL REAL)", esa respuesta proviene realmente de Johanna por texto o audio transcrito. Continúa desde lo ya acordado y no reinicies la conversación.
@@ -9110,19 +9242,18 @@ CONTEXTO OPERATIVO REAL:
 {runtime_context}
 
 CONTEXTO PROMOCIONAL ACTUAL:
-{promo_context}
+{promo_context_for_prompt}
 
 PRIORIDAD ESPECIAL PARA ESTA PREGUNTA:
 {dependency_context or '(sin dependencia especial)'}
 
-BASE DE CONOCIMIENTO OFICIAL:
-{JOHA_KNOWLEDGE}
+CONOCIMIENTO OFICIAL RELEVANTE PARA LAS PREGUNTAS PENDIENTES:
+{scoped_knowledge}
 
 EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
 {real_examples or '(sin ejemplos relevantes)'}
 """.strip()
 
-        history_text = _history_as_text(chat_id)
         user_input = (
             f"HISTORIAL RECIENTE DE ESTE USUARIO:\n{history_text or '(sin historial previo)'}\n\n"
             f"MENSAJE(S) PENDIENTE(S) DEL USUARIO:\n{question.strip()}"
@@ -9131,7 +9262,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             "model": OPENAI_MODEL,
             "instructions": system,
             "input": user_input,
-            "max_output_tokens": 320,
+            "max_output_tokens": 520 if multi_pending else 320,
             "store": False,
         }
         async with httpx.AsyncClient(timeout=35) as client:
