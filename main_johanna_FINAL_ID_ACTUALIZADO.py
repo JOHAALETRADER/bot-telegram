@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.51-20260920-AI-ROUTING-MULTIQUESTION-FACT-GUARD-FIX"
+BOT_VERSION = "v7.10.52-20260920-AI-NATURAL-CONCISE-TRAINING-PROGRESS-FIX"
+# v7.10.52: IA más concisa, sin redundancias/relleno y formación Binary Teams entendida como ruta progresiva.
 # v7.10.50: conocimiento IA filtrado por tema, preguntas múltiples naturales y ejemplos solo relevantes.
 # v7.10.49: mejora selección contextual: responde solo el tema preguntado, relaciona fuentes de señales y evita información/horarios innecesarios.
 # v7.10.48: refuerza organización natural en 2 sesiones ~40 min, ~5 operaciones por sesión y precisión +300 señales/día lunes-sábado.
@@ -6755,10 +6756,11 @@ FORMACIÓN / CURSOS
 - Binary Teams Módulo 2: introducción al análisis bursátil.
 - Binary Teams Módulo 3: continuación/tercera parte del análisis bursátil.
 - Binary Teams Módulo 4: Smart Money Concept.
+- Los Módulos 1 al 4 de Binary Teams forman una RUTA PROGRESIVA de aprendizaje: parten de fundamentos/nivel principiante y avanzan gradualmente hasta contenido más avanzado, culminando en Smart Money Concept en el Módulo 4. Este es conocimiento conceptual, NO una frase fija: cuando la pregunta trate de cursos, formación o nivel de aprendizaje, explícalo con palabras naturales y variadas (por ejemplo, desde fundamentos hasta avanzado), sin repetir siempre "de cero a pro" ni convertirlo en slogan.
 - Madness Trading Avanzado: formación avanzada con método ALGO & LIT.
 - La formación incluye además material de estudio/apoyo según nivel, PDFs/guías, audiolibros, tablas de plan de trading y gestión de riesgo, sesiones en vivo y acompañamiento de la comunidad.
-- No enumeres todos los módulos si no hace falta. Ejemplo resumido para Premium: "formación de cero a pro, desde Módulo 1 hasta Módulo 4 Smart Money Concept".
-- Si preguntan específicamente "qué cursos/formación tengo" en Premium o Prestige, después de indicar los módulos añade en UNA frase breve que también hay material de estudio/apoyo, PDFs/guías, audiolibros, plan de trading, gestión de riesgo, sesiones en vivo y acompañamiento según el nivel.
+- No enumeres todos los módulos si no hace falta. Si preguntan por la formación de Premium o Prestige, puedes resumirla como una ruta progresiva desde fundamentos/principiante hasta avanzado y mencionar el Módulo 4 Smart Money Concept cuando aporte contexto.
+- Si preguntan específicamente "qué cursos/formación tengo" en Premium o Prestige, después de indicar los módulos añade en UNA frase breve que también hay material de estudio/apoyo, PDFs/guías, audiolibros, plan de trading, gestión de riesgo, sesiones en vivo y acompañamiento según el nivel. No lo añadas si la pregunta solo busca confirmar un curso concreto.
 
 SEÑALES Y SOFTWARE PREMIUM ANTICIPADO
 - Básico: 30–50 señales CRYPTO IDX diarias, de lunes a viernes.
@@ -8921,7 +8923,23 @@ def _trim_generic_ai_closer(answer: str, lang: str = "es") -> str:
         )
     if any(last.startswith(_norm(x)) for x in generic):
         paragraphs.pop()
-    return "\n\n".join(paragraphs).strip()
+    value = "\n\n".join(paragraphs).strip()
+    # Elimina cierres evaluativos/genéricos que no añaden información nueva.
+    # No toca contenido factual ni CTA útiles.
+    if lang == "en":
+        filler_endings = (
+            r"Both options are (?:excellent|great|effective),? but (?:they|their dynamics?) (?:are|is) different[.!]?",
+            r"I hope (?:this|that) helps[.!]?",
+        )
+    else:
+        filler_endings = (
+            r"Ambas opciones son (?:excelentes|muy buenas|buenas|efectivas),? pero (?:tienen enfoques diferentes|su dinámica es diferente|funcionan de forma diferente)[.!]?",
+            r"Esto te ofrece (?:un )?(?:excelente|gran) (?:soporte|apoyo)(?: tanto para aprender como para operar)?[.!]?",
+            r"¡?Espero que (?:esto|te) (?:te )?(?:sirva|ayude)!?[.!]?",
+        )
+    for pattern in filler_endings:
+        value = re.sub(r"(?:\s*\n?\s*)" + pattern + r"\s*$", "", value, flags=re.I).strip()
+    return value
 
 
 def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
@@ -8949,6 +8967,13 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
             r"\1, de lunes a sábado",
             value, flags=re.I,
         )
+        # Si el mismo dato de disponibilidad ya apareció, elimina una frase posterior
+        # que solo lo repita sin aportar nada nuevo.
+        if len(re.findall(r"de\s+lunes\s+a\s+s[aá]bado", value, flags=re.I)) > 1:
+            value = re.sub(
+                r"\s*(?:Estas|Las)\s+señales\s+(?:est[aá]n\s+)?disponibles\s+de\s+lunes\s+a\s+s[aá]bado\.?",
+                "", value, count=1, flags=re.I,
+            ).strip()
 
         # Software Premium Anticipado: nunca describir la ENTREGA de sus señales como manual.
         # La entrada la realiza la persona, pero la lista de señales es anticipada y predeterminada.
@@ -9198,6 +9223,9 @@ OBJETIVO PRINCIPAL
 - La base oficial contiene HECHOS que debes comprender y aplicar según la pregunta; redacta libremente con palabras naturales.
 - NO completes huecos con suposiciones sobre cómo funciona una herramienta. Si la base no dice que algo es manual, automático, instantáneo, personalizado, etc., no lo inventes. Distingue siempre entre CÓMO SE GENERA/ENTREGA una señal y CÓMO la persona ejecuta la entrada.
 - RESPUESTA MÍNIMA SUFICIENTE: contesta exactamente lo que preguntaron y termina. No anticipes preguntas futuras ni descargues todo lo que sabes del tema.
+- ECONOMÍA DE LENGUAJE: cada dato factual debe aparecer UNA sola vez por respuesta salvo que repetirlo sea indispensable para resolver otra pregunta distinta. Si ya dijiste "lunes a sábado", "24/7", un monto, un nivel o un requisito, no vuelvas a reformular el mismo dato en la frase siguiente.
+- Evita preámbulos que solo repiten la pregunta (por ejemplo, "la diferencia principal radica en...") cuando puedes ir directamente a la diferencia. Evita también frases de relleno/evaluación sin información nueva como "ambas opciones son excelentes", "esto te ofrece muchas oportunidades", "es una gran opción" o equivalentes.
+- En comparaciones, explica directamente la diferencia concreta entre A y B en uno o dos bloques breves; no añadas una conclusión genérica si la comparación ya quedó clara.
 - FILTRO DE RELEVANCIA: antes de redactar, separa cada duda pendiente, identifica su categoría (formación/cursos, señales, bots, niveles, registro, depósito, promos, horarios, acceso, etc.) y responde SOLO con los hechos necesarios para ESA duda.
 - El bloque de conocimiento que recibes ya está filtrado por temas relevantes. NO tienes que mencionar todo lo que aparece allí: úsalo como referencia factual, no como checklist.
 - PRINCIPIO DE MISMA CATEGORÍA: si preguntan por un curso, responde sobre cursos; si preguntan por señales, responde sobre las fuentes de señales; si preguntan por bots, responde sobre bots. Solo cruza categorías cuando sea necesario para contestar correctamente o cuando la pregunta sea amplia sobre beneficios/qué incluye.
@@ -9228,7 +9256,8 @@ VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 - CAMBIO DE TEMA: si el pendiente empieza un caso hipotético o habla explícitamente de "otra persona / una persona / alguien", no arrastres al nuevo tema un ID, depósito o cuenta personal pendiente de una conversación anterior.
 
 ESTILO Y CTA
-- Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas.
+- Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas. La naturalidad sale de adaptar el lenguaje a la conversación, no de añadir frases motivacionales de relleno.
+- Antes de cerrar la respuesta, revisa mentalmente cada oración: si repite una idea ya dicha, solo parafrasea la pregunta o no aporta un hecho/acción útil, elimínala.
 - No uses listas largas para una duda simple. Si el usuario NO pidió "pasos", "lista" o "guía", responde en prosa breve y NO uses numeración; usa lista solo si realmente la pidió o es imprescindible para claridad.
 - Para dudas sobre falta de tiempo/organización/horarios de trading, usa como referencia de fondo: al menos dos sesiones de unos 40 minutos, alrededor de 5 operaciones bien seleccionadas por sesión, apoyo en las señales disponibles, plan de trading y gestión de riesgo. Expresa solo lo que aporte a la pregunta y VARÍA la redacción según la conversación; no recites siempre la misma secuencia de datos ni conviertas estos hechos en una plantilla. No inventes momentos del día si el usuario no los dio.
 - No repitas enlaces/CTA si ya se enviaron recientemente. Muestra registro, niveles u otro CTA solo cuando el usuario lo pida o sea el siguiente paso realmente necesario.
