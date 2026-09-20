@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.46-20260919-AI-EDIT-NEUTRAL-PREMIUM-POLISH"
+BOT_VERSION = "v7.10.47-20260919-AI-STYLE-TUTEO-40MIN-MARKDOWN-LEVELS-FIX"
+# v7.10.47: pulido de estilo IA, tuteo, sesiones ~40 min, limpieza Markdown y botón de niveles contextual.
 # v7.10.45: promo lookup inmediato ampliado, guard factual Premium y espera IA máxima de 4 min.
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
@@ -3620,7 +3621,16 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) 
         "diferencia entre niveles", "diferencia de niveles", "planes disponibles",
         "si otra persona", "si una persona", "si alguien", "para otra persona",
     ))
-    if current_level == VIP_LEVEL_PRESTIGE and not explicit_general:
+    # Incluso si el usuario actual ya es Prestige, una consulta explícita de un nivel/monto
+    # (p. ej. “con 300 dólares qué incluye Premium”) sí se beneficia del botón de niveles.
+    explicit_level_planning = (
+        bool(re.search(r"\b(?:50|100|150|200|250|300|350|400|450|500|600|700|800|900|1000)\b", t))
+        and any(x in t for x in ("premium", "prestige", "basico", "básico", "nivel", "que incluye", "qué incluye"))
+    ) or any(x in t for x in (
+        "que incluye premium", "qué incluye premium", "que incluye prestige", "qué incluye prestige",
+        "que incluye basico", "qué incluye básico", "beneficios premium", "beneficios prestige",
+    ))
+    if current_level == VIP_LEVEL_PRESTIGE and not (explicit_general or explicit_level_planning):
         return False
 
     direct = (
@@ -3757,6 +3767,14 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
     pendientes y pausa de Telegram. No modifica ningún dato.
     """
     lines = [f"Etapa del bot: {get_user_stage(chat_id)}"]
+    try:
+        with Session() as session:
+            row = session.query(Usuario.nombre).filter(Usuario.telegram_id == str(chat_id)).first()
+            visible_name = (row[0] or "").strip() if row else ""
+        if visible_name:
+            lines.append(f"Nombre visible del usuario: {visible_name}. Puedes usarlo ocasionalmente si suena natural; no lo repitas en cada respuesta.")
+    except Exception:
+        pass
     try:
         state = _vip_get_state(chat_id, create=False) or {}
         level = state.get("level") or VIP_LEVEL_NONE
@@ -6687,6 +6705,7 @@ IDENTIDAD Y PRINCIPIO DE RESPUESTA
 - La prioridad es comprender la intención completa y responder SOLO lo necesario para esa pregunta. No descargues toda la información disponible sobre un tema.
 - Si la persona hace una pregunta corta, normalmente bastan 1–3 frases. Amplía solo cuando lo pida o cuando sea imprescindible para evitar un error.
 - No asumas género. Usa lenguaje neutral: "si estás empezando", "cuando completes", "tú realizas la entrada", etc.
+- Tutea SIEMPRE a la persona: usa “tú / te / tu / tus”. No uses “usted / su / sus” para dirigirte al usuario. Si el nombre visible está disponible, puedes usarlo ocasionalmente cuando suene natural, pero no en cada respuesta.
 
 REGISTRO Y ACCESO
 - El acceso a la comunidad JT TRADERS TEAMS es GRATUITO. No existe una membresía adicional que se pague a Johanna.
@@ -6720,9 +6739,9 @@ FORMACIÓN / CURSOS
 - Binary Teams Módulo 3: continuación/tercera parte del análisis bursátil.
 - Binary Teams Módulo 4: Smart Money Concept.
 - Madness Trading Avanzado: formación avanzada con método ALGO & LIT.
-- La formación incluye además material de estudio/apoyo según nivel, PDFs/guías, tablas de plan de trading y gestión de riesgo, sesiones en vivo y acompañamiento de la comunidad.
+- La formación incluye además material de estudio/apoyo según nivel, PDFs/guías, audiolibros, tablas de plan de trading y gestión de riesgo, sesiones en vivo y acompañamiento de la comunidad.
 - No enumeres todos los módulos si no hace falta. Ejemplo resumido para Premium: "formación de cero a pro, desde Módulo 1 hasta Módulo 4 Smart Money Concept".
-- Si preguntan específicamente "qué cursos/formación tengo" en Premium o Prestige, después de indicar los módulos añade en UNA frase breve que también hay material de estudio/apoyo, PDFs/guías, plan de trading, gestión de riesgo, sesiones en vivo y acompañamiento según el nivel.
+- Si preguntan específicamente "qué cursos/formación tengo" en Premium o Prestige, después de indicar los módulos añade en UNA frase breve que también hay material de estudio/apoyo, PDFs/guías, audiolibros, plan de trading, gestión de riesgo, sesiones en vivo y acompañamiento según el nivel.
 
 SEÑALES Y SOFTWARE PREMIUM ANTICIPADO
 - Básico: 30–50 señales CRYPTO IDX diarias, de lunes a viernes.
@@ -6760,10 +6779,13 @@ GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
 - Como referencia de plan, Johanna prioriza limitar pérdidas y buscar una relación favorable entre riesgo y objetivo; nunca presentes objetivos de ganancia como garantizados.
 - Si preguntan simplemente "¿puedo usar martingala?", responde breve: sí, MG1/MG2 son opcionales y deben quedar dentro de la gestión total de riesgo.
 
-TIEMPO / PERSONAS QUE TRABAJAN TODO EL DÍA
-- Si alguien dice que trabaja todo el día o que tiene poco tiempo, explica brevemente que el Software Premium Anticipado distribuye señales normalmente desde aproximadamente 7 a. m. hasta 10 p. m. y que el bot IA CRYPTO IDX funciona 24/7.
-- Puedes destacar que aprender trading permite estructurar sesiones cortas y ganar flexibilidad de tiempo a medida que desarrolla metodología y disciplina, pero NO prometas libertad financiera, dejar el empleo ni ganancias determinadas.
-- Una referencia práctica puede ser organizar sesiones de unos 40 minutos cuando la persona tenga disponibilidad; no prometas profit por hacer un número concreto de sesiones.
+TIEMPO / HORARIOS / PERSONAS QUE TRABAJAN TODO EL DÍA
+- Si alguien pregunta cómo organizar sus horarios para operar, dice que trabaja todo el día o que tiene poco tiempo, responde BREVE y práctico; no conviertas la respuesta en una lista larga.
+- Como referencia práctica, una sesión de unos 40 minutos puede ser suficiente para trabajar con calma siguiendo el plan; si encaja mejor con su disponibilidad, puede organizar dos sesiones de unos 40 minutos en distintos momentos del día.
+- Tutea en la respuesta: “ajustadas a tu horario”, “a tu rutina”, “cuando tengas disponibilidad”.
+- El Software Premium Anticipado distribuye señales normalmente desde aproximadamente 7 a. m. hasta 10 p. m. y el bot IA CRYPTO IDX funciona 24/7, por lo que existe flexibilidad para elegir momentos compatibles con la rutina.
+- Puedes destacar la flexibilidad de horario del trading, pero NO prometas libertad financiera, dejar el empleo, mayor efectividad por operar a determinada hora ni ganancias determinadas.
+- Para una pregunta simple sobre organización/horarios, normalmente bastan 2–3 frases: sesiones de ~40 minutos + plan de trading/gestión de riesgo + flexibilidad según la rutina.
 
 CUENTAS EXISTENTES / ANTIGUAS
 - Nunca trates igual "mi cuenta fue registrada contigo", "creo que fue contigo" y "no fue con tu enlace".
@@ -8801,6 +8823,8 @@ def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
         (r"\bsi eres nuev[oa] en esto\b", "si estás empezando"),
         (r"\bmantenerte enfocad[oa]\b", "mantener tu enfoque"),
         (r"\bte mantendr[aá]s enfocad[oa]\b", "mantendrás tu enfoque"),
+        (r"\bte mantendr[aá] enfocad[oa]\b", "te ayudará a mantener tu enfoque"),
+        (r"\bte ayudar[aá] a mantenerte enfocad[oa]\b", "te ayudará a mantener tu enfoque"),
         (r"\bpara mantenerte enfocad[oa]\b", "para mantener tu enfoque"),
         (r"\bdebes estar atent[oa]\b", "debes prestar atención"),
         (r"\bmantente atent[oa]\b", "presta atención"),
@@ -8818,6 +8842,58 @@ def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
     for pattern, repl in replacements:
         value = re.sub(pattern, repl, value, flags=re.I)
     return value.strip()
+
+
+def _clean_ai_plain_text_format(answer: str) -> str:
+    """Elimina Markdown decorativo porque las respuestas IA se envían como texto plano."""
+    value = (answer or "").strip()
+    if not value:
+        return value
+    # Bold/italic/code generados por el modelo: conservar contenido, quitar marcadores.
+    value = re.sub(r"\*\*([^*\n]+?)\*\*", r"\1", value)
+    value = re.sub(r"__([^_\n]+?)__", r"\1", value)
+    value = re.sub(r"`([^`\n]+?)`", r"\1", value)
+    value = re.sub(r"^\s*#{1,6}\s+", "", value, flags=re.MULTILINE)
+    return value.strip()
+
+
+def _time_management_style_guard(answer: str, question: str, lang: str = "es") -> str:
+    """Evita listas largas en preguntas simples sobre tiempo/horarios y usa la guía de ~40 min.
+
+    Solo interviene cuando el modelo volvió a generar una respuesta larga/listada; si la
+    respuesta ya es breve y natural, se conserva tal cual.
+    """
+    value = (answer or "").strip()
+    if not value or lang != "es":
+        return value
+    q = _norm(question or "")
+    time_topic = (
+        any(x in q for x in ("horario", "horarios", "organizarme", "organizar", "rutina", "tiempo", "trabajo todo el dia", "trabajo todo el día"))
+        and any(x in q for x in ("operar", "trading", "señal", "senal", "bot"))
+    )
+    if not time_topic:
+        return value
+    user_requested_detail = any(x in q for x in (
+        "paso a paso", "pasos", "hazme una lista", "dame una lista", "guia detallada", "guía detallada", "detalladamente",
+    ))
+    if user_requested_detail:
+        return value
+    word_count = len(re.findall(r"\b\w+\b", value, flags=re.UNICODE))
+    looks_listed = bool(re.search(r"(?m)^\s*(?:\d+[.)]|[-•])\s+", value))
+    if word_count <= 90 and not looks_listed:
+        return value
+
+    starting = any(x in q for x in ("estoy empezando", "apenas estoy empezando", "principiante", "soy nuevo", "soy nueva"))
+    first = (
+        "Si estás empezando, no necesitas pasar horas operando. "
+        if starting else
+        "No necesitas pasar horas operando. "
+    )
+    return (
+        first
+        + "Puedes hacer una sesión de unos 40 minutos, o dos sesiones de 40 minutos si te encaja mejor, ajustadas a tu horario y a tu rutina. "
+        + "Lo importante es seguir tu plan de trading y gestión de riesgo y aprovechar las señales y herramientas disponibles durante el día; esa flexibilidad de horario es una de las ventajas del trading. 😊"
+    )
 
 
 def _trim_generic_ai_closer(answer: str, lang: str = "es") -> str:
@@ -8872,6 +8948,16 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
                 lambda m: m.group(1) + "Binary Teams Módulos 1 al 4",
                 value, flags=re.I
             )
+        # Refuerzo para preguntas SOLO de Premium: aunque el modelo separe “Premium” y
+        # “todos los módulos” en frases distintas, no puede dejar esa afirmación ambigua.
+        if "premium" in q and "prestige" not in q:
+            value = re.sub(
+                r"\btodos\s+los\s+m[oó]dulos(?:\s+de\s+formaci[oó]n)?\b",
+                "Binary Teams Módulos 1 al 4",
+                value, flags=re.I,
+            )
+            value = re.sub(r"\btodos\s+los\s+cursos\b", "Binary Teams Módulos 1 al 4", value, flags=re.I)
+            value = re.sub(r"\bformaci[oó]n\s+completa\b", "formación Binary Teams Módulos 1 al 4", value, flags=re.I)
 
         # Si la pregunta es amplia sobre QUÉ INCLUYE Premium, no omitir el material educativo de apoyo.
         premium_broad = "premium" in q and any(x in q for x in (
@@ -8936,7 +9022,8 @@ OBJETIVO PRINCIPAL
 - Conversa de forma humana, natural y contextual. NO respondas como una FAQ rígida ni copies la base de conocimiento como plantilla.
 - La base oficial contiene HECHOS que debes comprender y aplicar según la pregunta; redacta libremente con palabras naturales.
 - RESPUESTA MÍNIMA SUFICIENTE: contesta exactamente lo que preguntaron y termina. No anticipes preguntas futuras ni descargues todo lo que sabes del tema.
-- Pregunta simple: normalmente 1–3 frases y preferiblemente 20–55 palabras. NO conviertas una duda sencilla en una lista de 4–5 puntos. Varias dudas reales: normalmente 70–160 palabras, solo lo necesario.
+- Pregunta simple: normalmente 1–3 frases y preferiblemente 20–55 palabras. NO conviertas una duda sencilla en una lista de 4–5 puntos. Si el usuario no pidió pasos/lista/guía, NO numeres la respuesta.
+- Responde en TEXTO PLANO: no uses Markdown decorativo (**negritas**, __subrayados__, títulos con # ni `código`) porque Telegram mostrará esos símbolos literalmente en este flujo.
 - Si una explicación necesita más detalle porque el usuario lo pidió, puedes ampliarla.
 
 CONTINUIDAD Y COMPRENSIÓN
@@ -8946,6 +9033,7 @@ CONTINUIDAD Y COMPRENSIÓN
 - Si la referencia es ambigua, haz una sola pregunta breve de aclaración; no inventes.
 - No vuelvas a saludar con "Hola" en cada turno. Saluda solo si el usuario saluda o si realmente es el primer intercambio.
 - NO asumas género, aunque el nombre parezca masculino o femenino. Evita "nuevo/nueva", "enfocado/enfocada", "atento/atenta", "listo/lista" y equivalentes dirigidos al usuario. Reformula de manera neutra: "si estás empezando", "mantener tu enfoque", "presta atención", "cuando quieras continuar".
+- TUTEA SIEMPRE: usa tú/te/tu/tus. No trates al usuario de “usted” ni uses “su/sus” para dirigirte directamente a esa persona. Si el nombre visible aparece en el contexto, puedes usarlo ocasionalmente cuando quede natural, no en cada respuesta.
 - No cierres por costumbre con "si tienes más preguntas", "estoy aquí para ayudarte", "¿cómo deseas proceder?" u otros cierres genéricos. Úsalos solo si aportan algo real.
 - Usa emojis con moderación. Si el usuario manda solo emojis/reacciones, responde como máximo con una reacción breve y no inventes emociones o intención de compra.
 
@@ -8959,7 +9047,8 @@ VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 
 ESTILO Y CTA
 - Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas.
-- No uses listas largas para una duda simple. Si el usuario NO pidió "pasos", "lista" o "guía", responde en prosa breve; usa lista solo si realmente mejora claridad.
+- No uses listas largas para una duda simple. Si el usuario NO pidió "pasos", "lista" o "guía", responde en prosa breve y NO uses numeración; usa lista solo si realmente la pidió o es imprescindible para claridad.
+- Para dudas sobre falta de tiempo/organización/horarios de trading, prioriza una respuesta de 2–3 frases con sesiones de aproximadamente 40 minutos ajustadas a TU horario/rutina, plan de trading y gestión de riesgo. No afirmes que una hora concreta da “mayor efectividad”.
 - No repitas enlaces/CTA si ya se enviaron recientemente. Muestra registro, niveles u otro CTA solo cuando el usuario lo pida o sea el siguiente paso realmente necesario.
 - Si preguntan por un monto concreto, responde el nivel concreto y un resumen útil; no recites los tres niveles.
 - El nivel SIEMPRE es "dentro de mi comunidad JT TRADERS TEAMS", nunca nivel del broker.
@@ -9011,7 +9100,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             "model": OPENAI_MODEL,
             "instructions": system,
             "input": user_input,
-            "max_output_tokens": 450,
+            "max_output_tokens": 320,
             "store": False,
         }
         async with httpx.AsyncClient(timeout=35) as client:
@@ -9041,6 +9130,9 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         answer = _neutralize_ai_gender(answer, lang)
         answer = _ai_known_fact_guard(answer, question, lang)
         answer = _trim_generic_ai_closer(answer, lang)
+        answer = _time_management_style_guard(answer, question, lang)
+        answer = _neutralize_ai_gender(answer, lang)  # guard final tras cualquier reescritura factual/estilo
+        answer = _clean_ai_plain_text_format(answer)
 
         # Presentación estable de links para Telegram: sin Markdown literal y con separación.
         answer = _organize_ai_registration_links(answer, lang)
