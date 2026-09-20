@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.44-20260919-AI-CONTEXT-PRECISION-FIXES"
+BOT_VERSION = "v7.10.45-20260919-AI-FACTS-PROMO-WAIT4-STABILIZATION"
+# v7.10.45: promo lookup inmediato ampliado, guard factual Premium y espera IA máxima de 4 min.
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
@@ -2014,7 +2015,7 @@ Indicative structure of up to USD 30 per week for 2 months, subject to results.
 BENEFICIOS_ES = """✨ Beneficios JT TRADERS TEAMS ✨
 
 ✅ Básico — desde 50 USD: formación Binary Teams Módulos 1 al 3 + VIP principal + 30–50 señales CRYPTO IDX diarias de lunes a viernes.
-✅ Premium — desde 200 USD: formación completa Binary Teams Módulos 1 al 4 (Módulo 4 Smart Money Concept), material de apoyo, sesiones/acompañamiento, Software Premium Anticipado con +300 señales AL DÍA de lunes a sábado e IA CRYPTO IDX 24/7.
+✅ Premium — desde 200 USD: formación Binary Teams Módulos 1 al 4 (Módulo 4 Smart Money Concept), material de apoyo, sesiones/acompañamiento, Software Premium Anticipado con +300 señales AL DÍA de lunes a sábado e IA CRYPTO IDX 24/7.
 ✅ Prestige — desde 500 USD: todo Premium + Madness Trading Avanzado ALGO & LIT + bot IA de pares de divisas 24/7 + mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.
 
 ⚡️ La comunidad es GRATUITA: el dinero se deposita directamente en TU propia cuenta de trading. Las herramientas habilitadas dependen del nivel alcanzado.
@@ -2024,7 +2025,7 @@ BENEFICIOS_ES = """✨ Beneficios JT TRADERS TEAMS ✨
 BENEFICIOS_EN = """✨ JT TRADERS TEAMS Benefits ✨
 
 ✅ Basic — from USD 50: Binary Teams Modules 1–3 + main VIP + 30–50 CRYPTO IDX signals per day, Monday to Friday.
-✅ Premium — from USD 200: complete Binary Teams Modules 1–4 (Module 4 Smart Money Concept), support materials, live sessions/guidance, Premium Anticipated Software with 300+ signals PER DAY Monday to Saturday, and CRYPTO IDX AI 24/7.
+✅ Premium — from USD 200: Binary Teams Modules 1–4 (Module 4 Smart Money Concept), support materials, live sessions/guidance, Premium Anticipated Software with 300+ signals PER DAY Monday to Saturday, and CRYPTO IDX AI 24/7.
 ✅ Prestige — from USD 500: everything in Premium + Madness Advanced Trading ALGO & LIT + 24/7 currency-pair AI bot + private mentoring, closer guidance and funded-account preparation.
 
 ⚡️ The community is FREE: funds are deposited directly into YOUR own trading account. Enabled tools depend on the level reached.
@@ -3651,6 +3652,18 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     return InlineKeyboardMarkup(rows) if rows else None
 
 
+def _is_bonus_or_promo_mention(texto: str) -> bool:
+    """Reconoce menciones naturales de bonos/códigos/promociones sin exigir la palabra bono."""
+    t = _norm(texto or "")
+    terms = (
+        "bono", "bonos", "bonus", "100%", "70%",
+        "codigo promocional", "codigos promocionales", "codigo de promocion", "codigos de promocion",
+        "cuales son los codigos", "que codigos tienes", "codigos activos", "codigo activo",
+        "promocion", "promociones", "promo", "promos", "promotional code", "promo code", "promo codes",
+    )
+    return any(term in t for term in terms) or _contains_active_promo_code(texto)
+
+
 def _is_simple_bonus_lookup(texto: str) -> bool:
     """Solo códigos/bonos activos; recomendaciones y condiciones pasan a IA."""
     t = _norm(texto or "")
@@ -3664,8 +3677,13 @@ def _is_simple_bonus_lookup(texto: str) -> bool:
     simple = (
         "que bonos", "qué bonos", "bonos activos", "bono activo", "codigo de bono", "código de bono",
         "codigo bono", "código bono", "cual es el bono", "cuál es el bono", "bono 100", "bono 70",
+        "codigo promocional", "código promocional", "codigos promocionales", "códigos promocionales",
+        "cuales son los codigos", "cuáles son los códigos", "que codigos tienes", "qué códigos tienes",
+        "codigos activos", "códigos activos", "codigo activo", "código activo",
+        "promos activas", "promociones activas", "promociones vigentes", "que promociones", "qué promociones", "que promos", "qué promos",
+        "promo activa", "promocion activa", "promoción activa",
     )
-    return any(x in t for x in simple) or t.strip() in {"bono", "bonos", "bonus"} or _contains_active_promo_code(texto)
+    return any(x in t for x in simple) or t.strip() in {"bono", "bonos", "bonus", "promo", "promos", "promocion", "promoción", "promociones"} or _contains_active_promo_code(texto)
 
 
 def _is_simple_levels_lookup(texto: str) -> bool:
@@ -6644,11 +6662,13 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 # Modelo recomendado para transcribir respuestas de voz de Johanna.
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
-# 5 minutos de prioridad para Johanna. Puede cambiarse en Railway con AI_WAIT_MINUTES.
+# v7.10.45: prioridad para Johanna reducida a un máximo de 4 minutos.
+# Si Railway conserva una variable antigua AI_WAIT_MINUTES=5, el código la limita a 4.
+# Se permiten valores enteros menores (por ejemplo 3) sin superar el máximo actual.
 try:
-    AI_WAIT_MINUTES = max(1, int(os.getenv("AI_WAIT_MINUTES", "5")))
+    AI_WAIT_MINUTES = max(1, min(4, int(float(os.getenv("AI_WAIT_MINUTES", "4")))))
 except Exception:
-    AI_WAIT_MINUTES = 5
+    AI_WAIT_MINUTES = 4
 AI_WAIT_SECONDS = AI_WAIT_MINUTES * 60
 AI_HISTORY_MAX_MESSAGES = 16
 # Si Johanna respondió personalmente hace poco, los siguientes mensajes se tratan
@@ -6692,8 +6712,9 @@ NIVELES DENTRO DE JT TRADERS TEAMS
 
 FORMACIÓN / CURSOS
 - Básico recibe Binary Teams Módulos 1, 2 y 3.
-- Premium recibe Binary Teams Módulos 1, 2, 3 y 4.
+- Premium recibe EXACTAMENTE Binary Teams Módulos 1, 2, 3 y 4. NO recibe Madness Trading Avanzado.
 - Prestige recibe Binary Teams Módulos 1 al 4 y además Madness Trading Avanzado — método ALGO & LIT.
+- HECHO CRÍTICO: nunca describas Premium como “todos los módulos”, “todos los cursos” o “formación completa” si esa frase puede incluir Madness. Para Premium di “Binary Teams Módulos 1 al 4”. Madness es EXCLUSIVO de Prestige.
 - Binary Teams Módulo 1: introducción al manejo de la plataforma, especialmente Binomo; IQ Option tiene funcionamiento similar para esta introducción.
 - Binary Teams Módulo 2: introducción al análisis bursátil.
 - Binary Teams Módulo 3: continuación/tercera parte del análisis bursátil.
@@ -7987,7 +8008,7 @@ def detect_intent_es(texto: str) -> str:
     ]):
         return "NIVELES"
 
-    if any(k in t for k in ["bono", "bonus", "100%", "70%"]) or _contains_active_promo_code(texto):
+    if _is_bonus_or_promo_mention(texto):
         return "BONO"
 
     if "id" in t and any(k in t for k in ["donde", "como", "encuentro", "ver", "buscar", "ubico", "aparece"]):
@@ -8123,7 +8144,7 @@ def detect_all_intents(texto: str):
     ]):
         _add_intent(found, "NIVELES")
 
-    if any(k in t for k in ["bono", "bonos", "bonus", "100%", "70%"]) or _contains_active_promo_code(texto):
+    if _is_bonus_or_promo_mention(texto):
         _add_intent(found, "BONO")
 
     if any(k in t for k in [
@@ -8767,11 +8788,25 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
             return m.group(1) + " al día, de lunes a sábado"
         value = pat_300.sub(_daily_300, value)
 
+        # Guardia factual de formación: Premium termina en Binary Teams Módulo 4; Madness es solo Prestige.
+        if "premium" in _norm(value):
+            value = re.sub(
+                r"(Premium[^.\n]{0,180}?)(?:todos\s+los\s+m[oó]dulos(?:\s+de\s+formaci[oó]n)?|todos\s+los\s+cursos|formaci[oó]n\s+completa)(?!\s+Binary\s+Teams\s+M[oó]dulos?\s+1)",
+                lambda m: m.group(1) + "Binary Teams Módulos 1 al 4",
+                value, flags=re.I
+            )
+
         if "bot" in q or "automatic" in q or "automático" in q or "automatico" in q:
             value = re.sub(r"(?:está|esta) disponible para todos los miembros de mi comunidad", "está disponible desde el nivel Premium dentro de mi comunidad", value, flags=re.I)
             value = re.sub(r"(?:opera|operar|ejecuta|ejecutar) (?:las )?operaciones? automáticamente", "envía alertas automáticamente; las entradas se realizan manualmente", value, flags=re.I)
     else:
         value = re.sub(r"300\+?\s+signals\s+(?:per\s+week|weekly)", "300+ signals per day, Monday to Saturday", value, flags=re.I)
+        if "premium" in _norm(value):
+            value = re.sub(
+                r"(Premium[^.\n]{0,180}?)(?:all\s+(?:training\s+)?modules|all\s+courses|complete\s+training)(?!\s+Binary\s+Teams\s+Modules?\s+1)",
+                lambda m: m.group(1) + "Binary Teams Modules 1–4",
+                value, flags=re.I
+            )
         if "bot" in q or "automatic" in q:
             value = re.sub(r"available to all members of my community", "available from the Premium level in my community", value, flags=re.I)
     return value.strip()
