@@ -55,7 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.56-20260920-AI-HARD-STATE-PANEL-GUARDS"
+BOT_VERSION = "v7.10.58-20260920-ACTIVE-STATUS-CTA-MULTIQUESTION-GUARDS"
+# v7.10.58: estado activo manda para Básico/Premium/Prestige, CTA por intención real y guardias multi-pregunta sin borrar otras respuestas.
+# v7.10.57: mapea el Chat ID real de CRYPTO IDX Básico para aprobar solicitudes VIP.
 # v7.10.56: guardias duras de nivel activo + interfaz LIVE; evita degradar miembros activos por montos hipotéticos y corrige respuestas del panel privado.
 # v7.10.55: orquestación IA por estado + intención, aislamiento factual/promos, idioma EN garantizado y multi-pregunta natural.
 # v7.10.54: corrige routing semántico de la interfaz mostrada en lives y evita confundirla con bots entregables por nivel.
@@ -690,6 +692,8 @@ VIP_ACCESS_CHANNELS = {
         "name_es": "Señales CRYPTO IDX · Básico",
         "name_en": "CRYPTO IDX Signals · Basic",
         "url": "https://t.me/+xYyDG-g72tM2OWJh",
+        # ID real confirmado por solicitud Telegram 20/09/2026 (título: CRYPTO IDX VIP).
+        "chat_id": -1002098088816,
         "levels": (VIP_LEVEL_BASIC,),
         "desc_es": "30–50 señales CRYPTO IDX de lunes a viernes. Entrada en el minuto exacto indicado, expiración de 1 minuto y hasta Martingala 2 opcional.",
         "desc_en": "30–50 CRYPTO IDX signals Monday to Friday. Enter at the exact indicated minute, 1-minute expiry, with optional Martingale up to level 2.",
@@ -3614,11 +3618,13 @@ def personal_chat_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
         [InlineKeyboardButton(label, url=SUPPORT_URL)],
     ])
 
-def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) -> bool:
-    """Muestra niveles solo cuando realmente ayudan a la duda actual.
+def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE, current_stage: str = None) -> bool:
+    """Muestra el CTA de niveles solo cuando la intención REAL lo justifica.
 
-    Un miembro Prestige no necesita el botón por preguntar por SUS bots o señales;
-    sí puede verlo en una consulta general/hipotética sobre niveles de otra persona.
+    Para cualquier miembro activo (Básico/Premium/Prestige), su nivel guardado manda:
+    preguntar por SUS señales, bots, cursos, un depósito adicional o la interfaz del live
+    no debe disparar automáticamente el botón de niveles. El CTA se reserva para una
+    consulta explícita/general de niveles o un escenario claramente hipotético de otra persona.
     """
     t = _norm(question or "")
     if not t:
@@ -3626,11 +3632,23 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) 
 
     explicit_general = any(x in t for x in (
         "que niveles", "qué niveles", "niveles disponibles", "todos los niveles",
-        "diferencia entre niveles", "diferencia de niveles", "planes disponibles",
-        "si otra persona", "si una persona", "si alguien", "para otra persona",
+        "diferencia entre niveles", "diferencia de niveles", "comparar niveles",
+        "comparacion de niveles", "comparación de niveles", "planes disponibles",
+        "ver niveles", "quiero ver los niveles", "muestrame los niveles", "muéstrame los niveles",
+        "estructura de niveles", "what levels", "available levels", "compare levels", "show me the levels",
     ))
-    # Incluso si el usuario actual ya es Prestige, una consulta explícita de un nivel/monto
-    # (p. ej. “con 300 dólares qué incluye Premium”) sí se beneficia del botón de niveles.
+    hypothetical_other = _is_hypothetical_other_person(question) or any(x in t for x in (
+        "para alguien", "una persona nueva", "un usuario nuevo", "alguien nuevo",
+        "for someone", "new user", "a new user",
+    ))
+
+    active_member = (current_stage == STAGE_DEPOSITED and current_level != VIP_LEVEL_NONE)
+    if active_member:
+        # El usuario ya tiene un nivel real. No mostramos niveles por sus propias
+        # herramientas, montos o depósitos; solo cuando pide comparar/ver niveles
+        # o está hablando claramente de otra persona.
+        return bool(explicit_general or hypothetical_other)
+
     currency_amount = bool(re.search(
         r"(?:\$\s*\d{2,5}(?:[.,]\d{1,2})?|\b\d{2,5}(?:[.,]\d{1,2})?\s*(?:usd|dolares|dólares)\b)", t
     ))
@@ -3645,17 +3663,11 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) 
     ))
     level_related_detail = any(x in t for x in (
         "premium", "prestige", "basico", "básico", "nivel", "que incluye", "qué incluye",
-        "madness", "modulo", "módulo", "curso", "formacion", "formación",
-        "senal", "señal", "senales", "señales", "bot", "software", "acceso",
+        "beneficios", "madness", "modulo", "módulo", "curso", "formacion", "formación",
     ))
     explicit_level_planning = (
         (currency_amount or bare_level_amount) and level_related_detail
-    ) or any(x in t for x in (
-        "que incluye premium", "qué incluye premium", "que incluye prestige", "qué incluye prestige",
-        "que incluye basico", "qué incluye básico", "beneficios premium", "beneficios prestige",
-    ))
-    if current_level == VIP_LEVEL_PRESTIGE and not (explicit_general or explicit_level_planning or workflow_amount):
-        return False
+    ) or explicit_general
 
     direct = (
         "nivel", "niveles", "plan", "planes", "que incluye", "qué incluye",
@@ -3665,21 +3677,24 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE) 
         "acceso a las señales", "acceso a las senales",
         "con 50", "con 100", "con 200", "con 300", "con 500",
     )
-    if workflow_amount or any(x in t for x in direct):
+    if hypothetical_other or explicit_level_planning or workflow_amount or any(x in t for x in direct):
         return True
     return t.strip() in {"basico", "básico", "premium", "prestige"}
 
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
-    """CTA contextual mínimo: no añade soporte genérico a cada respuesta de IA."""
+    """CTA contextual mínimo: respeta etapa + nivel real antes de mostrar niveles."""
     current_level = VIP_LEVEL_NONE
+    current_stage = None
     if chat_id is not None:
         try:
             current_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+            current_stage = get_user_stage(chat_id)
         except Exception:
             current_level = VIP_LEVEL_NONE
+            current_stage = None
     rows = []
-    if _ai_needs_levels_button(question, current_level=current_level):
+    if _ai_needs_levels_button(question, current_level=current_level, current_stage=current_stage):
         label = "📊 VIEW MY COMMUNITY LEVELS" if lang == "en" else "📊 MIRA LOS NIVELES DE MI COMUNIDAD"
         callback = "levels_plans_en" if lang == "en" else "niveles_planes"
         rows.append([InlineKeyboardButton(label, callback_data=callback)])
@@ -9187,10 +9202,14 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "a new user", "new user",
         ))
         explicit_additional_deposit = any(x in q_norm for x in (
-            "si deposito", "si depósito", "deposito mas", "depósito más", "deposito otro", "depósito otro",
+            "si deposito", "si depósito", "que pasa si deposito", "qué pasa si deposito",
+            "deposito mas", "depósito más", "deposito otro", "depósito otro",
             "otro deposito", "otro depósito", "deposito adicional", "depósito adicional", "vuelvo a depositar",
-            "recargo", "recargar", "deposit more", "additional deposit", "another deposit", "top up",
+            "quiero depositar", "voy a depositar", "los deposito", "lo deposito", "depositarlos", "depositarlo",
+            "los meto", "los ingreso", "los pongo", "recargo", "recargar",
+            "deposit more", "additional deposit", "another deposit", "top up", "should i deposit", "if i deposit",
         ))
+        active_member = (stage == STAGE_DEPOSITED and current_active_level != VIP_LEVEL_NONE)
 
         # v7.10.55: ORQUESTADOR IA. Primero clasifica la intención semántica del
         # conjunto pendiente usando el modelo; después selecciona solo los bloques
@@ -9374,7 +9393,12 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             selected_titles.add("FORMACIÓN / CURSOS")
         if signal_topic or broad_benefits:
             selected_titles.add("SEÑALES Y SOFTWARE PREMIUM ANTICIPADO")
-        if bot_topic or broad_benefits or (signal_topic and any(x in q_norm for x in ("premium", "prestige", "nivel"))):
+        if bot_topic or broad_benefits or (
+            signal_topic and (
+                any(x in q_norm for x in ("premium", "prestige", "nivel"))
+                or (active_member and current_active_level in (VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE))
+            )
+        ):
             selected_titles.add("BOTS IA 24/7")
         if panel_topic:
             selected_titles.add("PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE")
@@ -9415,18 +9439,42 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
         if next_step_topic or panel_topic or (not bonus_topic and _is_bonus_or_promo_mention(real_examples)):
             real_examples = ""
 
-        promo_context = _promo_ai_context(lang) if bonus_topic else ""
-        promo_context_for_prompt = promo_context if bonus_topic else (
-            "(PROMOTIONS BLOCKED: not requested in the pending message)" if lang == "en"
-            else "(PROMOCIONES BLOQUEADAS: no fueron solicitadas en el mensaje pendiente)"
+        allow_optional_recurring_bonus_offer = bool(
+            active_member and current_active_level == VIP_LEVEL_PRESTIGE and explicit_additional_deposit
         )
+        promo_context = _promo_ai_context(lang) if bonus_topic else ""
+        if bonus_topic:
+            promo_context_for_prompt = promo_context
+        elif allow_optional_recurring_bonus_offer:
+            promo_context_for_prompt = (
+                "(PROMO DETAILS NOT REQUESTED: do not give a code or conditions. You may only offer to explain the current recurring-deposit bonus if the user wants it.)"
+                if lang == "en" else
+                "(DETALLES PROMO NO SOLICITADOS: no entregues código ni condiciones. Solo puedes ofrecer explicar el bono vigente para depósitos posteriores si la persona lo desea.)"
+            )
+        else:
+            promo_context_for_prompt = (
+                "(PROMOTIONS BLOCKED: not requested in the pending message)" if lang == "en"
+                else "(PROMOCIONES BLOQUEADAS: no fueron solicitadas en el mensaje pendiente)"
+            )
 
         decision_lines = []
-        if not bonus_topic:
+        if not bonus_topic and not allow_optional_recurring_bonus_offer:
             decision_lines.append(
                 "PROMO ISOLATION: Do not mention bonuses, promo codes, 70%, 100%, turnover or bonus withdrawal conditions."
                 if lang == "en" else
                 "AISLAMIENTO PROMO: no menciones bonos, códigos, 70%, 100%, volumen ni condiciones de retiro por bono."
+            )
+        elif allow_optional_recurring_bonus_offer and not bonus_topic:
+            decision_lines.append(
+                "OPTIONAL RECURRING BONUS: because an active Prestige member is explicitly asking about an additional deposit, you may briefly offer to explain the current recurring-deposit bonus. Do NOT provide a code or bonus conditions unless asked."
+                if lang == "en" else
+                "BONO RECURRENTE OPCIONAL: como un miembro Prestige activo pregunta explícitamente por un depósito adicional, puedes ofrecer brevemente explicar el bono vigente para depósitos posteriores. NO entregues código ni condiciones del bono salvo que lo pidan."
+            )
+        if active_member and not hypothetical_other_person:
+            decision_lines.append(
+                (f"AUTHORITATIVE ACTIVE STATUS: this is an ACTIVE member. Their real JT TRADERS TEAMS level is {_vip_level_label(current_active_level, lang)}. This persisted status overrides isolated amounts and generic examples. Never answer as if they were unregistered/new, never recalculate their CURRENT level from a number written in chat, and when they ask about their own signals/bots/courses/benefits, describe only what their CURRENT level actually includes unless they explicitly request a comparison.")
+                if lang == "en" else
+                (f"ESTADO ACTIVO AUTORITATIVO: esta persona es un miembro ACTIVO. Su nivel real en JT TRADERS TEAMS es {_vip_level_label(current_active_level, lang)}. Este estado persistido manda sobre montos aislados y ejemplos genéricos. Nunca respondas como si no estuviera registrada o fuera nueva, nunca recalcules su nivel ACTUAL desde una cifra escrita en el chat y, cuando pregunte por sus propias señales/bots/cursos/beneficios, describe únicamente lo que realmente incluye su nivel ACTUAL salvo que pida explícitamente una comparación.")
             )
         try:
             pending_id_review = _has_pending_id_review(chat_id)
@@ -9460,13 +9508,20 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                     "SIGUIENTE PASO (POST): el ID ya está validado. No repitas registro ni pidas el ID otra vez. El siguiente paso es realizar el depósito en esa cuenta validada y luego enviar aquí el comprobante."
                 )
             elif stage == STAGE_DEPOSITED:
-                decision_lines.append(
-                    "NEXT STEP (DEPOSITED): the account is already active. Never restart registration/ID. Continue from the active level/access state; if the user means an additional deposit, treat it as an upgrade/deposit follow-up only when the message actually says so."
-                    if lang == "en" else
-                    "SIGUIENTE PASO (DEPOSITED): la cuenta ya está activa. Nunca reinicies registro/ID. Continúa desde el nivel/accesos activos; solo trata el monto como depósito adicional/upgrade si el mensaje realmente lo indica."
-                )
+                if current_active_level != VIP_LEVEL_NONE:
+                    decision_lines.append(
+                        (f"NEXT STEP (ACTIVE MEMBER): the account is already active at {_vip_level_label(current_active_level, lang)}. Never restart registration/ID and never answer from a new-user flow. If the message explicitly means an additional deposit, keep the current level as authoritative until that deposit is validated; only then can upgrade rules change it. Prestige is already the maximum level.")
+                        if lang == "en" else
+                        (f"SIGUIENTE PASO (MIEMBRO ACTIVO): la cuenta ya está activa en {_vip_level_label(current_active_level, lang)}. Nunca reinicies registro/ID ni respondas desde un flujo de persona nueva. Si el mensaje habla explícitamente de un depósito adicional, conserva el nivel actual como autoritativo hasta que ese depósito sea validado; solo después pueden aplicar las reglas de upgrade. Prestige ya es el nivel máximo.")
+                    )
+                else:
+                    decision_lines.append(
+                        "NEXT STEP (DEPOSITED): the account is already active. Never restart registration/ID. Continue from the real access state and do not infer a new level from an isolated amount."
+                        if lang == "en" else
+                        "SIGUIENTE PASO (DEPOSITED): la cuenta ya está activa. Nunca reinicies registro/ID. Continúa desde el estado real de accesos y no infieras un nivel nuevo desde un monto aislado."
+                    )
             if amount_usd is not None and prospective_level != VIP_LEVEL_NONE:
-                if current_active_level != VIP_LEVEL_NONE and not hypothetical_other_person:
+                if active_member and not hypothetical_other_person:
                     # Estado real > monto aislado. Para miembros activos el monto NO redefine el nivel.
                     if current_active_level == VIP_LEVEL_PRESTIGE:
                         decision_lines.append(
@@ -9487,7 +9542,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                         f"CONTEXTO DE MONTO: USD {amount_usd:g} correspondería a {_vip_level_label(prospective_level, lang)} dentro de JT TRADERS TEAMS. Menciónalo brevemente DESPUÉS del siguiente paso, sin listar todos los beneficios; el botón de niveles muestra los detalles."
                     )
         elif explicit_level_question and amount_usd is not None and prospective_level != VIP_LEVEL_NONE:
-            if current_active_level != VIP_LEVEL_NONE and not hypothetical_other_person:
+            if active_member and not hypothetical_other_person:
                 decision_lines.append(
                     (f"ACTIVE LEVEL QUESTION: the user's REAL current level is {_vip_level_label(current_active_level, lang)}. Do not replace it with the level that USD {amount_usd:g} would give a new user. Mention the hypothetical amount-level mapping only if the wording clearly asks a hypothetical comparison.")
                     if lang == "en" else
@@ -9544,6 +9599,8 @@ OBJETIVO PRINCIPAL
 - REFERENCIAS A LO QUE SE VE EN LIVE: si el usuario habla del “bot/software/programa/herramienta que muestras o usas en vivo”, resuelve primero esa referencia como la interfaz visual privada del live. NO la conviertas en un bot de Premium/Prestige ni en un beneficio por nivel, salvo que la persona nombre explícitamente CRYPTO IDX 24/7 o el bot de pares de divisas 24/7.
 - Un monto o el nombre “Premium/Prestige/Básico” NO significa automáticamente “dime todos los beneficios”. Si la pregunta es específica, el nivel/monto solo sirve para ubicar la respuesta.
 - “Qué me toca / qué hago / cómo sigo / por dónde empiezo” es lenguaje de FLUJO/SIGUIENTE PASO salvo que el mensaje diga explícitamente “qué nivel” o pregunte beneficios. Responde desde el estado operativo y luego, si hay monto, menciona el nivel de forma breve. No conviertas esto en una plantilla: redacta natural según la conversación.
+- MIEMBROS ACTIVOS: si ESTADO OPERATIVO REAL indica DEPOSITED + Básico/Premium/Prestige, ese nivel es la verdad actual. Nunca lo reemplaces por el nivel teórico de un monto mencionado. Responde sobre SUS herramientas/beneficios desde ese nivel; un depósito adicional solo puede cambiar el nivel después de validarse según las reglas de upgrade. Si ya es Prestige, no existe un nivel superior.
+- CTA DE NIVELES: para un miembro activo no sugieras “MIRA LOS NIVELES” por preguntar por sus propias señales, bots, cursos, interfaz del live o un depósito adicional. Ese CTA solo aporta si pide explícitamente ver/comparar niveles o plantea el caso de otra persona.
 - Pregunta simple: normalmente 1–3 frases y preferiblemente 20–55 palabras. NO conviertas una duda sencilla en una lista de 4–5 puntos. Si el usuario no pidió pasos/lista/guía, NO numeres la respuesta.
 - Responde en TEXTO PLANO: no uses Markdown decorativo (**negritas**, __subrayados__, títulos con # ni `código`) porque Telegram mostrará esos símbolos literalmente en este flujo.
 - Si una explicación necesita más detalle porque el usuario lo pidió, puedes ampliarla.
@@ -9671,52 +9728,93 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             ))
             if (not panel_has_private_fact) or (not panel_has_telegram_fact) or panel_wrong_level:
                 if lang == "en":
-                    answer = (
+                    panel_block = (
                         "The interface I show during my live sessions is a private tool I use internally, so I don't deliver or install it for community members. "
                         "It requires computer installation, configuration and updates; the same operational signals are delivered through Telegram so you can access them more easily from any device and wherever you are."
                     )
                 else:
-                    answer = (
+                    panel_block = (
                         "La interfaz que muestro en los en vivos es una herramienta privada de uso personal e interno, por eso no la entrego ni la instalo a los miembros de la comunidad. "
                         "Requiere instalación, configuración y actualizaciones en computador; las mismas señales operativas se entregan por Telegram para que puedas acceder a ellas de forma práctica desde cualquier dispositivo y lugar."
                     )
+                if multi_pending:
+                    # No borrar las demás respuestas del paquete: quitamos únicamente
+                    # párrafos que intentaron responder MAL sobre la interfaz del live.
+                    kept_parts = []
+                    for part in re.split(r"\n\s*\n+", answer or ""):
+                        pn = _norm(part)
+                        live_specific = any(x in pn for x in (
+                            "en vivo", "en los vivos", "live session", "during live", "on live",
+                            "interfaz", "panel", "programa que muestro", "software que muestro",
+                            "herramienta que muestro", "bot que muestro", "on screen",
+                        ))
+                        if part.strip() and not live_specific:
+                            kept_parts.append(part.strip())
+                    answer = panel_block + (("\n\n" + "\n\n".join(kept_parts)) if kept_parts else "")
+                else:
+                    answer = panel_block
 
-        # 2) Un nivel activo nunca puede bajar por un monto escrito en una pregunta.
-        if current_active_level != VIP_LEVEL_NONE and amount_usd is not None and not hypothetical_other_person:
+        # 2) ESTADO ACTIVO DURO: ningún miembro activo (Básico/Premium/Prestige)
+        # puede ser reclasificado por un monto escrito en chat. Se preservan las demás
+        # partes de una respuesta múltiple y solo se elimina/corrige la afirmación de nivel falsa.
+        if active_member and amount_usd is not None and not hypothetical_other_person:
             ans_norm = _norm(answer or "")
-            active_label_norm = _norm(_vip_level_label(current_active_level, lang))
-            wrong_active_claim = False
-            if current_active_level == VIP_LEVEL_PRESTIGE:
-                wrong_active_claim = any(x in ans_norm for x in (
-                    "estas en el nivel premium", "estás en el nivel premium", "te corresponde premium",
-                    "tu nivel es premium", "estas en premium", "estás en premium",
-                    "you are premium", "your level is premium", "you qualify for premium",
-                    "estas en el nivel basico", "estás en el nivel básico", "you are basic"
-                ))
-            elif current_active_level == VIP_LEVEL_PREMIUM:
-                wrong_active_claim = any(x in ans_norm for x in (
-                    "estas en el nivel basico", "estás en el nivel básico", "te corresponde basico",
-                    "te corresponde básico", "tu nivel es basico", "tu nivel es básico", "you are basic", "your level is basic"
-                ))
+            active_label = _vip_level_label(current_active_level, lang)
+            other_levels = [lvl for lvl in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE) if lvl != current_active_level]
+            other_labels = [_norm(_vip_level_label(lvl, lang)) for lvl in other_levels]
+            classification_terms = (
+                "estas en", "estás en", "tu nivel es", "tu nivel actual es", "te corresponde", "corresponde al nivel",
+                "accedes al nivel", "accedes a", "accederias al nivel", "accederías al nivel", "accederias a", "accederías a",
+                "quedas en", "pasas a", "te deja en", "seria", "sería", "serias", "serías",
+                "you are", "your level is", "your current level is", "you qualify for",
+                "you would be", "you'd be", "you get the", "you move to",
+            )
+            wrong_active_claim = any(
+                other_label and other_label in ans_norm and any(term in ans_norm for term in classification_terms)
+                for other_label in other_labels
+            )
             if wrong_active_claim:
+                kept_parts = []
+                for part in re.split(r"(?<=[.!?])\s+|\n\s*\n+", answer or ""):
+                    pn = _norm(part)
+                    is_bad_level_sentence = any(
+                        other_label and other_label in pn and any(term in pn for term in classification_terms)
+                        for other_label in other_labels
+                    )
+                    if part.strip() and not is_bad_level_sentence:
+                        kept_parts.append(part.strip())
+
                 if current_active_level == VIP_LEVEL_PRESTIGE:
                     if lang == "en":
-                        answer = (
-                            f"You're already Prestige, the highest level in my JT TRADERS TEAMS community. If those USD {amount_usd:g} are an additional deposit, your level stays Prestige and you already have all level tools enabled; that capital remains in your own account for your trading. If you want, I can also tell you about the current bonus available for subsequent deposits."
-                        )
+                        state_block = f"You're already Prestige, the highest level in my JT TRADERS TEAMS community."
+                        if explicit_additional_deposit:
+                            state_block += (
+                                f" If those USD {amount_usd:g} are an additional deposit, your level stays Prestige and you already have all level tools enabled; "
+                                "that capital remains in your own account for your trading. If you want, I can also tell you about the current bonus available for subsequent deposits."
+                            )
                     else:
-                        answer = (
-                            f"Ya estás en Prestige, el nivel más alto de mi comunidad JT TRADERS TEAMS. Si esos USD {amount_usd:g} son un depósito adicional, tu nivel se mantiene en Prestige y ya tienes habilitadas todas las herramientas del nivel; ese capital queda en tu propia cuenta para tu operativa. Si quieres, también puedo indicarte el bono vigente para depósitos posteriores."
-                        )
+                        state_block = f"Ya estás en Prestige, el nivel más alto de mi comunidad JT TRADERS TEAMS."
+                        if explicit_additional_deposit:
+                            state_block += (
+                                f" Si esos USD {amount_usd:g} son un depósito adicional, tu nivel se mantiene en Prestige y ya tienes habilitadas todas las herramientas del nivel; "
+                                "ese capital queda en tu propia cuenta para tu operativa. Si quieres, también puedo indicarte el bono vigente para depósitos posteriores."
+                            )
                 else:
                     if lang == "en":
-                        answer = (
-                            f"Your current JT TRADERS TEAMS level is {_vip_level_label(current_active_level, lang)}. Mentioning USD {amount_usd:g} in the chat does not lower or replace your active level; if it is an additional deposit, any upgrade is determined only after the deposit is validated."
-                        )
+                        state_block = f"Your current JT TRADERS TEAMS level is {active_label}."
+                        if explicit_additional_deposit:
+                            state_block += (
+                                f" If those USD {amount_usd:g} are an additional deposit, your current level does not change until the deposit is validated; "
+                                "any upgrade is then evaluated under the rules for that broker/account."
+                            )
                     else:
-                        answer = (
-                            f"Tu nivel actual en JT TRADERS TEAMS es {_vip_level_label(current_active_level, lang)}. Mencionar USD {amount_usd:g} en el chat no baja ni reemplaza tu nivel activo; si es un depósito adicional, cualquier upgrade se determina únicamente después de validar el depósito."
-                        )
+                        state_block = f"Tu nivel actual en JT TRADERS TEAMS es {active_label}."
+                        if explicit_additional_deposit:
+                            state_block += (
+                                f" Si esos USD {amount_usd:g} son un depósito adicional, tu nivel actual no cambia hasta que el depósito sea validado; "
+                                "cualquier upgrade se evalúa después según las reglas de esa cuenta/broker."
+                            )
+                answer = state_block + ((" " + " ".join(kept_parts)) if kept_parts else "")
                 answer = _clean_ai_plain_text_format(answer)
 
         # Presentación estable de links para Telegram: sin Markdown literal y con separación.
