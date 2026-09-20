@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.47-20260919-AI-STYLE-TUTEO-40MIN-MARKDOWN-LEVELS-FIX"
+BOT_VERSION = "v7.10.48-20260919-AI-NATURAL-TIME-SESSIONS-SIGNALS-FIX"
+# v7.10.48: refuerza organización natural en 2 sesiones ~40 min, ~5 operaciones por sesión y precisión +300 señales/día lunes-sábado.
 # v7.10.47: pulido de estilo IA, tuteo, sesiones ~40 min, limpieza Markdown y botón de niveles contextual.
 # v7.10.45: promo lookup inmediato ampliado, guard factual Premium y espera IA máxima de 4 min.
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
@@ -6781,11 +6782,13 @@ GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
 
 TIEMPO / HORARIOS / PERSONAS QUE TRABAJAN TODO EL DÍA
 - Si alguien pregunta cómo organizar sus horarios para operar, dice que trabaja todo el día o que tiene poco tiempo, responde BREVE y práctico; no conviertas la respuesta en una lista larga.
-- Como referencia práctica, una sesión de unos 40 minutos puede ser suficiente para trabajar con calma siguiendo el plan; si encaja mejor con su disponibilidad, puede organizar dos sesiones de unos 40 minutos en distintos momentos del día.
+- Como referencia práctica de Johanna, puede organizar AL MENOS DOS sesiones de unos 40 minutos en distintos momentos del día, ajustadas a su disponibilidad. No plantees una sola sesión como la recomendación principal.
+- En cada sesión, unas 5 operaciones bien seleccionadas son suficientes como referencia práctica; no necesita intentar tomar todas las señales disponibles ni sobreoperar.
+- Puede apoyarse en las señales del Software Premium Anticipado y en las herramientas disponibles para elegir oportunidades dentro del tiempo que tenga, siempre manteniendo su plan de trading y gestión de riesgo.
 - Tutea en la respuesta: “ajustadas a tu horario”, “a tu rutina”, “cuando tengas disponibilidad”.
 - El Software Premium Anticipado distribuye señales normalmente desde aproximadamente 7 a. m. hasta 10 p. m. y el bot IA CRYPTO IDX funciona 24/7, por lo que existe flexibilidad para elegir momentos compatibles con la rutina.
 - Puedes destacar la flexibilidad de horario del trading, pero NO prometas libertad financiera, dejar el empleo, mayor efectividad por operar a determinada hora ni ganancias determinadas.
-- Para una pregunta simple sobre organización/horarios, normalmente bastan 2–3 frases: sesiones de ~40 minutos + plan de trading/gestión de riesgo + flexibilidad según la rutina.
+- Para una pregunta simple sobre organización/horarios, normalmente bastan 2–3 frases que integren de forma NATURAL lo relevante: al menos 2 sesiones de ~40 minutos, unas 5 operaciones seleccionadas por sesión, apoyo en las señales y gestión de riesgo. NO copies una frase fija ni enumeres estos puntos si no hace falta.
 
 CUENTAS EXISTENTES / ANTIGUAS
 - Nunca trates igual "mi cuenta fue registrada contigo", "creo que fue contigo" y "no fue con tu enlace".
@@ -8891,8 +8894,8 @@ def _time_management_style_guard(answer: str, question: str, lang: str = "es") -
     )
     return (
         first
-        + "Puedes hacer una sesión de unos 40 minutos, o dos sesiones de 40 minutos si te encaja mejor, ajustadas a tu horario y a tu rutina. "
-        + "Lo importante es seguir tu plan de trading y gestión de riesgo y aprovechar las señales y herramientas disponibles durante el día; esa flexibilidad de horario es una de las ventajas del trading. 😊"
+        + "Puedes organizar al menos dos sesiones de unos 40 minutos, ajustadas a tu horario y a tu rutina. "
+        + "Apóyate en las señales para seleccionar oportunidades: unas 5 operaciones bien elegidas por sesión son suficientes como referencia, siempre dentro de tu plan de trading y gestión de riesgo. 😊"
     )
 
 
@@ -8940,6 +8943,13 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
                 return m.group(1) + " al día"
             return m.group(1) + " al día, de lunes a sábado"
         value = pat_300.sub(_daily_300, value)
+
+        # Si el modelo ya dijo “al día/diarias” pero omitió los días, completa el dato oficial.
+        value = re.sub(
+            r"((?:más de\s*)?\+?300\s+señales\s+(?:al\s+d[ií]a|diarias?))(?![^.\n]{0,60}de\s+lunes\s+a\s+s[aá]bado)",
+            r"\1, de lunes a sábado",
+            value, flags=re.I,
+        )
 
         # Guardia factual de formación: Premium termina en Binary Teams Módulo 4; Madness es solo Prestige.
         if "premium" in _norm(value):
@@ -9048,7 +9058,7 @@ VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 ESTILO Y CTA
 - Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas.
 - No uses listas largas para una duda simple. Si el usuario NO pidió "pasos", "lista" o "guía", responde en prosa breve y NO uses numeración; usa lista solo si realmente la pidió o es imprescindible para claridad.
-- Para dudas sobre falta de tiempo/organización/horarios de trading, prioriza una respuesta de 2–3 frases con sesiones de aproximadamente 40 minutos ajustadas a TU horario/rutina, plan de trading y gestión de riesgo. No afirmes que una hora concreta da “mayor efectividad”.
+- Para dudas sobre falta de tiempo/organización/horarios de trading, integra de forma natural la referencia de Johanna: AL MENOS DOS sesiones de aproximadamente 40 minutos ajustadas a TU horario/rutina, unas 5 operaciones bien seleccionadas por sesión como suficiente, apoyo en las señales disponibles, plan de trading y gestión de riesgo. No lo redactes como plantilla ni como lista salvo que el usuario la pida. No afirmes que una hora concreta da “mayor efectividad”.
 - No repitas enlaces/CTA si ya se enviaron recientemente. Muestra registro, niveles u otro CTA solo cuando el usuario lo pida o sea el siguiente paso realmente necesario.
 - Si preguntan por un monto concreto, responde el nivel concreto y un resumen útil; no recites los tres niveles.
 - El nivel SIEMPRE es "dentro de mi comunidad JT TRADERS TEAMS", nunca nivel del broker.
