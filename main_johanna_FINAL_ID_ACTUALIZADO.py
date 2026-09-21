@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.61-20260921-NEUTRAL-TUTEO-ES-EN"
+BOT_VERSION = "v7.10.62-20260921-WARM-POSITIVE-PERSUASIVE-AI"
+# v7.10.62: revisión final dinámica de calidez; respuestas amables, cercanas, positivas y persuasivas sin plantillas.
 # v7.10.61: lenguaje neutral y trato directo/tuteo reforzados en la salida final ES/EN de la IA.
 # v7.10.60: corrige ID/fotos por estado real, Prestige sin falso upgrade, CTA upgrade contextual, alias VIP e idioma final ES/EN.
 # v7.10.59: respuestas comerciales con motivación/persuasión útil + CTA contextual; reporte diario 6:58 p. m. Colombia.
@@ -6840,6 +6841,10 @@ IDENTIDAD Y PRINCIPIO DE RESPUESTA
 - No asumas género. Usa lenguaje neutral: "si estás empezando", "cuando completes", "tú realizas la entrada", etc.
 - Tutea SIEMPRE a la persona: usa “tú / te / tu / tus”. No uses “usted / su / sus” para dirigirte al usuario. Si el nombre visible está disponible, puedes usarlo ocasionalmente cuando suene natural, pero no en cada respuesta.
 - Además de informar correctamente, cada respuesta comercial debe transmitir motivación y persuasión de forma humana: conecta el beneficio real con la situación de la persona, genera confianza sin presionar y evita promesas de ganancias o resultados garantizados.
+- CALIDEZ OBLIGATORIA: ninguna respuesta debe sentirse cortante, defensiva, distante, regañona, impaciente ni como si la pregunta molestara. Reconoce con naturalidad el interés o la duda de la persona y explica con paciencia, cercanía y amabilidad.
+- ENFOQUE POSITIVO: cuando exista una limitación real, no abras ni centres la respuesta en “no puedo”, “no se entrega”, “no se ofrece” o equivalentes. Explica el contexto necesario y orienta la redacción hacia la alternativa, solución o beneficio práctico disponible para la persona. No ocultes hechos ni prometas algo falso: cambia el enfoque, no la verdad.
+- REDACCIÓN LIBRE, NO PLANTILLA: estas pautas definen personalidad y criterio, no frases fijas. Varía el vocabulario, el inicio, el ritmo y el cierre según la conversación; no copies siempre una misma respuesta ni recites ejemplos.
+- Puedes utilizar 1 o 2 emojis naturales cuando aporten calidez. No llenes el mensaje de emojis ni los uses mecánicamente.
 - Cierra con UN llamado a la acción concreto y coherente con la intención y el ESTADO REAL: por ejemplo, enviar el ID, realizar el depósito ya autorizado, enviar el comprobante, revisar niveles, usar el acceso disponible o escribir al chat personal cuando corresponda. No uses un CTA genérico ni hagas retroceder a una persona activa en su flujo.
 - En preguntas puramente operativas, aclaraciones breves, saludos o reacciones, el llamado a la acción puede ser mínimo o puede omitirse si no existe un siguiente paso útil. Nunca inventes una acción solo para forzar un cierre.
 
@@ -8714,13 +8719,19 @@ async def _translate_to_english(text_value: str, target_lang: str = "en") -> str
         if target_lang == "es" else
         "Address the user directly as you/your, keep the wording gender-neutral, and never use sir, ma'am, Mr., Mrs. or Ms."
     )
+    warmth_rule = (
+        "Rewrite any cold, abrupt, defensive, negative-centered or overly institutional phrasing so it sounds warm, patient, close, positive, motivating and gently persuasive. "
+        "When a real limitation exists, preserve the fact but lead with understanding and emphasize the useful alternative or practical benefit. "
+        "Do not use a fixed template: vary the wording naturally for this exact conversation. You may use one or two natural emojis when they add warmth."
+    )
     payload = {
         "model": OPENAI_MODEL,
         "instructions": (
             f"Translate the supplied message into {target_name}. Return ONLY the translated message. "
             "Preserve meaning, paragraph breaks, emojis, URLs, @usernames, trading platform names, "
             "amounts, percentages, promo codes and CTA structure exactly. Do not add explanations, "
-            f"warnings or new information. {address_rule} If the message is already in {target_name}, normalize only any form of address that violates this rule."
+            f"warnings, promises or new factual information. {address_rule} {warmth_rule} "
+            f"If the message is already in {target_name}, still polish its tone when needed while preserving every factual statement and requested action."
         ),
         "input": source,
         "max_output_tokens": 1200,
@@ -9725,6 +9736,10 @@ VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 
 ESTILO Y CTA
 - Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas. No te limites a entregar datos: cuando la consulta sea comercial, muestra brevemente el beneficio práctico para esa persona y ayúdala a avanzar con confianza. La naturalidad sale de adaptar el lenguaje a la conversación, no de añadir frases motivacionales de relleno.
+- CALIDEZ ANTES DE ENVIAR: relee la respuesta como si la persona la recibiera directamente de Johanna. Si suena fría, seca, cortante, defensiva, impaciente, odiosa o demasiado institucional, reescríbela con cercanía, paciencia y amabilidad antes de entregarla.
+- No empieces una respuesta destacando una prohibición o rechazo cuando puedas comenzar reconociendo el interés de la persona y explicar después el contexto. Si algo no está disponible, conserva esa verdad pero presenta con claridad la alternativa útil y el beneficio que sí recibe.
+- No conviertas esta personalidad en una plantilla. Cambia naturalmente la forma de saludar, conectar, explicar y cerrar según la pregunta y el historial. Los ejemplos de tono nunca deben copiarse literalmente.
+- En consultas comerciales, la persuasión debe sentirse como orientación y acompañamiento, no como presión. Haz que la persona comprenda por qué el siguiente paso o la alternativa disponible le resulta práctica o beneficiosa.
 - CTA OBLIGATORIO CUANDO HAY UN SIGUIENTE PASO REAL: termina las respuestas comerciales con UNA acción clara, breve y alcanzable, seleccionada desde el ESTADO OPERATIVO REAL y la intención completa. PRE: registro/ID según lo que falte; POST: depósito en la cuenta ya validada o envío del comprobante; DEPOSITED: usar/revisar su acceso real, continuar un acceso pendiente o la acción específica solicitada, sin reiniciar registro ni recalcular su nivel por un monto aislado.
 - La persuasión debe apoyar el CTA explicando en una frase por qué ese paso le conviene o le facilita avanzar. No presiones, no uses falsa urgencia, no prometas rentabilidad y no agregues botones/enlaces ajenos a la pregunta.
 - Antes de cerrar la respuesta, revisa mentalmente cada oración: si repite una idea ya dicha, solo parafrasea la pregunta o no aporta un hecho/acción útil, elimínala.
@@ -9827,13 +9842,15 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             if (not panel_has_private_fact) or (not panel_has_telegram_fact) or panel_wrong_level:
                 if lang == "en":
                     panel_block = (
-                        "The interface I show during my live sessions is a private tool I use internally, so I don't deliver or install it for community members. "
-                        "It requires computer installation, configuration and updates; the same operational signals are delivered through Telegram so you can access them more easily from any device and wherever you are."
+                        "Of course 😊 The interface you see during my live sessions is a tool I use internally for my analysis. "
+                        "Using it would require downloading, installing, configuring and keeping it updated on a computer, which would tie you mainly to that device. "
+                        "That’s why I deliver the same corresponding operational signals through Telegram 💜, so you can access them more comfortably from your phone, computer or tablet, wherever you are, without installing or updating additional software."
                     )
                 else:
                     panel_block = (
-                        "La interfaz que muestro en los en vivos es una herramienta privada de uso personal e interno, por eso no la entrego ni la instalo a los miembros de la comunidad. "
-                        "Requiere instalación, configuración y actualizaciones en computador; las mismas señales operativas se entregan por Telegram para que puedas acceder a ellas de forma práctica desde cualquier dispositivo y lugar."
+                        "Claro 😊 La interfaz que ves en mis lives es una herramienta que utilizo internamente para realizar mis análisis. "
+                        "Para utilizarla sería necesario descargarla, instalarla, configurarla y mantenerla actualizada en un computador, lo que terminaría limitándote principalmente a ese equipo. "
+                        "Por eso prefiero entregarte esas mismas señales operativas por Telegram 💜, para que puedas acceder cómodamente desde tu celular, computador o tablet, estés donde estés, sin instalar ni actualizar programas adicionales."
                     )
                 if multi_pending:
                     # No borrar las demás respuestas del paquete: quitamos únicamente
