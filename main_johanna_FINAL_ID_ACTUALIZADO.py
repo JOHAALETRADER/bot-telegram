@@ -55,7 +55,10 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.58-20260920-ACTIVE-STATUS-CTA-MULTIQUESTION-GUARDS"
+BOT_VERSION = "v7.10.61-20260921-NEUTRAL-TUTEO-ES-EN"
+# v7.10.61: lenguaje neutral y trato directo/tuteo reforzados en la salida final ES/EN de la IA.
+# v7.10.60: corrige ID/fotos por estado real, Prestige sin falso upgrade, CTA upgrade contextual, alias VIP e idioma final ES/EN.
+# v7.10.59: respuestas comerciales con motivación/persuasión útil + CTA contextual; reporte diario 6:58 p. m. Colombia.
 # v7.10.58: estado activo manda para Básico/Premium/Prestige, CTA por intención real y guardias multi-pregunta sin borrar otras respuestas.
 # v7.10.57: mapea el Chat ID real de CRYPTO IDX Básico para aprobar solicitudes VIP.
 # v7.10.56: guardias duras de nivel activo + interfaz LIVE; evita degradar miembros activos por montos hipotéticos y corrige respuestas del panel privado.
@@ -1289,7 +1292,7 @@ VIP_ACCESS_CHAT_ID_LOOKUP = {
 
 VIP_ACCESS_TITLE_ALIASES = {
     "vip_main": ("JT TRADERS TEAMS", "JT TRADERS TEAMS VIP", "JT TRADERS VIP", "VIP PRINCIPAL"),
-    "crypto_basic": ("CANAL DE SEÑALES CRYPTOIDX", "SEÑALES CRYPTO IDX", "CRYPTO IDX BASICO", "CRYPTO IDX BÁSICO"),
+    "crypto_basic": ("CANAL DE SEÑALES CRYPTOIDX", "SEÑALES CRYPTO IDX", "CRYPTO IDX BASICO", "CRYPTO IDX BÁSICO", "CRYPTO IDX VIP"),
     "module3": ("BINARY TEAMS MODULO 3", "BINARY TEAMS MÓDULO 3", "BINARY TEAMS 3", "INTRODUCCION AL ANALISIS BURSATIL", "INTRODUCCIÓN AL ANÁLISIS BURSÁTIL"),
     "signals_premium": ("SEÑALES PREMIUM +300", "SENALES PREMIUM +300", "SEÑALES PREMIUM", "SENALES PREMIUM", "PREMIUM +300"),
     "ai_crypto": ("IA PREMIUM AUTOMATICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMÁTICAS CRYPTOIDX 24/7", "IA PREMIUM AUTOMATICA CRYPTO IDX 24/7"),
@@ -2032,7 +2035,7 @@ BENEFICIOS_ES = """✨ Beneficios JT TRADERS TEAMS ✨
 ✅ Prestige — desde 500 USD: todo Premium + Madness Trading Avanzado ALGO & LIT + bot IA de pares de divisas 24/7 + mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.
 
 ⚡️ La comunidad es GRATUITA: el dinero se deposita directamente en TU propia cuenta de trading. Las herramientas habilitadas dependen del nivel alcanzado.
-⚠️ Las entradas se realizan manualmente con gestión de riesgo; MG1/MG2 son opcionales.
+⚠️ La persona realiza cada entrada en su propia cuenta con gestión de riesgo; MG1/MG2 son opcionales.
 """
 
 BENEFICIOS_EN = """✨ JT TRADERS TEAMS Benefits ✨
@@ -2042,7 +2045,7 @@ BENEFICIOS_EN = """✨ JT TRADERS TEAMS Benefits ✨
 ✅ Prestige — from USD 500: everything in Premium + Madness Advanced Trading ALGO & LIT + 24/7 currency-pair AI bot + private mentoring, closer guidance and funded-account preparation.
 
 ⚡️ The community is FREE: funds are deposited directly into YOUR own trading account. Enabled tools depend on the level reached.
-⚠️ Entries are taken manually with risk management; MG1/MG2 are optional.
+⚠️ The person places each entry in their own account with risk management; MG1/MG2 are optional.
 """
 
 # === FUNCIONES DE MENSAJES PROGRAMADOS (usa lang por usuario) ===
@@ -3573,14 +3576,17 @@ def schedule_daily_report(application):
     if not application.job_queue:
         return
     try:
-        for job in application.job_queue.get_jobs_by_name("DAILY_REPORT_23_CO"):
-            job.schedule_removal()
+        # Limpia tanto el nombre anterior como el actual para evitar duplicados
+        # durante reinicios o despliegues que conserven la JobQueue.
+        for job_name in ("DAILY_REPORT_23_CO", "DAILY_REPORT_1858_CO"):
+            for job in application.job_queue.get_jobs_by_name(job_name):
+                job.schedule_removal()
     except Exception:
         pass
     application.job_queue.run_daily(
         daily_report_job,
-        time=dt_time(hour=23, minute=0, tzinfo=COLOMBIA_TZ),
-        name="DAILY_REPORT_23_CO",
+        time=dt_time(hour=18, minute=58, tzinfo=COLOMBIA_TZ),
+        name="DAILY_REPORT_1858_CO",
     )
 
 
@@ -3694,6 +3700,19 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
             current_level = VIP_LEVEL_NONE
             current_stage = None
     rows = []
+    t = _norm(question or "")
+    asks_upgrade = any(x in t for x in (
+        "subir de nivel", "subo de nivel", "hacer upgrade", "condiciones de upgrade",
+        "actualizar mi nivel", "pasar a premium", "pasar a prestige", "mejorar mi nivel",
+        "upgrade my level", "move up a level", "upgrade conditions", "reach premium", "reach prestige",
+    ))
+    if (
+        current_stage == STAGE_DEPOSITED
+        and current_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM)
+        and asks_upgrade
+    ):
+        label = "ℹ️ VIEW UPGRADE CONDITIONS" if lang == "en" else "ℹ️ VER CONDICIONES DE UPGRADE"
+        rows.append([InlineKeyboardButton(label, callback_data="upgrade_conditions")])
     if _ai_needs_levels_button(question, current_level=current_level, current_stage=current_stage):
         label = "📊 VIEW MY COMMUNITY LEVELS" if lang == "en" else "📊 MIRA LOS NIVELES DE MI COMUNIDAD"
         callback = "levels_plans_en" if lang == "en" else "niveles_planes"
@@ -6188,7 +6207,16 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_lang(chat_id)
 
     if q.data and q.data.startswith("IMG_IS_ID|"):
-        msg = (
+        current_stage = get_user_stage(chat_id)
+        current_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        if current_stage == STAGE_DEPOSITED and current_level != VIP_LEVEL_NONE:
+            msg = (
+                f"Tu cuenta ya está activa en {_vip_level_label(current_level, lang)} 😊 Antes de iniciar otra validación, dime si ese ID pertenece a otra cuenta o a otro broker y cuál deseas vincular."
+                if lang == "es" else
+                f"Your account is already active at the {_vip_level_label(current_level, lang)} level 😊 Before starting another validation, tell me whether that ID belongs to another account or broker and which one you want to link."
+            )
+        else:
+            msg = (
             (
                 "Perfecto ✅\n"
                 "Para poder validarlo necesito que me envíes el **ID en texto** (solo el número).\n"
@@ -6200,15 +6228,24 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "To validate it, I need you to send me the **ID as text** (numbers only).\n"
                 "📌 Open your Stockity or Binomo profile, copy the ID and paste it here 👇"
             )
-        )
-        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            )
+        await q.message.reply_text(msg, parse_mode=None if current_stage == STAGE_DEPOSITED else ParseMode.MARKDOWN)
         await send_admin_auto_log(context, update, "IMG_IS_ID", msg)
         return
 
     if q.data and q.data.startswith("IMG_IS_DEP|"):
         saved_id = _get_saved_trading_id(chat_id)
+        current_stage = get_user_stage(chat_id)
+        current_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
         if saved_id:
-            msg = (
+            if current_stage == STAGE_DEPOSITED and current_level == VIP_LEVEL_PRESTIGE:
+                msg = (
+                    "Perfecto ✅\n\nRecibido. Revisaré este depósito adicional; tu nivel se mantiene en Prestige porque ya tienes todas las herramientas habilitadas. Te confirmaré cuando el depósito quede validado."
+                    if lang == "es" else
+                    "Perfect ✅\n\nReceived. I’ll review this additional deposit; your level remains Prestige because all level tools are already enabled. I’ll confirm once the deposit is validated."
+                )
+            else:
+                msg = (
                 (
                     "Perfecto ✅\n\n"
                     "Recibido. Estoy validando tu depósito ahora mismo.\n"
@@ -6220,7 +6257,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Received. I’m validating your deposit now.\n"
                     "I’ll message you again to confirm it and enable your access 🎉"
                 )
-            )
+                )
             await q.message.reply_text(msg)
             await send_admin_auto_log(context, update, "AUTO_IMG_DEPOSIT_VALIDATING", msg)
             return
@@ -6802,6 +6839,9 @@ IDENTIDAD Y PRINCIPIO DE RESPUESTA
 - Si la persona hace una pregunta corta, normalmente bastan 1–3 frases. Amplía solo cuando lo pida o cuando sea imprescindible para evitar un error.
 - No asumas género. Usa lenguaje neutral: "si estás empezando", "cuando completes", "tú realizas la entrada", etc.
 - Tutea SIEMPRE a la persona: usa “tú / te / tu / tus”. No uses “usted / su / sus” para dirigirte al usuario. Si el nombre visible está disponible, puedes usarlo ocasionalmente cuando suene natural, pero no en cada respuesta.
+- Además de informar correctamente, cada respuesta comercial debe transmitir motivación y persuasión de forma humana: conecta el beneficio real con la situación de la persona, genera confianza sin presionar y evita promesas de ganancias o resultados garantizados.
+- Cierra con UN llamado a la acción concreto y coherente con la intención y el ESTADO REAL: por ejemplo, enviar el ID, realizar el depósito ya autorizado, enviar el comprobante, revisar niveles, usar el acceso disponible o escribir al chat personal cuando corresponda. No uses un CTA genérico ni hagas retroceder a una persona activa en su flujo.
+- En preguntas puramente operativas, aclaraciones breves, saludos o reacciones, el llamado a la acción puede ser mínimo o puede omitirse si no existe un siguiente paso útil. Nunca inventes una acción solo para forzar un cierre.
 
 REGISTRO Y ACCESO
 - El acceso a la comunidad JT TRADERS TEAMS es GRATUITO. No existe una membresía adicional que se pague a Johanna.
@@ -8402,7 +8442,7 @@ def respuesta_senales_es() -> str:
         "📊 Las señales dependen de tu nivel dentro de JT TRADERS TEAMS.\n\n"
         "🟢 Básico: 30–50 señales CRYPTO IDX diarias de lunes a viernes.\n"
         "🔵 Premium/🟣 Prestige: Software Premium Anticipado con +300 señales AL DÍA de lunes a sábado, distribuidas normalmente desde la mañana hasta la noche, entre CRYPTO IDX, pares de divisas, índices sintéticos y Forex.\n\n"
-        "🤖 Premium añade bot IA CRYPTO IDX 24/7; Prestige añade además bot IA de pares de divisas 24/7. Las alertas son automáticas, pero las entradas se toman manualmente."
+        "🤖 Premium añade bot IA CRYPTO IDX 24/7; Prestige añade además bot IA de pares de divisas 24/7. Las alertas se generan automáticamente y la persona realiza cada entrada en su propia cuenta."
     )
 
 
@@ -8411,7 +8451,7 @@ def respuesta_senales_en() -> str:
         "📊 Signals depend on your level inside JT TRADERS TEAMS.\n\n"
         "🟢 Basic: 30–50 CRYPTO IDX signals per day, Monday to Friday.\n"
         "🔵 Premium/🟣 Prestige: Premium Anticipated Software with 300+ signals PER DAY Monday to Saturday, normally distributed from morning through evening across CRYPTO IDX, currency pairs, synthetic indices and Forex.\n\n"
-        "🤖 Premium adds a CRYPTO IDX AI bot 24/7; Prestige also adds a 24/7 currency-pair AI bot. Alerts are automatic, but entries are taken manually."
+        "🤖 Premium adds a CRYPTO IDX AI bot 24/7; Prestige also adds a 24/7 currency-pair AI bot. Alerts are generated automatically, and the person places each entry in their own account."
     )
 
 
@@ -8659,18 +8699,28 @@ def _looks_spanish_for_english_user(text_value: str) -> bool:
     return score >= 3
 
 
-async def _translate_to_english(text_value: str) -> str:
-    """Traduce una sola vez a inglés preservando formato, enlaces, códigos y emojis."""
+async def _translate_to_english(text_value: str, target_lang: str = "en") -> str:
+    """Normaliza la salida al idioma elegido preservando formato, enlaces, códigos y emojis.
+
+    El nombre se conserva por compatibilidad con llamadas históricas de marketing.
+    """
     source = (text_value or "").strip()
     if not source or not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
+    target_lang = "es" if target_lang == "es" else "en"
+    target_name = "natural Spanish" if target_lang == "es" else "natural English"
+    address_rule = (
+        "Address the user with informal tú/te/tu/tus forms, never usted, and keep all user-directed wording gender-neutral."
+        if target_lang == "es" else
+        "Address the user directly as you/your, keep the wording gender-neutral, and never use sir, ma'am, Mr., Mrs. or Ms."
+    )
     payload = {
         "model": OPENAI_MODEL,
         "instructions": (
-            "Translate the supplied message into natural English. Return ONLY the translated message. "
+            f"Translate the supplied message into {target_name}. Return ONLY the translated message. "
             "Preserve meaning, paragraph breaks, emojis, URLs, @usernames, trading platform names, "
             "amounts, percentages, promo codes and CTA structure exactly. Do not add explanations, "
-            "warnings or new information. If the message is already English, return it unchanged."
+            f"warnings or new information. {address_rule} If the message is already in {target_name}, normalize only any form of address that violates this rule."
         ),
         "input": source,
         "max_output_tokens": 1200,
@@ -8684,11 +8734,11 @@ async def _translate_to_english(text_value: str) -> str:
                 json=payload,
             )
         if resp.status_code != 200:
-            logging.warning("Traducción EN: OpenAI devolvió %s: %s", resp.status_code, resp.text[:400])
+            logging.warning("Normalización de idioma %s: OpenAI devolvió %s: %s", target_lang, resp.status_code, resp.text[:400])
             return ""
         return _responses_api_text(resp.json())
     except Exception as e:
-        logging.warning("No pude traducir texto a inglés: %s", e)
+        logging.warning("No pude normalizar texto al idioma %s: %s", target_lang, e)
         return ""
 
 
@@ -8908,11 +8958,40 @@ def _strip_redundant_ai_greeting(answer: str, question: str, history_text: str, 
 
 
 def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
-    """Evita género asumido en segunda persona sin volver artificial la respuesta."""
+    """Neutraliza género y trato formal en mensajes dirigidos al usuario."""
     value = (answer or "").strip()
-    if not value or lang != "es":
+    if not value:
+        return value
+    started_upper = value[:1].isupper()
+    if lang == "en":
+        # En inglés no hay tuteo/ustedeo gramatical; evitamos honoríficos que
+        # introduzcan género o una distancia formal innecesaria.
+        value = re.sub(r"\b(?:sir|ma['’]?am|madam)\b[,.]?\s*", "", value, flags=re.I)
+        value = re.sub(r"\b(?:Mr|Mrs|Ms)\.?(?=\s+[A-Z])\s*", "", value)
+        value = re.sub(r"[ \t]{2,}", " ", value).strip()
+        if started_upper and value[:1].islower():
+            value = value[:1].upper() + value[1:]
         return value
     replacements = (
+        (r"\busted\s+puede\b", "puedes"),
+        (r"\busted\s+debe\b", "debes"),
+        (r"\busted\s+tiene\s+que\b", "tienes que"),
+        (r"\busted\s+necesita\b", "necesitas"),
+        (r"\busted\s+recibir[aá]\b", "recibirás"),
+        (r"\busted\s+podr[aá]\b", "podrás"),
+        (r"\busted\b", "tú"),
+        (r"\ble recomiendo\b", "te recomiendo"),
+        (r"\ble indico\b", "te indico"),
+        (r"\bescr[ií]bame\b", "escríbeme"),
+        (r"\benv[ií]eme\b", "envíame"),
+        (r"\bd[ií]game\b", "dime"),
+        (r"\bsu cuenta\b", "tu cuenta"),
+        (r"\bsus herramientas\b", "tus herramientas"),
+        (r"\bsus se[nñ]ales\b", "tus señales"),
+        (r"\bsu nivel\b", "tu nivel"),
+        (r"\bsu dep[oó]sito\b", "tu depósito"),
+        (r"\bsu registro\b", "tu registro"),
+        (r"\bbienvenid[oa]\b", "te doy la bienvenida"),
         (r"\bpara un principiante\b", "si estás empezando"),
         (r"\bpara una principiante\b", "si estás empezando"),
         (r"\bsi eres (?:un |una )?nuev[oa]\b", "si estás empezando"),
@@ -8928,6 +9007,14 @@ def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
         (r"\bcuando est[eé]s list[oa]\b", "cuando quieras continuar"),
         (r"\bsi est[aá]s list[oa]\b", "si quieres continuar"),
         (r"\bsi ya est[aá]s registrad[oa]\b", "si ya completaste el registro"),
+        (r"\bya est[aá]s registrad[oa]\b", "ya completaste el registro"),
+        (r"\bsi ya est[aá] registrad[oa]\b", "si ya completaste el registro"),
+        (r"\bya est[aá] registrad[oa]\b", "ya completaste el registro"),
+        (r"\bsi est[aá]s preparad[oa]\b", "si quieres continuar"),
+        (r"\bsi est[aá] preparad[oa]\b", "si quieres continuar"),
+        (r"\bcuando est[eé] preparad[oa]\b", "cuando quieras continuar"),
+        (r"\bcuando est[eé] list[oa]\b", "cuando quieras continuar"),
+        (r"\bestimad[oa]\b[,.]?\s*", ""),
         (r"\btú mismo\b", "directamente"),
         (r"\btu mismo\b", "directamente"),
         (r"\btú misma\b", "directamente"),
@@ -8937,6 +9024,13 @@ def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
     )
     for pattern, repl in replacements:
         value = re.sub(pattern, repl, value, flags=re.I)
+    if started_upper and value[:1].islower():
+        value = value[:1].upper() + value[1:]
+    value = re.sub(
+        r"(?<=[.!?])([ \t]+)([a-záéíóúñ])",
+        lambda m: m.group(1) + m.group(2).upper(),
+        value,
+    )
     return value.strip()
 
 
@@ -9178,12 +9272,14 @@ CRITICAL OUTPUT LANGUAGE RULE — ENGLISH:
 - NEVER answer in Spanish, even if the knowledge base, chat history or learned Johanna examples contain Spanish.
 - Translate any Spanish source information internally before answering.
 - Keep URLs, promo codes, brand names, amounts and percentages unchanged.
+- Address the user directly with “you / your”. Keep all user-directed language gender-neutral and never use gendered or formal honorifics such as “sir”, “ma’am”, “Mr.”, “Mrs.” or “Ms.”.
 """.strip()
         else:
             language_instruction = """
 REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
 - El usuario seleccionó ESPAÑOL en el bot.
 - Escribe TODA la respuesta final en español natural.
+- Tutea siempre con “tú / te / tu / tus”; nunca uses “usted / le / su / sus” para dirigirte a la persona. Mantén toda expresión dirigida al usuario en lenguaje neutral, sin asumir género.
 """.strip()
         runtime_context = _ai_runtime_context(chat_id, lang)
         dependency_context = _ai_dependency_context(question, chat_id, lang)
@@ -9628,7 +9724,9 @@ VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 - CAMBIO DE TEMA: si el pendiente empieza un caso hipotético o habla explícitamente de "otra persona / una persona / alguien", no arrastres al nuevo tema un ID, depósito o cuenta personal pendiente de una conversación anterior.
 
 ESTILO Y CTA
-- Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas. La naturalidad sale de adaptar el lenguaje a la conversación, no de añadir frases motivacionales de relleno.
+- Cercano, positivo, motivador, persuasivo y directo, sin exageraciones ni promesas engañosas. No te limites a entregar datos: cuando la consulta sea comercial, muestra brevemente el beneficio práctico para esa persona y ayúdala a avanzar con confianza. La naturalidad sale de adaptar el lenguaje a la conversación, no de añadir frases motivacionales de relleno.
+- CTA OBLIGATORIO CUANDO HAY UN SIGUIENTE PASO REAL: termina las respuestas comerciales con UNA acción clara, breve y alcanzable, seleccionada desde el ESTADO OPERATIVO REAL y la intención completa. PRE: registro/ID según lo que falte; POST: depósito en la cuenta ya validada o envío del comprobante; DEPOSITED: usar/revisar su acceso real, continuar un acceso pendiente o la acción específica solicitada, sin reiniciar registro ni recalcular su nivel por un monto aislado.
+- La persuasión debe apoyar el CTA explicando en una frase por qué ese paso le conviene o le facilita avanzar. No presiones, no uses falsa urgencia, no prometas rentabilidad y no agregues botones/enlaces ajenos a la pregunta.
 - Antes de cerrar la respuesta, revisa mentalmente cada oración: si repite una idea ya dicha, solo parafrasea la pregunta o no aporta un hecho/acción útil, elimínala.
 - No uses listas largas para una duda simple. Si el usuario NO pidió "pasos", "lista" o "guía", responde en prosa breve y NO uses numeración; usa lista solo si realmente la pidió o es imprescindible para claridad.
 - Para dudas sobre falta de tiempo/organización/horarios de trading, tienes como referencia de fondo: al menos dos sesiones de unos 40 minutos, alrededor de 5 operaciones bien seleccionadas por sesión, apoyo en las señales disponibles, plan de trading y gestión de riesgo. Son DATOS DISPONIBLES, no una receta que debas recitar. Si organización es una subpregunta dentro de varias, resuélvela normalmente en UNA frase breve; usa cifras concretas de tiempo/operaciones solo si la consulta está centrada en la organización o pide esos detalles. No inventes momentos del día si el usuario no los dio.
@@ -9820,15 +9918,14 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         # Presentación estable de links para Telegram: sin Markdown literal y con separación.
         answer = _organize_ai_registration_links(answer, lang)
 
-        # v7.10.55 — idioma EN es una condición DURA y se valida al FINAL de toda
-        # reescritura factual/estilo, justo antes de devolver el texto que irá a Telegram.
-        # Así ninguna guardia posterior puede volver a introducir español.
-        if lang == "en":
-            translated = await _translate_to_english(answer)
-            if not translated:
-                logging.warning("Guardia FINAL de idioma EN no pudo normalizar respuesta para %s", chat_id)
-                return ""
-            answer = _clean_ai_plain_text_format(translated)
+        # v7.10.60 — el idioma seleccionado es una condición DURA en ambos sentidos.
+        # Se normaliza al FINAL, después de todas las guardias, para impedir que una
+        # reescritura factual o un ejemplo del historial cambie el idioma de salida.
+        normalized_language = await _translate_to_english(answer, target_lang=lang)
+        if not normalized_language:
+            logging.warning("Guardia FINAL de idioma %s no pudo normalizar respuesta para %s", lang, chat_id)
+            return ""
+        answer = _clean_ai_plain_text_format(normalized_language)
 
         return answer
     except Exception as e:
@@ -10074,6 +10171,15 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
     chat_id = update.effective_chat.id
     effective_intents = [i for i in intents if i != "GREETING"] or intents
     handled_operational = []
+    stage_now = get_user_stage(chat_id)
+    vip_state_now = _vip_get_state(chat_id, create=False) or {}
+    active_level_now = vip_state_now.get("level") or VIP_LEVEL_NONE
+    text_norm = _norm(texto or "")
+    explicit_new_account = any(x in text_norm for x in (
+        "otra cuenta", "nueva cuenta", "otro broker", "nuevo broker", "segunda cuenta",
+        "vincular otra", "vincular nueva", "registrar otra", "id de otra cuenta",
+        "another account", "new account", "another broker", "link another", "second account",
+    ))
 
     # Temas sensibles/personalizados: nunca los resuelve la IA. Se derivan directo a Johanna.
     for sensitive_intent in ("GESTION_CAPITAL", "CUENTA_PERSONAL", "VPN", "PAIS"):
@@ -10084,12 +10190,22 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
             return True
 
     if "ID_SUBMIT" in effective_intents:
-        # Limpia únicamente residuos antiguos de entrega de ID; conserva cualquier
-        # pregunta legítima que ya estuviera esperando a Johanna/IA.
-        _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="nuevo ID operativo")
-        _record_submitted_trading_id(chat_id, texto, context)
-        block = _id_pending_review_message(lang)
-        await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
+        if stage_now == STAGE_DEPOSITED and active_level_now != VIP_LEVEL_NONE and not explicit_new_account:
+            # Un número aislado no puede reiniciar el registro de una cuenta activa.
+            level_label = _vip_level_label(active_level_now, lang)
+            block = (
+                f"Tu cuenta ya está activa en {level_label} 😊 ¿Qué necesitas consultar o gestionar con este ID? Si pertenece a otra cuenta o broker, indícamelo y continuamos con esa vinculación."
+                if lang == "es" else
+                f"Your account is already active at the {level_label} level 😊 What do you need to check or manage with this ID? If it belongs to another account or broker, tell me and we’ll continue with that link."
+            )
+            await update.effective_message.reply_text(block)
+        else:
+            # Limpia únicamente residuos antiguos de entrega de ID; conserva cualquier
+            # pregunta legítima que ya estuviera esperando a Johanna/IA.
+            _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="nuevo ID operativo")
+            _record_submitted_trading_id(chat_id, texto, context)
+            block = _id_pending_review_message(lang)
+            await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
         handled_operational.append("ID_SUBMIT")
         # Estas intenciones quedan materialmente resueltas por recibir el ID. No
         # deben volver a provocar una respuesta IA del mismo mensaje.
@@ -10101,13 +10217,19 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
         _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="nuevo depósito operativo")
         _log_event(chat_id, "DEPOSIT_REPORTED", texto)
         _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
-        stage_now = get_user_stage(chat_id)
         if stage_now == STAGE_DEPOSITED:
-            block = (
-                "💳 Perfecto. Envíame aquí la captura del depósito adicional y la revisaré según las condiciones de actualización de nivel."
-                if lang == "es" else
-                "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review it under the level-update conditions."
-            )
+            if active_level_now == VIP_LEVEL_PRESTIGE:
+                block = (
+                    "💳 Perfecto. Envíame aquí la captura del depósito adicional para validarlo. Tu nivel se mantiene en Prestige porque ya tienes habilitadas todas las herramientas; ese capital permanece en tu propia cuenta para tu operativa."
+                    if lang == "es" else
+                    "💳 Perfect. Send me the additional-deposit screenshot so I can validate it. Your level remains Prestige because all level tools are already enabled; that capital stays in your own account for your trading."
+                )
+            else:
+                block = (
+                    "💳 Perfecto. Envíame aquí la captura del depósito adicional y la revisaré según las condiciones de actualización de nivel."
+                    if lang == "es" else
+                    "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review it under the level-update conditions."
+                )
         elif stage_now == STAGE_POST:
             block = (
                 "💳 Perfecto. Envíame aquí el comprobante de depósito/activación para revisar el monto y habilitar el nivel que corresponda."
@@ -10196,13 +10318,18 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.video and not (update.message.caption or "").strip():
         return
 
-    # En POST una foto se toma como comprobante inicial; en DEPOSITED se trata como
-    # depósito adicional para posible subida de nivel. En ambos casos Johanna revisa
-    # el monto y el bot calcula el nivel antes de habilitar accesos.
+    # En POST una foto sí corresponde naturalmente al comprobante inicial. En una
+    # cuenta DEPOSITED la foto solo entra al flujo de depósito cuando el texto lo
+    # indica de forma explícita; una imagen aislada nunca puede inventar un upgrade.
     if update.message and update.message.photo:
         caption = (update.message.caption or "").strip()
         current_stage = get_user_stage(chat_id)
-        if current_stage in (STAGE_POST, STAGE_DEPOSITED):
+        current_vip_state = _vip_get_state(chat_id, create=False) or {}
+        current_level = current_vip_state.get("level") or VIP_LEVEL_NONE
+        explicit_deposit_photo = current_stage == STAGE_POST or (
+            current_stage == STAGE_DEPOSITED and bool(caption) and _is_deposit_report_intent(caption)
+        )
+        if explicit_deposit_photo:
             _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="comprobante de depósito recibido")
             _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
             _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
@@ -10218,11 +10345,18 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 log_intent = "DEPOSIT_PROOF_BROKER_REQUIRED"
             elif len(brokers) == 1:
                 _broker_flow_set(chat_id, pending_deposit_broker=brokers[0])
-                qtxt = (
-                    f"✅ Recibido. Estoy revisando tu depósito de {_broker_label(brokers[0])}. Te confirmaré por este chat cuando quede validado."
-                    if lang == "es" else
-                    f"✅ Received. I’m reviewing your {_broker_label(brokers[0])} deposit. I’ll confirm here once it is validated."
-                )
+                if current_stage == STAGE_DEPOSITED and current_level == VIP_LEVEL_PRESTIGE:
+                    qtxt = (
+                        f"✅ Recibido. Estoy revisando tu depósito adicional de {_broker_label(brokers[0])}. Tu nivel seguirá en Prestige; te confirmaré por este chat cuando el depósito quede validado."
+                        if lang == "es" else
+                        f"✅ Received. I’m reviewing your additional {_broker_label(brokers[0])} deposit. Your level will remain Prestige; I’ll confirm here once the deposit is validated."
+                    )
+                else:
+                    qtxt = (
+                        f"✅ Recibido. Estoy revisando tu depósito de {_broker_label(brokers[0])}. Te confirmaré por este chat cuando quede validado."
+                        if lang == "es" else
+                        f"✅ Received. I’m reviewing your {_broker_label(brokers[0])} deposit. I’ll confirm here once it is validated."
+                    )
                 await update.message.reply_text(qtxt)
                 log_intent = f"DEPOSIT_PROOF_{brokers[0]}"
             else:
@@ -10241,6 +10375,10 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not caption:
             qtxt = (
+                "📩 Recibido. Como tu cuenta ya está activa, no voy a asumir que esta imagen es un depósito o un upgrade. ¿Qué necesitas gestionar con ella?"
+                if current_stage == STAGE_DEPOSITED and lang == "es" else
+                "📩 Received. Since your account is already active, I won’t assume this image is a deposit or an upgrade. What do you need to manage with it?"
+                if current_stage == STAGE_DEPOSITED else
                 "📩 Recibido. ¿Esta imagen es tu ID de Stockity/Binomo, tu comprobante de depósito/activación o era otra cosa?"
                 if lang == "es" else
                 "📩 Received. Is this image your Stockity/Binomo ID, your deposit/activation proof, or something else?"
@@ -10374,11 +10512,19 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
         stage_now = get_user_stage(chat_id)
         if stage_now == STAGE_DEPOSITED:
-            msg = (
-                "Perfecto ✅\n\nEnvíame aquí la captura del depósito adicional. La revisaré según las condiciones de actualización de nivel y te confirmaré el resultado."
-                if lang == "es" else
-                "Perfect ✅\n\nSend me the screenshot of the additional deposit. I’ll review it under the level-update conditions and confirm the result."
-            )
+            active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+            if active_level == VIP_LEVEL_PRESTIGE:
+                msg = (
+                    "Perfecto ✅\n\nEnvíame aquí la captura del depósito adicional para validarlo. Tu nivel se mantiene en Prestige porque ya tienes todas las herramientas habilitadas; ese capital permanece en tu propia cuenta para tu operativa."
+                    if lang == "es" else
+                    "Perfect ✅\n\nSend me the additional-deposit screenshot so I can validate it. Your level remains Prestige because all level tools are already enabled; that capital stays in your own account for your trading."
+                )
+            else:
+                msg = (
+                    "Perfecto ✅\n\nEnvíame aquí la captura del depósito adicional. La revisaré según las condiciones de actualización de nivel y te confirmaré el resultado."
+                    if lang == "es" else
+                    "Perfect ✅\n\nSend me the screenshot of the additional deposit. I’ll review it under the level-update conditions and confirm the result."
+                )
         elif stage_now == STAGE_POST:
             msg = (
                 "Perfecto ✅\n\nEnvíame aquí tu comprobante de depósito/activación (foto o captura). Revisaré el monto y te confirmaré el nivel que queda habilitado."
@@ -10396,11 +10542,29 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "ID_SUBMIT":
-        _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="ID reconocido inmediatamente")
-        _record_submitted_trading_id(chat_id, texto, context)
-        msg = _id_pending_review_message(lang)
-        await update.message.reply_text(msg, reply_markup=_broker_selection_keyboard("id", lang))
-        await send_admin_auto_log(context, update, "ID_SUBMIT_PENDING_BROKER", msg)
+        stage_now = get_user_stage(chat_id)
+        active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        text_norm = _norm(texto or "")
+        explicit_new_account = any(x in text_norm for x in (
+            "otra cuenta", "nueva cuenta", "otro broker", "nuevo broker", "segunda cuenta",
+            "vincular otra", "vincular nueva", "registrar otra", "id de otra cuenta",
+            "another account", "new account", "another broker", "link another", "second account",
+        ))
+        if stage_now == STAGE_DEPOSITED and active_level != VIP_LEVEL_NONE and not explicit_new_account:
+            level_label = _vip_level_label(active_level, lang)
+            msg = (
+                f"Tu cuenta ya está activa en {level_label} 😊 ¿Qué necesitas consultar o gestionar con este ID? Si pertenece a otra cuenta o broker, indícamelo y continuamos con esa vinculación."
+                if lang == "es" else
+                f"Your account is already active at the {level_label} level 😊 What do you need to check or manage with this ID? If it belongs to another account or broker, tell me and we’ll continue with that link."
+            )
+            await update.message.reply_text(msg)
+            await send_admin_auto_log(context, update, "ACTIVE_ID_CLARIFICATION", msg)
+        else:
+            _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="ID reconocido inmediatamente")
+            _record_submitted_trading_id(chat_id, texto, context)
+            msg = _id_pending_review_message(lang)
+            await update.message.reply_text(msg, reply_markup=_broker_selection_keyboard("id", lang))
+            await send_admin_auto_log(context, update, "ID_SUBMIT_PENDING_BROKER", msg)
         return
 
     if intent in ("GESTION_CAPITAL", "CUENTA_PERSONAL", "VPN", "PAIS"):
