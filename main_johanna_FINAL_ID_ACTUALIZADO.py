@@ -55,8 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.61-20260921-AI-SEMANTIC-MINIMUM-ENTRY-CONTEXT-FIX"
-# v7.10.61: consultas de mínimo/ingreso resueltas por IA contextual (sin plantilla), con hechos oficiales y CTA de niveles blindados.
+BOT_VERSION = "v7.10.62-20260921-AI-MINIMUM-COMPLETENESS-HARD-GUARD"
+# v7.10.62: mínimo/ingreso mantiene respuesta generativa, pero valida y completa hechos obligatorios antes de enviar; sin inventar montos por país/broker.
 # v7.10.59: CTA específico por nivel + respuestas de nivel compactas + repreguntas contextuales sin repetir señales ya explicadas.
 # v7.10.58: estado activo manda para Básico/Premium/Prestige, CTA por intención real y guardias multi-pregunta sin borrar otras respuestas.
 # v7.10.57: mapea el Chat ID real de CRYPTO IDX Básico para aprobar solicitudes VIP.
@@ -9674,7 +9674,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             decision_lines.append(
                 "ENTRY MINIMUM — FACTS, NOT A TEMPLATE: answer naturally using these facts only. The minimum capital to ENTER JT TRADERS TEAMS is USD 50, which corresponds to Basic. Basic intentionally has more limited tools and includes about 30–50 CRYPTO IDX signals per day, Monday to Friday. If it fits the person's budget, Johanna normally recommends starting from USD 200 for Premium because it provides a much more complete combination of education, signals and tools. Do NOT enumerate all Premium benefits unless asked; the levels button provides the detail. Nationality/country does NOT change these JT TRADERS TEAMS thresholds. Do NOT invent a different Stockity/Binomo minimum by country. Distinguish the community-entry minimum from any platform-specific technical minimum that is not confirmed in the official knowledge. The deposit remains in the person's own trading account. Vary the wording to fit the conversation; do not copy a fixed script."
                 if lang == "en" else
-                "MÍNIMO DE INGRESO — HECHOS, NO PLANTILLA: responde de forma natural usando únicamente estos hechos. El capital mínimo para INGRESAR a JT TRADERS TEAMS es 50 USD y corresponde a Básico. Básico tiene herramientas más limitadas e incluye aproximadamente 30–50 señales CRYPTO IDX al día, de lunes a viernes. Si está dentro de las posibilidades de la persona, Johanna normalmente recomienda iniciar desde 200 USD para Premium porque ofrece una combinación mucho más completa de formación, señales y herramientas. NO enumeres todos los beneficios Premium salvo que los pidan; el botón de niveles muestra el detalle. La nacionalidad o el país NO modifica estos umbrales de JT TRADERS TEAMS. NO inventes un mínimo diferente de Stockity/Binomo por país. Distingue el mínimo para entrar a la comunidad de cualquier mínimo técnico de plataforma que no esté confirmado en la base oficial. El depósito queda en la propia cuenta de trading de la persona. Varía la redacción según la conversación; no copies un guion fijo."
+                "MÍNIMO DE INGRESO — HECHOS OBLIGATORIOS, NO PLANTILLA: responde de forma natural, pero NO omitas ninguno de estos conceptos: (1) el capital mínimo para INGRESAR a JT TRADERS TEAMS es 50 USD y corresponde a Básico; (2) Básico tiene herramientas más limitadas e incluye aproximadamente 30–50 señales CRYPTO IDX al día, de lunes a viernes; (3) si está dentro de las posibilidades de la persona, Johanna normalmente recomienda iniciar desde 200 USD para Premium porque ofrece una estructura mucho más completa de formación, señales y herramientas; (4) el depósito queda en la propia cuenta de trading. NO enumeres todos los beneficios Premium salvo que los pidan; el botón de niveles muestra el detalle. La nacionalidad o el país es IRRELEVANTE para estos umbrales: no lo uses para cambiar cifras ni lo conviertas en el foco de la respuesta. NO inventes un mínimo diferente de Stockity/Binomo por país. Distingue el mínimo para entrar a la comunidad de cualquier mínimo técnico de plataforma que no esté confirmado en la base oficial. Varía la redacción según la conversación; no copies un guion fijo."
             )
 
         if active_member and not hypothetical_other_person:
@@ -9933,34 +9933,79 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         answer = _neutralize_ai_gender(answer, lang)  # guard final tras cualquier reescritura factual/estilo
         answer = _clean_ai_plain_text_format(answer)
 
-        # v7.10.61 — validación semántica de mínimo de ingreso. La salida continúa
-        # siendo generativa: si falta información crítica o aparece un mínimo inventado
-        # por país/broker, se regenera con los hechos oficiales en vez de usar plantilla.
+        # v7.10.62 — GUARDIA DURA DE COMPLETITUD PARA MÍNIMO DE INGRESO.
+        # La respuesta sigue siendo generativa y natural, pero no se envía si omite
+        # hechos esenciales. Se revalida DESPUÉS de cada regeneración; v7.10.61
+        # regeneraba una vez pero aceptaba la segunda salida sin comprobarla.
         if entry_minimum_topic:
-            min_norm = _norm(answer or "")
-            has_minimum = bool(re.search(r"\b50\b", min_norm)) and any(x in min_norm for x in ("basico", "basic"))
-            has_basic_limit = bool(re.search(r"\b30\b", min_norm)) and bool(re.search(r"\b50\b", min_norm)) and any(x in min_norm for x in ("senal", "signal"))
-            has_schedule = any(x in min_norm for x in ("lunes a viernes", "monday to friday"))
-            has_premium_reco = bool(re.search(r"\b200\b", min_norm)) and "premium" in min_norm
-            suspicious_country_broker_minimum = bool(re.search(
-                r"(?:stockity|binomo)[^.\n]{0,100}(?:minim|minimo|minimum)[^.\n]{0,80}\b(?:10|20|30|40|100|150|250|300|400)\b|"
-                r"(?:minim|minimo|minimum)[^.\n]{0,80}(?:stockity|binomo)[^.\n]{0,80}\b(?:10|20|30|40|100|150|250|300|400)\b",
-                min_norm, flags=re.I
-            ))
-            if not (has_minimum and has_basic_limit and has_schedule and has_premium_reco) or suspicious_country_broker_minimum:
+            for minimum_guard_attempt in range(3):
+                min_norm = _norm(answer or "")
+                has_minimum = bool(re.search(r"\b50\b", min_norm)) and any(x in min_norm for x in ("basico", "basic"))
+                has_basic_limit_word = any(x in min_norm for x in (
+                    "limitad", "mas limitado", "más limitado", "menos herramientas", "herramientas limit",
+                    "limited", "fewer tools", "more limited",
+                ))
+                has_basic_signals = (
+                    bool(re.search(r"\b30\b", min_norm))
+                    and bool(re.search(r"\b50\b", min_norm))
+                    and any(x in min_norm for x in ("senal", "signal"))
+                )
+                has_schedule = any(x in min_norm for x in ("lunes a viernes", "monday to friday"))
+                has_premium_reco = (
+                    bool(re.search(r"\b200\b", min_norm))
+                    and "premium" in min_norm
+                    and any(x in min_norm for x in (
+                        "recomiend", "aconsej", "ideal", "suger", "si esta dentro", "si está dentro",
+                        "if budget", "recommend", "suggest", "ideally", "if it fits",
+                    ))
+                )
+                has_own_account = any(x in min_norm for x in (
+                    "propia cuenta", "tu propia cuenta", "su propia cuenta", "own trading account", "own account",
+                ))
+                suspicious_country_broker_minimum = bool(re.search(
+                    r"(?:stockity|binomo)[^.\n]{0,100}(?:minim|minimo|minimum)[^.\n]{0,80}\b(?:10|20|30|40|100|150|250|300|400)\b|"
+                    r"(?:minim|minimo|minimum)[^.\n]{0,80}(?:stockity|binomo)[^.\n]{0,80}\b(?:10|20|30|40|100|150|250|300|400)\b",
+                    min_norm, flags=re.I
+                ))
+                minimum_complete = (
+                    has_minimum and has_basic_limit_word and has_basic_signals
+                    and has_schedule and has_premium_reco and has_own_account
+                    and not suspicious_country_broker_minimum
+                )
+                if minimum_complete:
+                    break
+
+                # La nacionalidad/país no es parte del cálculo. La IA puede comprenderla
+                # como contexto humano, pero no debe convertirla en una regla comercial.
                 guard_instructions = (
                     language_instruction + "\n\n" +
                     (
-                        "Rewrite the answer naturally; do NOT use a fixed template. Preserve the user's conversational context. Facts that MUST be conveyed: JT TRADERS TEAMS entry minimum = USD 50 = Basic; Basic has more limited tools and about 30–50 CRYPTO IDX signals/day Monday–Friday; if budget allows, Johanna normally recommends starting from USD 200 for Premium because it is substantially more complete in education, signals and tools; country/nationality does not change these community thresholds; never invent a country-specific Stockity/Binomo minimum; funds remain in the user's own trading account. Keep it concise and do not list every Premium benefit because the levels button provides the details."
+                        "Rewrite the answer naturally from scratch; do NOT use a fixed template and do not copy the previous wording. "
+                        "This is a JT TRADERS TEAMS ENTRY-AMOUNT question. EVERY concept below is mandatory in the final answer: "
+                        "(1) USD 50 is the minimum to enter and it activates Basic; "
+                        "(2) Basic is intentionally more limited in tools and provides about 30–50 CRYPTO IDX signals per day, Monday–Friday; "
+                        "(3) if it fits the person's budget, Johanna normally recommends starting from USD 200 for Premium because it is much more complete in education, signals and tools; "
+                        "(4) the deposited money remains in the person's own trading account. "
+                        "Country/nationality is irrelevant to these community thresholds: do not foreground it, do not repeat it unless needed to correct a misconception, and NEVER invent a country-specific Stockity/Binomo minimum. "
+                        "Keep the answer warm, concise and conversational. Do not list all Premium benefits because a levels button is shown separately. "
+                        "Do not close with generic phrases such as 'if you have more questions, I'm here'."
                         if lang == "en" else
-                        "Reescribe la respuesta de forma natural; NO uses una plantilla fija. Conserva el contexto conversacional del usuario. Hechos que DEBEN quedar claros: mínimo para ingresar a JT TRADERS TEAMS = 50 USD = Básico; Básico tiene herramientas más limitadas y aproximadamente 30–50 señales CRYPTO IDX al día de lunes a viernes; si el presupuesto lo permite, Johanna normalmente recomienda iniciar desde 200 USD para Premium porque es mucho más completo en formación, señales y herramientas; el país/nacionalidad no cambia estos umbrales de la comunidad; nunca inventes mínimos de Stockity/Binomo según país; el dinero queda en la propia cuenta de trading. Sé breve y no listes todos los beneficios Premium porque el botón de niveles muestra el detalle."
+                        "Reescribe la respuesta desde cero de forma natural; NO uses una plantilla fija ni copies la redacción anterior. "
+                        "Esta es una consulta sobre CUÁNTO CAPITAL SE NECESITA PARA INGRESAR A JT TRADERS TEAMS. TODOS estos conceptos son obligatorios en la respuesta final: "
+                        "(1) 50 USD es el mínimo para ingresar y activa Básico; "
+                        "(2) Básico es un nivel con herramientas más limitadas y entrega aproximadamente 30–50 señales CRYPTO IDX al día, de lunes a viernes; "
+                        "(3) si está dentro de las posibilidades de la persona, Johanna normalmente recomienda iniciar desde 200 USD para Premium porque es mucho más completo en formación, señales y herramientas; "
+                        "(4) el dinero depositado queda en la propia cuenta de trading de la persona. "
+                        "El país o la nacionalidad es irrelevante para estos umbrales de la comunidad: no lo conviertas en el foco, no lo repitas salvo que sea necesario corregir una confusión y NUNCA inventes un mínimo de Stockity/Binomo según país. "
+                        "Mantén un tono cálido, breve y conversacional. No enumeres todos los beneficios Premium porque el botón de niveles aparece aparte. "
+                        "No cierres con frases genéricas como 'si tienes más preguntas, aquí estoy'."
                     )
                 )
                 guard_payload = {
                     "model": OPENAI_MODEL,
                     "instructions": guard_instructions,
-                    "input": f"PREGUNTA DEL USUARIO:\n{question.strip()}\n\nRESPUESTA A CORREGIR:\n{answer}",
-                    "max_output_tokens": 260,
+                    "input": f"PREGUNTA DEL USUARIO:\n{question.strip()}\n\nRESPUESTA PREVIA INCOMPLETA O INCORRECTA:\n{answer}",
+                    "max_output_tokens": 320,
                     "store": False,
                 }
                 try:
@@ -9975,12 +10020,71 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                         if regenerated:
                             answer = _strip_redundant_ai_greeting(regenerated, question, history_text, lang)
                             answer = _neutralize_ai_gender(answer, lang)
+                            answer = _ai_known_fact_guard(answer, question, lang)
                             answer = _trim_generic_ai_closer(answer, lang)
                             answer = _clean_ai_plain_text_format(answer)
-                    else:
-                        logging.warning("Guardia semántica mínimo de ingreso devolvió %s", guard_resp.status_code)
+                            continue
+                    logging.warning("Guardia de completitud mínimo intento %s devolvió %s", minimum_guard_attempt + 1, guard_resp.status_code)
                 except Exception as e:
-                    logging.warning("No pude regenerar respuesta de mínimo de ingreso: %s", e)
+                    logging.warning("No pude regenerar respuesta de mínimo de ingreso (intento %s): %s", minimum_guard_attempt + 1, e)
+
+            # Último cinturón: si incluso tras regenerar faltó algún concepto, NO
+            # enviamos una respuesta factual incompleta. Conservamos el texto natural
+            # generado y añadimos únicamente los conceptos que falten; no reemplaza
+            # toda la respuesta por una plantilla.
+            min_norm = _norm(answer or "")
+            if not (bool(re.search(r"\b50\b", min_norm)) and any(x in min_norm for x in ("basico", "basic"))):
+                answer += (
+                    "\n\nThe minimum to enter my community is USD 50, which activates Basic."
+                    if lang == "en" else
+                    "\n\nEl mínimo para ingresar a mi comunidad es de 50 USD y con ese monto se activa el nivel Básico."
+                )
+            min_norm = _norm(answer or "")
+            basic_complete = (
+                any(x in min_norm for x in ("limitad", "fewer tools", "more limited"))
+                and bool(re.search(r"\b30\b", min_norm)) and bool(re.search(r"\b50\b", min_norm))
+                and any(x in min_norm for x in ("senal", "signal"))
+                and any(x in min_norm for x in ("lunes a viernes", "monday to friday"))
+            )
+            if not basic_complete:
+                answer += (
+                    "\n\nBasic has more limited tools and includes about 30–50 CRYPTO IDX signals per day, Monday to Friday."
+                    if lang == "en" else
+                    "\n\nBásico tiene herramientas más limitadas e incluye aproximadamente 30–50 señales CRYPTO IDX al día, de lunes a viernes."
+                )
+            min_norm = _norm(answer or "")
+            premium_complete = bool(re.search(r"\b200\b", min_norm)) and "premium" in min_norm and any(x in min_norm for x in (
+                "recomiend", "aconsej", "ideal", "suger", "recommend", "suggest", "ideally",
+            ))
+            if not premium_complete:
+                answer += (
+                    "\n\nIf it fits your budget, I normally recommend starting from USD 200 for Premium because it gives you a much more complete structure of education, signals and tools."
+                    if lang == "en" else
+                    "\n\nSi está dentro de tus posibilidades, normalmente recomiendo iniciar desde 200 USD para Premium, porque tienes una estructura mucho más completa de formación, señales y herramientas."
+                )
+            min_norm = _norm(answer or "")
+            if not any(x in min_norm for x in ("propia cuenta", "own trading account", "own account")):
+                answer += (
+                    "\n\nThe deposit remains in your own trading account."
+                    if lang == "en" else
+                    "\n\nEl depósito queda en tu propia cuenta de trading."
+                )
+
+            # Si una salida previa inventó un mínimo de broker por país, elimina solo
+            # esa oración; el mínimo de la comunidad ya quedó cubierto arriba.
+            cleaned_parts = []
+            for part in re.split(r"(?<=[.!?])\s+|\n\s*\n+", answer or ""):
+                pn = _norm(part)
+                suspicious_part = bool(re.search(
+                    r"(?:stockity|binomo).*(?:minim|minimo|minimum).*(?:10|20|30|40|100|150|250|300|400)|"
+                    r"(?:minim|minimo|minimum).*(?:stockity|binomo).*(?:10|20|30|40|100|150|250|300|400)",
+                    pn, flags=re.I
+                ))
+                if part.strip() and not suspicious_part:
+                    cleaned_parts.append(part.strip())
+            answer = "\n\n".join(cleaned_parts)
+            answer = _trim_generic_ai_closer(answer, lang)
+            answer = _clean_ai_plain_text_format(answer)
 
         # v7.10.56 — GUARDIAS DURAS POST-GENERACIÓN. Estas dos verdades críticas
         # no dependen de que el modelo "recuerde" obedecer el prompt.
