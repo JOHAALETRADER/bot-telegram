@@ -55,8 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.60-20260921-MINIMUM-ENTRY-FACT-GUARD-LEVELS-CTA-FIX"
-# v7.10.60: blinda mínimo de entrada (USD 50), evita montos inventados por país/broker y muestra CTA de niveles en consultas de ingreso.
+BOT_VERSION = "v7.10.61-20260921-AI-SEMANTIC-MINIMUM-ENTRY-CONTEXT-FIX"
+# v7.10.61: consultas de mínimo/ingreso resueltas por IA contextual (sin plantilla), con hechos oficiales y CTA de niveles blindados.
 # v7.10.59: CTA específico por nivel + respuestas de nivel compactas + repreguntas contextuales sin repetir señales ya explicadas.
 # v7.10.58: estado activo manda para Básico/Premium/Prestige, CTA por intención real y guardias multi-pregunta sin borrar otras respuestas.
 # v7.10.57: mapea el Chat ID real de CRYPTO IDX Básico para aprobar solicitudes VIP.
@@ -7998,37 +7998,17 @@ def _is_deposit_report_intent(texto: str) -> bool:
 
 
 def _is_min_50_intent(texto: str) -> bool:
-    """Detecta montos realmente menores al mínimo sin confundir 30 con 300.
+    """Detecta semánticamente preguntas sobre cuánto capital se necesita para entrar.
 
-    Las versiones anteriores usaban coincidencias de subcadenas como
-    ``"depositar 30" in texto`` y por eso ``depositar 300`` podía activar MIN_50.
-    Aquí los números se comparan como tokens completos.
+    No redacta la respuesta ni impone una plantilla: solo enruta la intención para que
+    la IA use la base oficial de niveles. También conserva la detección de montos
+    realmente menores a USD 50 sin confundir 30 con 300.
     """
     raw = (texto or "").strip()
     t = _norm(raw)
     if not t:
         return False
 
-    explicit = (
-        "no tengo 50", "no tengo cincuenta", "puedo con menos", "puedo iniciar con menos",
-        "puedo empezar con menos", "puedo depositar menos", "puedo depositar con menos",
-        "puedo depositar menos de 50", "menos de 50", "menos de cincuenta",
-        "deposito minimo", "depósito mínimo", "monto minimo", "monto mínimo",
-        "minimo de deposito", "mínimo de depósito",
-        # Preguntas naturales de entrada: antes podían quedar en IA abierta y ésta
-        # inventaba mínimos por país/broker. Aquí se anclan al mínimo OFICIAL de
-        # acceso a JT TRADERS TEAMS, no al mínimo técnico de una plataforma.
-        "cuanto deposito", "cuánto deposito", "cuanto debo depositar", "cuánto debo depositar",
-        "cuanto tengo que depositar", "cuánto tengo que depositar",
-        "con cuanto entro", "con cuánto entro", "con cuanto ingreso", "con cuánto ingreso",
-        "con cuanto empiezo", "con cuánto empiezo", "con cuanto inicio", "con cuánto inicio",
-        "cuanto necesito para entrar", "cuánto necesito para entrar",
-        "cuanto necesito para ingresar", "cuánto necesito para ingresar",
-        "cuanto necesito para empezar", "cuánto necesito para empezar",
-        "de cuanto es el deposito", "de cuánto es el depósito",
-        "minimum deposit", "how much do i deposit", "how much should i deposit",
-        "how much do i need to start", "how much do i need to join", "how much to join",
-    )
     # No secuestrar consultas explícitas de upgrade/redepósito de miembros activos.
     upgrade_terms = (
         "subir de nivel", "upgrade", "llegar a premium", "llegar a prestige",
@@ -8036,10 +8016,48 @@ def _is_min_50_intent(texto: str) -> bool:
         "redeposito", "redepósito", "depositar mas", "depositar más",
         "additional deposit", "another deposit", "upgrade my level",
     )
-    if any(x in t for x in explicit) and not any(x in t for x in upgrade_terms):
+    if any(x in t for x in upgrade_terms):
+        return False
+
+    explicit = (
+        "no tengo 50", "no tengo cincuenta", "puedo con menos", "puedo iniciar con menos",
+        "puedo empezar con menos", "puedo depositar menos", "puedo depositar con menos",
+        "puedo depositar menos de 50", "menos de 50", "menos de cincuenta",
+        "deposito minimo", "depósito mínimo", "monto minimo", "monto mínimo",
+        "minimo de deposito", "mínimo de depósito", "inversion minima", "inversión mínima",
+        "cuanto deposito", "cuánto deposito", "cuanto debo depositar", "cuánto debo depositar",
+        "cuanto tengo que depositar", "cuánto tengo que depositar",
+        "cuanto puedo depositar", "cuánto puedo depositar", "cuanto puede depositar", "cuánto puede depositar",
+        "cuento puedo depositar", "cuento puede depositar",
+        "con cuanto entro", "con cuánto entro", "con cuanto ingreso", "con cuánto ingreso",
+        "con cuanto empiezo", "con cuánto empiezo", "con cuanto inicio", "con cuánto inicio",
+        "cuanto necesito para entrar", "cuánto necesito para entrar",
+        "cuanto necesita para entrar", "cuánto necesita para entrar",
+        "cuanto necesito para ingresar", "cuánto necesito para ingresar",
+        "cuanto necesita para ingresar", "cuánto necesita para ingresar",
+        "cuanto necesito para empezar", "cuánto necesito para empezar",
+        "cuanto necesita para empezar", "cuánto necesita para empezar",
+        "de cuanto es el deposito", "de cuánto es el depósito",
+        "minimum deposit", "minimum investment", "how much do i deposit", "how much should i deposit",
+        "how much can i deposit", "how much can someone deposit",
+        "how much do i need to start", "how much do i need to join", "how much to join",
+    )
+    if any(x in t for x in explicit):
         return True
 
-    # Solo 10/20/30/40 como valores completos. El (?!\\d) evita 30 -> 300.
+    # Preguntas naturales o con errores de escritura: combina palabra interrogativa
+    # con una acción de ingreso/depósito, sin depender de una frase exacta.
+    amount_question = any(x in t for x in ("cuanto", "cuánto", "cuento", "how much", "what amount"))
+    entry_action = any(x in t for x in (
+        "puedo depositar", "puede depositar", "debo depositar", "debe depositar",
+        "tengo que depositar", "tiene que depositar", "necesito depositar", "necesita depositar",
+        "para entrar", "para ingresar", "para empezar", "para iniciar",
+        "join", "start", "enter the community",
+    ))
+    if amount_question and entry_action:
+        return True
+
+    # Solo 10/20/30/40 como valores completos. El (?!\d) evita 30 -> 300.
     amount = re.search(r"(?<!\d)(10|20|30|40)(?:[.,]0+)?(?!\d)", t)
     if not amount:
         return False
@@ -8049,14 +8067,15 @@ def _is_min_50_intent(texto: str) -> bool:
     )
     return any(x in t for x in context_terms)
 
-
 def _is_hypothetical_other_person(texto: str) -> bool:
     """True cuando la pregunta habla claramente de otra persona/caso general."""
     t = _norm(texto or "")
     markers = (
         "si otra persona", "si una persona", "para otra persona", "una persona que",
         "alguien que", "si alguien", "en el caso de otra persona", "hipoteticamente",
-        "hipotéticamente", "another person", "if someone", "if another person",
+        "hipotéticamente", "tengo un amigo", "tengo una amiga", "mi amigo", "mi amiga",
+        "un amigo que", "una amiga que", "para un amigo", "para una amiga",
+        "another person", "if someone", "if another person", "my friend", "a friend",
     )
     return any(x in t for x in markers)
 
@@ -8632,17 +8651,8 @@ def _immediate_block(intent: str, lang: str):
             "✅ Perfect. When you are ready with a deposit from 50 USD, message me and we will continue."
         )
     if intent == "MIN_50":
-        return (
-            "💰 El mínimo para ingresar a mi comunidad es 50 USD y con ese capital activarías el nivel Básico. "
-            "Ten en cuenta que Básico tiene herramientas más limitadas: recibes entre 30 y 50 señales CRYPTO IDX al día, de lunes a viernes.\n\n"
-            "Por eso, si está dentro de tus posibilidades, normalmente recomiendo iniciar desde 200 USD para quedar en Premium y tener una estructura mucho más completa de formación, señales y herramientas. "
-            "El depósito siempre queda en tu propia cuenta de trading. 😊"
-            if lang == "es" else
-            "💰 The minimum to join my community is USD 50, which activates the Basic level. "
-            "Keep in mind that Basic has more limited tools: you receive around 30–50 CRYPTO IDX signals per day, Monday to Friday.\n\n"
-            "That is why, if it fits your budget, I normally recommend starting from USD 200 to be in Premium and have a much more complete set of education, signals and tools. "
-            "The deposit always stays in your own trading account. 😊"
-        )
+        # Se resuelve por IA contextual; no existe una respuesta fija para esta intención.
+        return None
     if intent in ("VPN", "PAIS"):
         return (
             "🌎 Este caso prefiero revisarlo directamente contigo porque depende de la disponibilidad de la plataforma en tu país. Escríbeme a mi chat personal y lo revisamos. 👇"
@@ -9401,13 +9411,13 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                 "instructions": (
                     "Classify the user's pending Telegram message(s) for a trading-community support workflow. "
                     "Return ONLY one compact JSON object, no markdown and no explanation. "
-                    "Allowed intents: next_step, registration, level, broad_benefits, courses, signals, ai_bot, "
+                    "Allowed intents: next_step, registration, entry_minimum, level, broad_benefits, courses, signals, ai_bot, "
                     "live_panel, time_management, risk, existing_account, broker_upgrade, promo, live_schedule, "
                     "vip_access, personal_review, other. Use ALL intents that are actually asked. "
                     "Important semantics: phrases such as 'qué me toca', 'qué hago ahora', 'cómo sigo', 'por dónde empiezo' "
                     "normally mean next_step unless the user explicitly asks which level/benefits. "
                     "'the bot/program/software you show in your live/on screen' means live_panel unless CRYPTO IDX 24/7 "
-                    "or the currency-pair AI bot is explicitly named. A money amount alone does NOT mean promo. "
+                    "or the currency-pair AI bot is explicitly named. Questions about how much someone should/can deposit to join, start or enter the community mean entry_minimum, even when a country or nationality is mentioned. Country/nationality does not change JT TRADERS TEAMS level thresholds. A money amount alone does NOT mean promo. "
                     "Set promo only when bonuses/promo codes/70%/100% are explicitly asked. "
                     "Schema: {\"primary\":\"intent\",\"intents\":[\"...\"],\"amount_usd\":number_or_null,"
                     "\"multi_question\":true_or_false}."
@@ -9437,7 +9447,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                     if isinstance(parsed, dict):
                         planner = parsed
                         allowed = {
-                            "next_step", "registration", "level", "broad_benefits", "courses", "signals",
+                            "next_step", "registration", "entry_minimum", "level", "broad_benefits", "courses", "signals",
                             "ai_bot", "live_panel", "time_management", "risk", "existing_account",
                             "broker_upgrade", "promo", "live_schedule", "vip_access", "personal_review", "other",
                         }
@@ -9458,6 +9468,19 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "que nivel", "qué nivel", "cual nivel", "cuál nivel", "nivel me toca", "nivel tendria",
             "nivel tendría", "que incluye", "qué incluye", "beneficios", "what level", "which level", "what is included",
         ))
+        entry_minimum_topic = ("entry_minimum" in planner_intents) or _is_min_50_intent(question)
+        # Un miembro activo no vuelve al flujo de ingreso por mencionar un depósito.
+        # Sí aplica si pregunta claramente por entrar/ingresar o habla de otra persona.
+        if active_member and not hypothetical_other_person:
+            explicit_join_wording = any(x in q_norm for x in (
+                "para entrar", "para ingresar", "para empezar", "para iniciar",
+                "minimum to join", "need to join", "to enter the community",
+            ))
+            entry_minimum_topic = bool(entry_minimum_topic and explicit_join_wording)
+        if entry_minimum_topic:
+            planner_intents.add("entry_minimum")
+            if not planner_primary or planner_primary == "other":
+                planner_primary = "entry_minimum"
         next_step_heuristic = (
             any(x in q_norm for x in (
                 "que me toca", "qué me toca", "que hago ahora", "qué hago ahora", "que hago", "qué hago",
@@ -9543,7 +9566,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "todo lo que incluye", "que ofrece", "what is included", "what do i get",
         ))
         next_step_topic = "next_step" in planner_intents or next_step_heuristic
-        level_topic = "level" in planner_intents or broad_benefits or explicit_level_question
+        level_topic = "level" in planner_intents or broad_benefits or explicit_level_question or entry_minimum_topic
         course_topic = "courses" in planner_intents or any(x in scope_norm for x in (
             "curso", "cursos", "formacion", "modulo", "binary teams", "madness", "smart money", "algo & lit", "audiolibro", "material de estudio",
         ))
@@ -9647,6 +9670,13 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                 if lang == "en" else
                 "BONO RECURRENTE OPCIONAL: como un miembro Prestige activo pregunta explícitamente por un depósito adicional, puedes ofrecer brevemente explicar el bono vigente para depósitos posteriores. NO entregues código ni condiciones del bono salvo que lo pidan."
             )
+        if entry_minimum_topic:
+            decision_lines.append(
+                "ENTRY MINIMUM — FACTS, NOT A TEMPLATE: answer naturally using these facts only. The minimum capital to ENTER JT TRADERS TEAMS is USD 50, which corresponds to Basic. Basic intentionally has more limited tools and includes about 30–50 CRYPTO IDX signals per day, Monday to Friday. If it fits the person's budget, Johanna normally recommends starting from USD 200 for Premium because it provides a much more complete combination of education, signals and tools. Do NOT enumerate all Premium benefits unless asked; the levels button provides the detail. Nationality/country does NOT change these JT TRADERS TEAMS thresholds. Do NOT invent a different Stockity/Binomo minimum by country. Distinguish the community-entry minimum from any platform-specific technical minimum that is not confirmed in the official knowledge. The deposit remains in the person's own trading account. Vary the wording to fit the conversation; do not copy a fixed script."
+                if lang == "en" else
+                "MÍNIMO DE INGRESO — HECHOS, NO PLANTILLA: responde de forma natural usando únicamente estos hechos. El capital mínimo para INGRESAR a JT TRADERS TEAMS es 50 USD y corresponde a Básico. Básico tiene herramientas más limitadas e incluye aproximadamente 30–50 señales CRYPTO IDX al día, de lunes a viernes. Si está dentro de las posibilidades de la persona, Johanna normalmente recomienda iniciar desde 200 USD para Premium porque ofrece una combinación mucho más completa de formación, señales y herramientas. NO enumeres todos los beneficios Premium salvo que los pidan; el botón de niveles muestra el detalle. La nacionalidad o el país NO modifica estos umbrales de JT TRADERS TEAMS. NO inventes un mínimo diferente de Stockity/Binomo por país. Distingue el mínimo para entrar a la comunidad de cualquier mínimo técnico de plataforma que no esté confirmado en la base oficial. El depósito queda en la propia cuenta de trading de la persona. Varía la redacción según la conversación; no copies un guion fijo."
+            )
+
         if active_member and not hypothetical_other_person:
             decision_lines.append(
                 (f"AUTHORITATIVE ACTIVE STATUS: this is an ACTIVE member. Their real JT TRADERS TEAMS level is {_vip_level_label(current_active_level, lang)}. This persisted status overrides isolated amounts and generic examples. Never answer as if they were unregistered/new, never recalculate their CURRENT level from a number written in chat, and when they ask about their own signals/bots/courses/benefits, describe only what their CURRENT level actually includes unless they explicitly request a comparison.")
@@ -9902,6 +9932,55 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         answer = _time_management_style_guard(answer, question, lang)
         answer = _neutralize_ai_gender(answer, lang)  # guard final tras cualquier reescritura factual/estilo
         answer = _clean_ai_plain_text_format(answer)
+
+        # v7.10.61 — validación semántica de mínimo de ingreso. La salida continúa
+        # siendo generativa: si falta información crítica o aparece un mínimo inventado
+        # por país/broker, se regenera con los hechos oficiales en vez de usar plantilla.
+        if entry_minimum_topic:
+            min_norm = _norm(answer or "")
+            has_minimum = bool(re.search(r"\b50\b", min_norm)) and any(x in min_norm for x in ("basico", "basic"))
+            has_basic_limit = bool(re.search(r"\b30\b", min_norm)) and bool(re.search(r"\b50\b", min_norm)) and any(x in min_norm for x in ("senal", "signal"))
+            has_schedule = any(x in min_norm for x in ("lunes a viernes", "monday to friday"))
+            has_premium_reco = bool(re.search(r"\b200\b", min_norm)) and "premium" in min_norm
+            suspicious_country_broker_minimum = bool(re.search(
+                r"(?:stockity|binomo)[^.\n]{0,100}(?:minim|minimo|minimum)[^.\n]{0,80}\b(?:10|20|30|40|100|150|250|300|400)\b|"
+                r"(?:minim|minimo|minimum)[^.\n]{0,80}(?:stockity|binomo)[^.\n]{0,80}\b(?:10|20|30|40|100|150|250|300|400)\b",
+                min_norm, flags=re.I
+            ))
+            if not (has_minimum and has_basic_limit and has_schedule and has_premium_reco) or suspicious_country_broker_minimum:
+                guard_instructions = (
+                    language_instruction + "\n\n" +
+                    (
+                        "Rewrite the answer naturally; do NOT use a fixed template. Preserve the user's conversational context. Facts that MUST be conveyed: JT TRADERS TEAMS entry minimum = USD 50 = Basic; Basic has more limited tools and about 30–50 CRYPTO IDX signals/day Monday–Friday; if budget allows, Johanna normally recommends starting from USD 200 for Premium because it is substantially more complete in education, signals and tools; country/nationality does not change these community thresholds; never invent a country-specific Stockity/Binomo minimum; funds remain in the user's own trading account. Keep it concise and do not list every Premium benefit because the levels button provides the details."
+                        if lang == "en" else
+                        "Reescribe la respuesta de forma natural; NO uses una plantilla fija. Conserva el contexto conversacional del usuario. Hechos que DEBEN quedar claros: mínimo para ingresar a JT TRADERS TEAMS = 50 USD = Básico; Básico tiene herramientas más limitadas y aproximadamente 30–50 señales CRYPTO IDX al día de lunes a viernes; si el presupuesto lo permite, Johanna normalmente recomienda iniciar desde 200 USD para Premium porque es mucho más completo en formación, señales y herramientas; el país/nacionalidad no cambia estos umbrales de la comunidad; nunca inventes mínimos de Stockity/Binomo según país; el dinero queda en la propia cuenta de trading. Sé breve y no listes todos los beneficios Premium porque el botón de niveles muestra el detalle."
+                    )
+                )
+                guard_payload = {
+                    "model": OPENAI_MODEL,
+                    "instructions": guard_instructions,
+                    "input": f"PREGUNTA DEL USUARIO:\n{question.strip()}\n\nRESPUESTA A CORREGIR:\n{answer}",
+                    "max_output_tokens": 260,
+                    "store": False,
+                }
+                try:
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        guard_resp = await client.post(
+                            "https://api.openai.com/v1/responses",
+                            headers={"Authorization": "Bearer " + OPENAI_API_KEY, "Content-Type": "application/json"},
+                            json=guard_payload,
+                        )
+                    if guard_resp.status_code == 200:
+                        regenerated = _responses_api_text(guard_resp.json()).strip()
+                        if regenerated:
+                            answer = _strip_redundant_ai_greeting(regenerated, question, history_text, lang)
+                            answer = _neutralize_ai_gender(answer, lang)
+                            answer = _trim_generic_ai_closer(answer, lang)
+                            answer = _clean_ai_plain_text_format(answer)
+                    else:
+                        logging.warning("Guardia semántica mínimo de ingreso devolvió %s", guard_resp.status_code)
+                except Exception as e:
+                    logging.warning("No pude regenerar respuesta de mínimo de ingreso: %s", e)
 
         # v7.10.56 — GUARDIAS DURAS POST-GENERACIÓN. Estas dos verdades críticas
         # no dependen de que el modelo "recuerde" obedecer el prompt.
@@ -10601,13 +10680,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "MIN_50":
-        msg = _immediate_block("MIN_50", lang)
-        # En preguntas de mínimo/entrada, acerca siempre el botón de niveles.
-        # Evita que el usuario tenga que volver al menú para entender qué cambia
-        # entre Básico, Premium y Prestige.
-        markup = ai_context_keyboard(texto, lang, chat_id) or support_keyboard(lang)
-        await update.message.reply_text(msg, reply_markup=markup)
-        await send_admin_auto_log(context, update, "AUTO_MIN50", msg)
+        # Sin plantilla: la IA usa intención + estado + base oficial y el CTA de
+        # niveles se añade al enviar la respuesta diferida.
+        schedule_ai_reply(update, context, texto)
         return
 
     if intent == "DEPOSITO":
