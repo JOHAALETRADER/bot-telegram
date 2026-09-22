@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.68-20260922-FIRST-PERSON-HARD-GUARD-AUDITED"
+BOT_VERSION = "v7.10.69-20260922-ADMIN-VALIDATED-ID-LIST-FIX"
+# v7.10.69: añade ID VALIDADO directamente dentro de Gestionar Usuario; muestra nombre + ID de usuarios POST pendientes de depósito.
 # v7.10.67: restaura el ÚNICO reporte automático diario a las 6:58 p. m. Colombia, elimina cualquier job heredado de las 11:00 p. m. y conserva la claridad de métricas de v7.10.66.
 # v7.10.66: aclaró visualmente métricas Canal→Bot, pendientes del bot y Affiliate sin cambiar su cálculo.
 # v7.10.64: upgrade activo responde desde estado persistido con monto + fecha límite exacta; Prestige corta falsas subidas; no vuelve a cerrar/ocultar General en cada redeploy.
@@ -4205,6 +4206,7 @@ def _admin_user_list_keyboard(rows, page: int = 0, total_count: int | None = Non
             buttons.append(nav)
 
     buttons.extend([
+        [InlineKeyboardButton("🆔 ID VALIDADO", callback_data="admin_user_validated_ids")],
         [InlineKeyboardButton("🔎 BUSCAR USUARIO", callback_data="admin_user_search")],
         [InlineKeyboardButton("↩️ VOLVER AL PANEL", callback_data="admin_user_panel")],
     ])
@@ -5014,6 +5016,50 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             await context.bot.send_message(chat_id=ADMIN_ID, text="🔐 PANEL ADMINISTRADOR\n\nElige una opción:", reply_markup=admin_panel_keyboard())
         else:
             await _show_admin_user_list(context)
+        return
+
+    if data == "admin_user_validated_ids":
+        # Vista rápida solicitada por Johanna: usuarios con ID YA VALIDADO y
+        # todavía pendientes de depósito/activación (POST). Solo muestra nombre + ID.
+        # No cambia estados, no valida nada y no toca campañas ni depósitos.
+        rows = _admin_recent_users(ADMIN_USER_MAX_PENDING)
+        blocks = []
+        for uid, name, stage, legacy_id, _last_activity in rows:
+            if stage != STAGE_POST:
+                continue
+            clean_name = re.sub(r"\s+", " ", str(name or f"Usuario {uid}")).strip()[:40]
+            validated_rows = [
+                r for r in _broker_rows(int(uid), validated_only=True)
+                if str(r.get("trading_id") or "").strip()
+            ]
+            if len(validated_rows) == 1:
+                blocks.append(
+                    f"👤 {clean_name}\n🆔 {str(validated_rows[0].get('trading_id') or '').strip()}"
+                )
+            elif len(validated_rows) > 1:
+                id_lines = []
+                for state in validated_rows:
+                    broker = _broker_norm(state.get("broker"))
+                    label = _broker_label(broker).upper() if broker else "CUENTA"
+                    id_lines.append(f"🆔 {label}: {str(state.get('trading_id') or '').strip()}")
+                blocks.append(f"👤 {clean_name}\n" + "\n".join(id_lines))
+            else:
+                legacy_id = str(legacy_id or "").strip()
+                if legacy_id:
+                    blocks.append(f"👤 {clean_name}\n🆔 {legacy_id}")
+
+        if blocks:
+            text_value = "🆔 ID VALIDADO\n\n" + "\n\n".join(blocks)
+        else:
+            text_value = "🆔 ID VALIDADO\n\nNo hay usuarios con ID validado pendientes de depósito en este momento."
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=text_value,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("↩️ VOLVER A GESTIONAR USUARIO", callback_data="admin_user_list")
+            ]]),
+        )
         return
 
     if data == "admin_user_search":
