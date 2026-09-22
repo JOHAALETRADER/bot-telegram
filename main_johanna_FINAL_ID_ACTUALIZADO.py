@@ -55,8 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.70-20260922-VALIDATED-ID-DIRECT-QUERY-PAGINATION-FIX"
+BOT_VERSION = "v7.10.71-20260922-VALIDATED-ID-TARGETED-MARKETING"
 # v7.10.70: ID VALIDADO consulta directamente TODOS los usuarios POST con ID guardado, sin depender de la cola de 50; paginación de 20 por página.
+# v7.10.71: añade marketing manual exclusivo para IDs validados pendientes de depósito, separado del marketing general y sin botón de registro.
 # v7.10.69: añade ID VALIDADO directamente dentro de Gestionar Usuario; muestra nombre + ID de usuarios POST pendientes de depósito.
 # v7.10.67: restaura el ÚNICO reporte automático diario a las 6:58 p. m. Colombia, elimina cualquier job heredado de las 11:00 p. m. y conserva la claridad de métricas de v7.10.66.
 # v7.10.66: aclaró visualmente métricas Canal→Bot, pendientes del bot y Affiliate sin cambiar su cálculo.
@@ -5100,6 +5101,8 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard_rows = []
         if nav:
             keyboard_rows.append(nav)
+        if total > 0:
+            keyboard_rows.append([InlineKeyboardButton("📣 MARKETING A IDS VALIDADOS", callback_data="admin_user_validated_marketing")])
         keyboard_rows.append([InlineKeyboardButton("↩️ VOLVER A GESTIONAR USUARIO", callback_data="admin_user_list")])
 
         await context.bot.send_message(
@@ -5107,6 +5110,10 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             text=text_value,
             reply_markup=InlineKeyboardMarkup(keyboard_rows),
         )
+        return
+
+    if data == "admin_user_validated_marketing":
+        await _start_validated_id_marketing(context, query.message)
         return
 
     if data == "admin_user_search":
@@ -11774,6 +11781,52 @@ def _recent_marketing_recipients(days: int = MARKETING_BROADCAST_DAYS):
     return _active_recipients(days, include_deposited=False)
 
 
+def _validated_id_marketing_recipients():
+    """Destinatarios del marketing exclusivo de ID validado.
+
+    Consulta directamente todos los usuarios POST con ID guardado, sin ventana de
+    actividad ni límite de 50. Se recalcula al confirmar el envío para que una
+    persona que ya haya pasado a DEPOSITED no reciba este marketing por error.
+    """
+    recipients = []
+    seen = set()
+    try:
+        with Session() as session:
+            rows = (
+                session.query(Usuario.telegram_id, Usuario.lang, Usuario.binomo_id)
+                .filter(
+                    Usuario.telegram_id != str(ADMIN_ID),
+                    Usuario.stage == STAGE_POST,
+                    Usuario.binomo_id != None,
+                    Usuario.binomo_id != "",
+                )
+                .order_by(Usuario.fecha_registro.desc())
+                .all()
+            )
+        for telegram_id, lang, legacy_id in rows:
+            try:
+                cid = int(telegram_id)
+            except Exception:
+                continue
+            if not _is_private_user_id(cid) or cid == ADMIN_ID or cid in seen:
+                continue
+            # La misma audiencia de la vista ID VALIDADO: POST + ID guardado.
+            # Si hay estado broker validado se conserva; si es legacy, POST + ID
+            # sigue siendo la condición histórica usada por la vista administrativa.
+            has_broker_id = any(
+                str(r.get("trading_id") or "").strip()
+                for r in _broker_rows(cid, validated_only=True)
+            )
+            if not has_broker_id and not str(legacy_id or "").strip():
+                continue
+            seen.add(cid)
+            recipients.append((cid, lang if lang in ("es", "en") else "es", STAGE_POST))
+        return recipients
+    except Exception as e:
+        logging.warning("No pude obtener destinatarios de marketing ID validado: %s", e)
+        return []
+
+
 def _live_preview_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➡️ Continuar sin imagen", callback_data="live_no_image")],
@@ -11793,6 +11846,11 @@ def _marketing_confirm_keyboard():
         [InlineKeyboardButton("✅ Confirmar marketing", callback_data="marketing_confirm")],
         [InlineKeyboardButton("❌ Cancelar", callback_data="marketing_cancel")],
     ])
+
+
+def _validated_id_marketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
+    """CTA del marketing a IDs validados: no vuelve a ofrecer registro."""
+    return InlineKeyboardMarkup(support_rows(lang))
 
 
 async def live_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -11860,6 +11918,7 @@ async def marketing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "awaiting_content",
         "photo_file_id": None,
         "text": "",
+        "audience": "general",
     }
 
     try:
@@ -11868,6 +11927,34 @@ async def marketing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Se enviará únicamente a usuarios PRE/POST activos en los últimos {MARKETING_BROADCAST_DAYS} días.\n"
             f"👥 Destinatarios actuales: {len(recipients)}\n"
             "🚫 Los usuarios con cuenta ya activa (DEPOSITED) quedan excluidos.\n\n"
+            "Envíame ahora un texto o una foto con texto en el caption. "
+            "Si envías la foto sin texto, después te pediré el texto.\n\n"
+            "🌐 Escríbelo una sola vez: los usuarios EN recibirán automáticamente la versión en inglés."
+        )
+    except Exception:
+        context.user_data.pop("marketing_draft", None)
+        if context.user_data.get("admin_broadcast_flow") == "marketing":
+            context.user_data.pop("admin_broadcast_flow", None)
+        raise
+
+
+async def _start_validated_id_marketing(context: ContextTypes.DEFAULT_TYPE, message):
+    """Inicia un marketing manual separado solo para IDs validados pendientes."""
+    context.user_data.pop("live_draft", None)
+    context.user_data["admin_broadcast_flow"] = "marketing"
+    recipients = _validated_id_marketing_recipients()
+    context.user_data["marketing_draft"] = {
+        "status": "awaiting_content",
+        "photo_file_id": None,
+        "text": "",
+        "audience": "validated_ids",
+    }
+    try:
+        await message.reply_text(
+            "📣 MARKETING · ID VALIDADO / PENDIENTE DE DEPÓSITO\n\n"
+            f"👥 Destinatarios actuales: {len(recipients)}\n"
+            "🎯 Solo usuarios con ID validado que siguen en POST, pendientes de depósito/activación.\n"
+            "🚫 PRE y DEPOSITED quedan fuera. No hay límite de días de actividad.\n\n"
             "Envíame ahora un texto o una foto con texto en el caption. "
             "Si envías la foto sin texto, después te pediré el texto.\n\n"
             "🌐 Escríbelo una sola vez: los usuarios EN recibirán automáticamente la versión en inglés."
@@ -11935,13 +12022,22 @@ async def admin_draft_capture(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if marketing_draft.get("status") == "ready":
             context.user_data["marketing_draft"] = marketing_draft
-            recipients = _recent_marketing_recipients()
-            preview = (
-                "📣 VISTA PREVIA MARKETING\n\n"
-                f"👥 Destinatarios PRE/POST últimos {MARKETING_BROADCAST_DAYS} días: {len(recipients)}\n"
-                "🚫 DEPOSITED: excluidos\n\n"
-                + (marketing_draft.get("text") or "")
-            )
+            audience = marketing_draft.get("audience") or "general"
+            if audience == "validated_ids":
+                recipients = _validated_id_marketing_recipients()
+                preview_header = (
+                    "📣 VISTA PREVIA · MARKETING ID VALIDADO\n\n"
+                    f"👥 IDs validados pendientes de depósito: {len(recipients)}\n"
+                    "🎯 Solo POST · PRE/DEPOSITED excluidos\n\n"
+                )
+            else:
+                recipients = _recent_marketing_recipients()
+                preview_header = (
+                    "📣 VISTA PREVIA MARKETING\n\n"
+                    f"👥 Destinatarios PRE/POST últimos {MARKETING_BROADCAST_DAYS} días: {len(recipients)}\n"
+                    "🚫 DEPOSITED: excluidos\n\n"
+                )
+            preview = preview_header + (marketing_draft.get("text") or "")
             if marketing_draft.get("photo_file_id"):
                 await context.bot.send_photo(
                     chat_id=ADMIN_ID,
@@ -12193,11 +12289,14 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
 
-    recipients = _recent_marketing_recipients()
-    await _safe_edit_callback_message(
-        query,
-        f"⏳ Preparando y enviando marketing a {len(recipients)} usuarios PRE/POST...",
-    )
+    audience = draft.get("audience") or "general"
+    if audience == "validated_ids":
+        recipients = _validated_id_marketing_recipients()
+        progress_text = f"⏳ Preparando y enviando marketing a {len(recipients)} IDs validados pendientes de depósito..."
+    else:
+        recipients = _recent_marketing_recipients()
+        progress_text = f"⏳ Preparando y enviando marketing a {len(recipients)} usuarios PRE/POST..."
+    await _safe_edit_callback_message(query, progress_text)
 
     # Una sola traducción por campaña. Todos los usuarios EN comparten esta versión;
     # no hacemos una llamada a OpenAI por persona. La imagen, enlaces, códigos y emojis
@@ -12234,7 +12333,7 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text=outbound_text,
-                        reply_markup=remarketing_keyboard(lang),
+                        reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else remarketing_keyboard(lang)),
                         disable_web_page_preview=True,
                     )
                 else:
@@ -12242,13 +12341,13 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         chat_id=chat_id,
                         photo=photo_file_id,
                         caption=outbound_text if outbound_text else None,
-                        reply_markup=remarketing_keyboard(lang),
+                        reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else remarketing_keyboard(lang)),
                     )
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=outbound_text,
-                    reply_markup=remarketing_keyboard(lang),
+                    reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else remarketing_keyboard(lang)),
                     disable_web_page_preview=True,
                 )
             sent += 1
@@ -12258,7 +12357,7 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 sent_es += 1
         except Exception as e:
             if _is_blocked_user_error(e):
-                _cleanup_blocked_user_tasks(context, chat_id, source="marketing_broadcast")
+                _cleanup_blocked_user_tasks(context, chat_id, source=("marketing_validated_ids" if audience == "validated_ids" else "marketing_broadcast"))
                 failed += 1
                 logging.info("Marketing no entregado a %s: usuario bloqueó el bot", chat_id)
             else:
@@ -12269,17 +12368,21 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.pop("marketing_draft", None)
     if context.user_data.get("admin_broadcast_flow") == "marketing":
         context.user_data.pop("admin_broadcast_flow", None)
+    audience_line = (
+        "🎯 Audiencia: ID validado · pendiente de depósito (POST).\n🛡 PRE/DEPOSITED excluidos automáticamente."
+        if audience == "validated_ids" else
+        f"📅 Ventana: últimos {MARKETING_BROADCAST_DAYS} días\n🛡 DEPOSITED excluidos automáticamente."
+    )
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
-            "✅ Marketing manual finalizado.\n\n"
-            f"👥 Enviados: {sent}\n"
-            f"🇪🇸 Español: {sent_es}\n"
-            f"🇺🇸 English: {sent_en}\n"
-            f"🚫 No entregados: {failed}\n"
-            f"📅 Ventana: últimos {MARKETING_BROADCAST_DAYS} días\n"
+            ("✅ Marketing ID validado finalizado.\n\n" if audience == "validated_ids" else "✅ Marketing manual finalizado.\n\n")
+            + f"👥 Enviados: {sent}\n"
+            + f"🇪🇸 Español: {sent_es}\n"
+            + f"🇺🇸 English: {sent_en}\n"
+            + f"🚫 No entregados: {failed}\n"
             + ("⚠️ Traducción EN falló.\n" if translation_failed else "🌐 Traducción EN automática: activa.\n")
-            + "🛡 DEPOSITED excluidos automáticamente."
+            + audience_line
         ),
     )
 
@@ -12591,4 +12694,3 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
