@@ -55,7 +55,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.62-20260921-AI-MINIMUM-COMPLETENESS-HARD-GUARD"
+BOT_VERSION = "v7.10.63-20260921-UPGRADE-STATE-PERSISTENCE-ID-GUARD-FIX"
 # v7.10.62: mínimo/ingreso mantiene respuesta generativa, pero valida y completa hechos obligatorios antes de enviar; sin inventar montos por país/broker.
 # v7.10.59: CTA específico por nivel + respuestas de nivel compactas + repreguntas contextuales sin repetir señales ya explicadas.
 # v7.10.58: estado activo manda para Básico/Premium/Prestige, CTA por intención real y guardias multi-pregunta sin borrar otras respuestas.
@@ -3702,6 +3702,19 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     t = _norm(question or "")
     active_member = current_stage == STAGE_DEPOSITED and current_level != VIP_LEVEL_NONE
 
+    upgrade_query = any(x in t for x in (
+        "subir de nivel", "subir mi nivel", "upgrade", "cuanto me falta", "cuánto me falta",
+        "cuanta plata me falta", "cuánta plata me falta", "cuanto dinero me falta", "cuánto dinero me falta",
+        "cuanto tendria que depositar", "cuánto tendría que depositar", "cuanto tengo que depositar",
+        "cuánto tengo que depositar", "cuanto debo depositar para subir", "cuánto debo depositar para subir",
+        "para llegar a premium", "para llegar a prestige", "me falta para premium", "me falta para prestige",
+        "how much do i need to upgrade", "how much am i missing", "upgrade my level",
+    ))
+    if active_member and upgrade_query:
+        if current_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
+            return upgrade_info_keyboard(lang)
+        return None
+
     # Las consultas sobre con cuánto ingresar/empezar SIEMPRE deben acercar la
     # estructura de niveles al usuario; no obligarlo a volver al menú anterior.
     # Esto es un CTA informativo, no recalcula el nivel de un miembro activo.
@@ -3920,7 +3933,40 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                     status = "pending review" if lang == "en" else "pendiente de revisión"
                 else:
                     status = "not validated" if lang == "en" else "no validado"
-                broker_parts.append(f"{label}: ID {status}; {_vip_level_label(state.get('level'), lang)}")
+                account_level = state.get("level") or VIP_LEVEL_NONE
+                total_cents = int(state.get("validated_total_cents") or 0)
+                accum_cents = int(state.get("upgrade_accum_cents") or 0)
+                dep_count = int(state.get("deposit_count") or 0)
+                first_dep = state.get("first_deposit_at")
+                window_open = _broker_upgrade_window_open(state)
+                if account_level == VIP_LEVEL_BASIC:
+                    target_level = VIP_LEVEL_PREMIUM
+                elif account_level == VIP_LEVEL_PREMIUM:
+                    target_level = VIP_LEVEL_PRESTIGE
+                else:
+                    target_level = None
+                if target_level:
+                    target_cents = VIP_LEVEL_THRESHOLDS_CENTS[target_level]
+                    if window_open:
+                        needed_cents = max(0, target_cents - accum_cents)
+                        upgrade_detail = (
+                            f"; upgrade accumulation USD {_usd(accum_cents)}; needs USD {_usd(needed_cents)} to {_vip_level_label(target_level, lang)}; deposits {dep_count}/{UPGRADE_ACCUM_MAX_DEPOSITS}; 30-day window open"
+                            if lang == "en" else
+                            f"; acumulado upgrade USD {_usd(accum_cents)}; faltan USD {_usd(needed_cents)} para {_vip_level_label(target_level, lang)}; depósitos {dep_count}/{UPGRADE_ACCUM_MAX_DEPOSITS}; ventana 30 días abierta"
+                        )
+                    else:
+                        upgrade_detail = (
+                            f"; accumulation window closed; next upgrade requires one new deposit of USD {_usd(target_cents)} by itself"
+                            if lang == "en" else
+                            f"; ventana de acumulación cerrada; el próximo upgrade requiere un depósito nuevo de USD {_usd(target_cents)} por sí solo"
+                        )
+                else:
+                    upgrade_detail = "; highest level" if lang == "en" else "; nivel máximo"
+                broker_parts.append(
+                    f"{label}: ID {status}; {_vip_level_label(account_level, lang)}; validated total USD {_usd(total_cents)}{upgrade_detail}"
+                    if lang == "en" else
+                    f"{label}: ID {status}; {_vip_level_label(account_level, lang)}; total validado USD {_usd(total_cents)}{upgrade_detail}"
+                )
             lines.append(("Broker/account states: " if lang == "en" else "Estado por broker/cuenta: ") + "; ".join(broker_parts))
     except Exception:
         pass
@@ -6568,7 +6614,8 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # El botón de acción va pegado al mensaje/foto correcta para no obligar a buscar al usuario.
         action_rows = [[InlineKeyboardButton("✏️ Responder", callback_data=f"responder:{chat_id}:{update.message.message_id}")]]
-        if update.message.photo and stage in (STAGE_POST, STAGE_DEPOSITED):
+        active_level_for_admin = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        if update.message.photo and stage in (STAGE_POST, STAGE_DEPOSITED) and not (stage == STAGE_DEPOSITED and active_level_for_admin == VIP_LEVEL_PRESTIGE):
             deposit_label = "💰 REVISAR DEPÓSITO" if stage == STAGE_POST else "💰 REVISAR DEPÓSITO / SUBIR NIVEL"
             action_rows.append([InlineKeyboardButton(
                 deposit_label,
@@ -9819,7 +9866,8 @@ OBJETIVO PRINCIPAL
 - Un monto o el nombre “Premium/Prestige/Básico” NO significa automáticamente “dime todos los beneficios”. Si la pregunta es específica, el nivel/monto solo sirve para ubicar la respuesta.
 - “Qué me toca / qué hago / cómo sigo / por dónde empiezo” es lenguaje de FLUJO/SIGUIENTE PASO salvo que el mensaje diga explícitamente “qué nivel” o pregunte beneficios. Responde desde el estado operativo y luego, si hay monto, menciona el nivel de forma breve. No conviertas esto en una plantilla: redacta natural según la conversación.
 - MIEMBROS ACTIVOS: si ESTADO OPERATIVO REAL indica DEPOSITED + Básico/Premium/Prestige, ese nivel es la verdad actual. Nunca lo reemplaces por el nivel teórico de un monto mencionado. Responde sobre SUS herramientas/beneficios desde ese nivel; un depósito adicional solo puede cambiar el nivel después de validarse según las reglas de upgrade. Si ya es Prestige, no existe un nivel superior.
-- CTA DE NIVELES: para un miembro activo no sugieras “MIRA LOS NIVELES” por preguntar por sus propias señales, bots, cursos, interfaz del live o un depósito adicional. Ese CTA solo aporta si pide explícitamente ver/comparar niveles o plantea el caso de otra persona.
+- UPGRADE DE MIEMBRO ACTIVO: si pregunta “cuánto me falta”, “cuánto debo depositar para subir” o equivalente, usa SIEMPRE los datos persistidos por broker del CONTEXTO OPERATIVO REAL (acumulado upgrade, número de depósitos, ventana de 30 días y nivel actual). NO pidas su ID otra vez. Si la ventana está abierta, calcula la diferencia exacta hasta el siguiente nivel; si está cerrada, explica que el siguiente depósito debe alcanzar por sí solo el mínimo completo del nuevo nivel. Binomo y Stockity jamás se suman entre sí. Si hay más de un broker, explica el cálculo por separado.
+- CTA DE NIVELES: para un miembro activo no sugieras “MIRA LOS NIVELES” por preguntar por sus propias señales, bots, cursos, interfaz del live o un depósito adicional. En una consulta de upgrade de Básico/Premium usa las CONDICIONES DE UPGRADE, no el botón general de niveles. El CTA general solo aporta si pide explícitamente ver/comparar niveles o plantea el caso de otra persona.
 - Pregunta simple: normalmente 1–3 frases y preferiblemente 20–55 palabras. NO conviertas una duda sencilla en una lista de 4–5 puntos. Si el usuario no pidió pasos/lista/guía, NO numeres la respuesta.
 - Responde en TEXTO PLANO: no uses Markdown decorativo (**negritas**, __subrayados__, títulos con # ni `código`) porque Telegram mostrará esos símbolos literalmente en este flujo.
 - Si una explicación necesita más detalle porque el usuario lo pidió, puedes ampliarla.
@@ -10505,13 +10553,46 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
             return True
 
     if "ID_SUBMIT" in effective_intents:
-        # Limpia únicamente residuos antiguos de entrega de ID; conserva cualquier
-        # pregunta legítima que ya estuviera esperando a Johanna/IA.
-        _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="nuevo ID operativo")
-        _record_submitted_trading_id(chat_id, texto, context)
-        block = _id_pending_review_message(lang)
-        await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
-        handled_operational.append("ID_SUBMIT")
+        stage_now = get_user_stage(chat_id)
+        vip_now = _vip_get_state(chat_id, create=False) or {}
+        active_level = vip_now.get("level") or VIP_LEVEL_NONE
+        candidate = _extract_candidate_trading_id(texto)
+        explicit_new_account = any(x in _norm(texto) for x in (
+            "otra cuenta", "nueva cuenta", "otro broker", "nuevo broker", "otro id", "nuevo id",
+            "second account", "new account", "another account", "new broker", "another broker", "new id",
+        ))
+        validated_ids = {
+            str(state.get("trading_id") or "").strip()
+            for state in _broker_rows(chat_id, validated_only=True)
+            if str(state.get("trading_id") or "").strip()
+        }
+        legacy_id = (_get_saved_trading_id(chat_id) or "").strip()
+        if legacy_id:
+            validated_ids.add(legacy_id)
+
+        if stage_now == STAGE_DEPOSITED and active_level != VIP_LEVEL_NONE and candidate and not explicit_new_account:
+            if candidate in validated_ids:
+                block = (
+                    f"Ese ID ya está validado ✅ Tu nivel actual es {_vip_level_label(active_level, lang)}; no necesitas volver a enviarlo ni validarlo."
+                    if lang == "es" else
+                    f"That ID is already validated ✅ Your current level is {_vip_level_label(active_level, lang)}; you do not need to send or validate it again."
+                )
+            else:
+                block = (
+                    f"Ya tienes una cuenta validada y estás en {_vip_level_label(active_level, lang)}. No voy a poner este número en validación automáticamente. Si corresponde a otra cuenta o broker que quieres vincular, indícame cuál; si no, dime qué necesitas consultar con ese ID."
+                    if lang == "es" else
+                    f"You already have a validated account and you are {_vip_level_label(active_level, lang)}. I will not send this number for validation automatically. If it belongs to another account/broker you want to link, tell me which one; otherwise, tell me what you need to check with this ID."
+                )
+            await update.effective_message.reply_text(block)
+            handled_operational.append("ID_SUBMIT")
+        else:
+            # Limpia únicamente residuos antiguos de entrega de ID; conserva cualquier
+            # pregunta legítima que ya estuviera esperando a Johanna/IA.
+            _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="nuevo ID operativo")
+            _record_submitted_trading_id(chat_id, texto, context)
+            block = _id_pending_review_message(lang)
+            await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
+            handled_operational.append("ID_SUBMIT")
         # Estas intenciones quedan materialmente resueltas por recibir el ID. No
         # deben volver a provocar una respuesta IA del mismo mensaje.
         for covered in ("YA_REGISTRE", "WHERE_SEND_ID", "NEXT_STEP"):
@@ -10524,11 +10605,19 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
         _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
         stage_now = get_user_stage(chat_id)
         if stage_now == STAGE_DEPOSITED:
-            block = (
-                "💳 Perfecto. Envíame aquí la captura del depósito adicional y la revisaré según las condiciones de actualización de nivel."
-                if lang == "es" else
-                "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review it under the level-update conditions."
-            )
+            active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+            if active_level == VIP_LEVEL_PRESTIGE:
+                block = (
+                    "🏆 Ya estás en Prestige, el nivel más alto de mi comunidad, así que un depósito adicional no requiere revisión para subir de nivel ni habilita herramientas nuevas. Si quieres, dime si lo que necesitas es información sobre el bono para depósitos posteriores u otra consulta sobre ese depósito."
+                    if lang == "es" else
+                    "🏆 You are already Prestige, the highest level in my community, so an additional deposit does not need upgrade review and does not unlock new tools. Tell me if you want information about the recurring-deposit bonus or need something else checked about that deposit."
+                )
+            else:
+                block = (
+                    "💳 Perfecto. Envíame aquí la captura del depósito adicional y la revisaré según las condiciones de actualización de nivel."
+                    if lang == "es" else
+                    "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review it under the level-update conditions."
+                )
         elif stage_now == STAGE_POST:
             block = (
                 "💳 Perfecto. Envíame aquí el comprobante de depósito/activación para revisar el monto y habilitar el nivel que corresponda."
@@ -10623,6 +10712,16 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.photo:
         caption = (update.message.caption or "").strip()
         current_stage = get_user_stage(chat_id)
+        current_level_for_photo = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        if current_stage == STAGE_DEPOSITED and current_level_for_photo == VIP_LEVEL_PRESTIGE:
+            qtxt = (
+                "🏆 Ya estás en Prestige, el nivel más alto de mi comunidad. No necesito volver a validar tu ID ni revisar esta imagen para subir de nivel. Cuéntame qué necesitas consultar o gestionar con esta captura y te respondo según eso. 😊"
+                if lang == "es" else
+                "🏆 You are already Prestige, the highest level in my community. I do not need to validate your ID again or review this image for an upgrade. Tell me what you need to check or manage with this screenshot and I’ll respond accordingly. 😊"
+            )
+            await update.message.reply_text(qtxt)
+            await send_admin_auto_log(context, update, "PRESTIGE_IMAGE_CONTEXT_REQUIRED", qtxt)
+            return
         if current_stage in (STAGE_POST, STAGE_DEPOSITED):
             _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="comprobante de depósito recibido")
             _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
@@ -10705,6 +10804,131 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_vip_pause_keyboard(lang) if pending else support_keyboard(lang),
         )
         await send_admin_auto_log(context, update, "VIP_TELEGRAM_RATE_LIMIT", msg)
+        return
+
+    # v7.10.63 — CONSULTA DE UPGRADE BASADA EN DATOS PERSISTIDOS.
+    # El cálculo se hace desde BrokerAccountState/VIPAccessState (DATABASE_URL), no desde
+    # memoria de proceso ni context.user_data, por lo que sobrevive a redeploys mientras
+    # se conserve la misma base de datos configurada.
+    t_upgrade = _norm(texto)
+    upgrade_query = any(x in t_upgrade for x in (
+        "subir de nivel", "subir mi nivel", "upgrade", "cuanto me falta", "cuánto me falta",
+        "cuanta plata me falta", "cuánta plata me falta", "cuanto dinero me falta", "cuánto dinero me falta",
+        "cuanto tendria que depositar", "cuánto tendría que depositar", "cuanto tengo que depositar",
+        "cuánto tengo que depositar", "cuanto debo depositar para subir", "cuánto debo depositar para subir",
+        "para llegar a premium", "para llegar a prestige", "me falta para premium", "me falta para prestige",
+        "how much do i need to upgrade", "how much am i missing", "upgrade my level",
+    ))
+    stage_for_upgrade = get_user_stage(chat_id)
+    vip_for_upgrade = _vip_get_state(chat_id, create=False) or {}
+    level_for_upgrade = vip_for_upgrade.get("level") or VIP_LEVEL_NONE
+    if upgrade_query and stage_for_upgrade == STAGE_DEPOSITED and level_for_upgrade != VIP_LEVEL_NONE:
+        if level_for_upgrade == VIP_LEVEL_PRESTIGE:
+            msg = (
+                "🏆 Actualmente estás en Prestige, que es el nivel más alto de mi comunidad. Ya tienes todas las herramientas de nivel habilitadas y no existe un nivel superior al cual subir."
+                if lang == "es" else
+                "🏆 You are currently Prestige, the highest level in my community. You already have all level-based tools enabled and there is no higher level to upgrade to."
+            )
+            await update.message.reply_text(msg)
+            await send_admin_auto_log(context, update, "UPGRADE_STATUS_PRESTIGE", msg)
+            return
+
+        target_level = VIP_LEVEL_PREMIUM if level_for_upgrade == VIP_LEVEL_BASIC else VIP_LEVEL_PRESTIGE
+        target_cents = VIP_LEVEL_THRESHOLDS_CENTS[target_level]
+        broker_rows = [r for r in _broker_rows(chat_id, validated_only=True) if r.get("level") != VIP_LEVEL_NONE]
+        details = []
+        now_upgrade = utcnow_naive()
+        for state in broker_rows:
+            broker_label = _broker_label(state.get("broker"))
+            window_open = _broker_upgrade_window_open(state, now_upgrade)
+            dep_count = int(state.get("deposit_count") or 0)
+            accum_cents = int(state.get("upgrade_accum_cents") or 0)
+            if window_open:
+                needed_cents = max(0, target_cents - accum_cents)
+                first_dep = state.get("first_deposit_at")
+                if first_dep:
+                    remaining_days = max(0, (first_dep + timedelta(days=UPGRADE_ACCUM_WINDOW_DAYS) - now_upgrade).days)
+                else:
+                    remaining_days = UPGRADE_ACCUM_WINDOW_DAYS
+                if lang == "es":
+                    details.append(
+                        f"En {broker_label} tienes USD {_usd(accum_cents)} acumulados para upgrade y te faltan USD {_usd(needed_cents)} para llegar a {_vip_level_label(target_level, lang)}. "
+                        f"Vas {dep_count} de {UPGRADE_ACCUM_MAX_DEPOSITS} depósitos acumulables y la ventana sigue abierta"
+                        + (f" (aprox. {remaining_days} días restantes)." if first_dep else ".")
+                    )
+                else:
+                    details.append(
+                        f"On {broker_label}, you have USD {_usd(accum_cents)} accumulated toward the upgrade and need USD {_usd(needed_cents)} more to reach {_vip_level_label(target_level, lang)}. "
+                        f"You are at {dep_count} of {UPGRADE_ACCUM_MAX_DEPOSITS} accumulable deposits and the window is still open"
+                        + (f" (about {remaining_days} days remaining)." if first_dep else ".")
+                    )
+            else:
+                if lang == "es":
+                    details.append(
+                        f"En {broker_label} la ventana de acumulación ya está cerrada; para subir a {_vip_level_label(target_level, lang)}, el próximo depósito debe alcanzar por sí solo USD {_usd(target_cents)}."
+                    )
+                else:
+                    details.append(
+                        f"On {broker_label}, the accumulation window is already closed; to upgrade to {_vip_level_label(target_level, lang)}, the next deposit must reach USD {_usd(target_cents)} by itself."
+                    )
+
+        if details:
+            intro = (
+                f"Actualmente estás en {_vip_level_label(level_for_upgrade, lang)}. "
+                if lang == "es" else
+                f"You are currently {_vip_level_label(level_for_upgrade, lang)}. "
+            )
+            separator = "\n\n" if len(details) > 1 else ""
+            msg = intro + separator + "\n\n".join(details)
+            if lang == "es":
+                msg += "\n\nEl cálculo usa únicamente depósitos ya validados de la misma cuenta/broker; Binomo y Stockity no se suman entre sí. 👇"
+            else:
+                msg += "\n\nThis calculation uses only validated deposits from the same account/broker; Binomo and Stockity are never added together. 👇"
+            await update.message.reply_text(msg, reply_markup=upgrade_info_keyboard(lang))
+            await send_admin_auto_log(context, update, "UPGRADE_STATUS_CALCULATED", msg)
+            return
+        else:
+            # Compatibilidad con cuentas antiguas: jamás pedir/revalidar el ID solo para calcular.
+            saved_total = int(vip_for_upgrade.get("total_cents") or 0)
+            reference_missing = max(0, target_cents - saved_total)
+            msg = (
+                f"Actualmente estás en {_vip_level_label(level_for_upgrade, lang)}. Tengo guardado un total validado de USD {_usd(saved_total)}, que como referencia dejaría USD {_usd(reference_missing)} hasta {_vip_level_label(target_level, lang)}. "
+                "Esta cuenta todavía no tiene separado en el registro actual el historial de upgrade por broker, así que no voy a inventar la ventana ni pedirte que vuelvas a validar tu ID. Si vas a hacer un depósito adicional, solo necesito identificar una vez si corresponde a Binomo o Stockity."
+                if lang == "es" else
+                f"You are currently {_vip_level_label(level_for_upgrade, lang)}. I have a validated total of USD {_usd(saved_total)} saved, which as a reference leaves USD {_usd(reference_missing)} to {_vip_level_label(target_level, lang)}. "
+                "This legacy account does not yet have the upgrade history separated by broker in the current record, so I will not invent the window or ask you to validate your ID again. If you make an additional deposit, I only need to identify once whether it belongs to Binomo or Stockity."
+            )
+            await update.message.reply_text(msg, reply_markup=upgrade_info_keyboard(lang))
+            await send_admin_auto_log(context, update, "UPGRADE_STATUS_LEGACY", msg)
+            return
+
+    # Un número suelto de un miembro ACTIVO no reinicia validación de ID.
+    # Si coincide con un ID ya validado, se reconoce; si es diferente, se pide contexto
+    # antes de crear cualquier pending_trading_id. PRE/POST conservan el flujo anterior.
+    bare_candidate = (texto or "").strip()
+    if stage_for_upgrade == STAGE_DEPOSITED and level_for_upgrade != VIP_LEVEL_NONE and re.fullmatch(r"\d{6,12}", bare_candidate):
+        validated_ids = {
+            str(state.get("trading_id") or "").strip()
+            for state in _broker_rows(chat_id, validated_only=True)
+            if str(state.get("trading_id") or "").strip()
+        }
+        legacy_id = (_get_saved_trading_id(chat_id) or "").strip()
+        if legacy_id:
+            validated_ids.add(legacy_id)
+        if bare_candidate in validated_ids:
+            msg = (
+                f"Ese ID ya está validado ✅ Tu nivel actual es {_vip_level_label(level_for_upgrade, lang)}. No necesitas volver a validarlo."
+                if lang == "es" else
+                f"That ID is already validated ✅ Your current level is {_vip_level_label(level_for_upgrade, lang)}. You do not need to validate it again."
+            )
+        else:
+            msg = (
+                f"Ya tienes una cuenta validada y estás en {_vip_level_label(level_for_upgrade, lang)}. No voy a enviar este número a validación automáticamente. Si es el ID de otra cuenta o broker que quieres vincular, dime cuál; si no, cuéntame qué necesitas consultar con ese número."
+                if lang == "es" else
+                f"You already have a validated account and you are {_vip_level_label(level_for_upgrade, lang)}. I will not send this number for validation automatically. If it is the ID of another account/broker you want to link, tell me which one; otherwise, tell me what you need to check with that number."
+            )
+        await update.message.reply_text(msg)
+        await send_admin_auto_log(context, update, "ACTIVE_MEMBER_ID_GUARD", msg)
         return
 
     intents, unknown_parts = _question_analysis(texto)
@@ -10795,11 +11019,19 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", texto)
         stage_now = get_user_stage(chat_id)
         if stage_now == STAGE_DEPOSITED:
-            msg = (
-                "Perfecto ✅\n\nEnvíame aquí la captura del depósito adicional. La revisaré según las condiciones de actualización de nivel y te confirmaré el resultado."
-                if lang == "es" else
-                "Perfect ✅\n\nSend me the screenshot of the additional deposit. I’ll review it under the level-update conditions and confirm the result."
-            )
+            active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+            if active_level == VIP_LEVEL_PRESTIGE:
+                msg = (
+                    "🏆 Ya estás en Prestige, el nivel más alto de mi comunidad. Un depósito adicional no necesita revisión para subir de nivel ni habilita herramientas nuevas. Si quieres consultar el bono disponible para depósitos posteriores o algo específico de ese depósito, dime y lo revisamos."
+                    if lang == "es" else
+                    "🏆 You are already Prestige, the highest level in my community. An additional deposit does not need upgrade review and does not unlock new tools. If you want to check the recurring-deposit bonus or something specific about that deposit, tell me and we’ll review it."
+                )
+            else:
+                msg = (
+                    "Perfecto ✅\n\nEnvíame aquí la captura del depósito adicional. La revisaré según las condiciones de actualización de nivel y te confirmaré el resultado."
+                    if lang == "es" else
+                    "Perfect ✅\n\nSend me the screenshot of the additional deposit. I’ll review it under the level-update conditions and confirm the result."
+                )
         elif stage_now == STAGE_POST:
             msg = (
                 "Perfecto ✅\n\nEnvíame aquí tu comprobante de depósito/activación (foto o captura). Revisaré el monto y te confirmaré el nivel que queda habilitado."
@@ -10817,6 +11049,38 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if intent == "ID_SUBMIT":
+        stage_now = get_user_stage(chat_id)
+        active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        candidate = _extract_candidate_trading_id(texto)
+        explicit_new_account = any(x in _norm(texto) for x in (
+            "otra cuenta", "nueva cuenta", "otro broker", "nuevo broker", "otro id", "nuevo id",
+            "second account", "new account", "another account", "new broker", "another broker", "new id",
+        ))
+        if stage_now == STAGE_DEPOSITED and active_level != VIP_LEVEL_NONE and candidate and not explicit_new_account:
+            validated_ids = {
+                str(state.get("trading_id") or "").strip()
+                for state in _broker_rows(chat_id, validated_only=True)
+                if str(state.get("trading_id") or "").strip()
+            }
+            legacy_id = (_get_saved_trading_id(chat_id) or "").strip()
+            if legacy_id:
+                validated_ids.add(legacy_id)
+            if candidate in validated_ids:
+                msg = (
+                    f"Ese ID ya está validado ✅ Tu nivel actual es {_vip_level_label(active_level, lang)}. No necesitas volver a validarlo."
+                    if lang == "es" else
+                    f"That ID is already validated ✅ Your current level is {_vip_level_label(active_level, lang)}. You do not need to validate it again."
+                )
+            else:
+                msg = (
+                    f"Ya tienes una cuenta validada y estás en {_vip_level_label(active_level, lang)}. No voy a enviar este ID a validación automáticamente. Si corresponde a otra cuenta o broker que quieres vincular, indícame cuál."
+                    if lang == "es" else
+                    f"You already have a validated account and you are {_vip_level_label(active_level, lang)}. I will not send this ID for validation automatically. If it belongs to another account/broker you want to link, tell me which one."
+                )
+            await update.message.reply_text(msg)
+            await send_admin_auto_log(context, update, "ACTIVE_MEMBER_ID_GUARD", msg)
+            return
+
         _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="ID reconocido inmediatamente")
         _record_submitted_trading_id(chat_id, texto, context)
         msg = _id_pending_review_message(lang)
