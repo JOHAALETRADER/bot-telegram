@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.63-20260921-UPGRADE-STATE-PERSISTENCE-ID-GUARD-FIX"
+BOT_VERSION = "v7.10.64-20260921-UPGRADE-DEADLINE-PRESTIGE-TOPIC-PRIVACY-FIX"
+# v7.10.64: upgrade activo responde desde estado persistido con monto + fecha límite exacta; Prestige corta falsas subidas; no vuelve a cerrar/ocultar General en cada redeploy.
 # v7.10.62: mínimo/ingreso mantiene respuesta generativa, pero valida y completa hechos obligatorios antes de enviar; sin inventar montos por país/broker.
 # v7.10.59: CTA específico por nivel + respuestas de nivel compactas + repreguntas contextuales sin repetir señales ya explicadas.
 # v7.10.58: estado activo manda para Básico/Premium/Prestige, CTA por intención real y guardias multi-pregunta sin borrar otras respuestas.
@@ -2928,6 +2929,12 @@ async def cleanup_vip_membership_service_message(update: Update, context: Contex
     joined = list(getattr(msg, "new_chat_members", None) or [])
     left = getattr(msg, "left_chat_member", None)
     membership_service = bool(joined or left)
+    # También limpia avisos de servicio sobre cerrar/ocultar/reabrir temas si Telegram
+    # los emite dentro de Señales Premium. Así no quedan residuos visuales de privacidad.
+    topic_service = any(getattr(msg, attr, None) is not None for attr in (
+        "forum_topic_closed", "forum_topic_reopened",
+        "general_forum_topic_hidden", "general_forum_topic_unhidden",
+    ))
 
     try:
         thread_id = int(getattr(msg, "message_thread_id", 0) or 0)
@@ -2935,7 +2942,8 @@ async def cleanup_vip_membership_service_message(update: Update, context: Contex
         thread_id = 0
     premium_general = access_key == "signals_premium" and thread_id == 1
 
-    if not membership_service and not premium_general:
+    premium_topic_service = access_key == "signals_premium" and topic_service
+    if not membership_service and not premium_general and not premium_topic_service:
         return
 
     try:
@@ -2946,7 +2954,7 @@ async def cleanup_vip_membership_service_message(update: Update, context: Contex
             access_key,
             thread_id,
             msg.message_id,
-            "GENERAL_PREMIUM" if premium_general else ("JOIN" if joined else "LEAVE"),
+            "TOPIC_SERVICE_PREMIUM" if premium_topic_service else ("GENERAL_PREMIUM" if premium_general else ("JOIN" if joined else "LEAVE")),
         )
     except Exception as e:
         logging.warning(
@@ -3708,8 +3716,14 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
         "cuanto tendria que depositar", "cuánto tendría que depositar", "cuanto tengo que depositar",
         "cuánto tengo que depositar", "cuanto debo depositar para subir", "cuánto debo depositar para subir",
         "para llegar a premium", "para llegar a prestige", "me falta para premium", "me falta para prestige",
-        "how much do i need to upgrade", "how much am i missing", "upgrade my level",
-    ))
+        "todavia puedo subir", "todavía puedo subir", "aun puedo subir", "aún puedo subir",
+        "puedo subir de nivel", "puedo subir", "deposito mas", "depósito más", "depositar mas", "depositar más",
+        "hasta que dia puedo depositar", "hasta qué día puedo depositar", "hasta cuando puedo depositar", "hasta cuándo puedo depositar",
+        "how much do i need to upgrade", "how much am i missing", "upgrade my level", "can i still upgrade",
+    )) or (
+        any(x in t for x in ("mas herramientas", "más herramientas", "herramientas adicionales", "more tools"))
+        and any(x in t for x in ("deposit", "subir", "nivel", "upgrade"))
+    )
     if active_member and upgrade_query:
         if current_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
             return upgrade_info_keyboard(lang)
@@ -3949,10 +3963,20 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                     target_cents = VIP_LEVEL_THRESHOLDS_CENTS[target_level]
                     if window_open:
                         needed_cents = max(0, target_cents - accum_cents)
+                        if first_dep:
+                            first_local = first_dep.replace(tzinfo=timezone.utc).astimezone(COLOMBIA_TZ)
+                            deadline_local = (first_dep + timedelta(days=UPGRADE_ACCUM_WINDOW_DAYS)).replace(tzinfo=timezone.utc).astimezone(COLOMBIA_TZ)
+                            date_detail = (
+                                f"; first validated deposit {first_local.strftime('%d/%m/%Y')}; accumulation deadline {deadline_local.strftime('%d/%m/%Y')}"
+                                if lang == "en" else
+                                f"; primer depósito validado {first_local.strftime('%d/%m/%Y')}; fecha límite de acumulación {deadline_local.strftime('%d/%m/%Y')}"
+                            )
+                        else:
+                            date_detail = ""
                         upgrade_detail = (
-                            f"; upgrade accumulation USD {_usd(accum_cents)}; needs USD {_usd(needed_cents)} to {_vip_level_label(target_level, lang)}; deposits {dep_count}/{UPGRADE_ACCUM_MAX_DEPOSITS}; 30-day window open"
+                            f"; upgrade accumulation USD {_usd(accum_cents)}; needs USD {_usd(needed_cents)} to {_vip_level_label(target_level, lang)}; deposits {dep_count}/{UPGRADE_ACCUM_MAX_DEPOSITS}; 30-day window open{date_detail}"
                             if lang == "en" else
-                            f"; acumulado upgrade USD {_usd(accum_cents)}; faltan USD {_usd(needed_cents)} para {_vip_level_label(target_level, lang)}; depósitos {dep_count}/{UPGRADE_ACCUM_MAX_DEPOSITS}; ventana 30 días abierta"
+                            f"; acumulado upgrade USD {_usd(accum_cents)}; faltan USD {_usd(needed_cents)} para {_vip_level_label(target_level, lang)}; depósitos {dep_count}/{UPGRADE_ACCUM_MAX_DEPOSITS}; ventana 30 días abierta{date_detail}"
                         )
                     else:
                         upgrade_detail = (
@@ -10817,11 +10841,57 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "cuanto tendria que depositar", "cuánto tendría que depositar", "cuanto tengo que depositar",
         "cuánto tengo que depositar", "cuanto debo depositar para subir", "cuánto debo depositar para subir",
         "para llegar a premium", "para llegar a prestige", "me falta para premium", "me falta para prestige",
-        "how much do i need to upgrade", "how much am i missing", "upgrade my level",
-    ))
+        "todavia puedo subir", "todavía puedo subir", "aun puedo subir", "aún puedo subir",
+        "puedo subir de nivel", "puedo subir", "deposito mas", "depósito más", "depositar mas", "depositar más",
+        "hasta que dia puedo depositar", "hasta qué día puedo depositar", "hasta cuando puedo depositar", "hasta cuándo puedo depositar",
+        "how much do i need to upgrade", "how much am i missing", "upgrade my level", "can i still upgrade",
+    )) or (
+        any(x in t_upgrade for x in ("mas herramientas", "más herramientas", "herramientas adicionales", "more tools"))
+        and any(x in t_upgrade for x in ("deposit", "subir", "nivel", "upgrade"))
+    )
     stage_for_upgrade = get_user_stage(chat_id)
     vip_for_upgrade = _vip_get_state(chat_id, create=False) or {}
     level_for_upgrade = vip_for_upgrade.get("level") or VIP_LEVEL_NONE
+
+    # Fecha base del upgrade: responde desde BrokerAccountState persistido, nunca desde memoria/IA.
+    deposit_date_query = any(x in t_upgrade for x in (
+        "fecha en la que deposite", "fecha en que deposite", "fecha que deposite",
+        "cuando deposite", "cuándo deposite", "cuando hice el deposito", "cuándo hice el depósito",
+        "que dia deposite", "qué día deposité", "fecha de mi deposito", "fecha de mi depósito",
+        "fecha del primer deposito", "fecha del primer depósito", "when did i deposit", "deposit date",
+    ))
+    if deposit_date_query and stage_for_upgrade == STAGE_DEPOSITED and level_for_upgrade != VIP_LEVEL_NONE:
+        date_rows = [r for r in _broker_rows(chat_id, validated_only=True) if r.get("first_deposit_at")]
+        if date_rows:
+            parts = []
+            for state in date_rows:
+                first_dep = state.get("first_deposit_at")
+                first_local = first_dep.replace(tzinfo=timezone.utc).astimezone(COLOMBIA_TZ)
+                broker_label = _broker_label(state.get("broker"))
+                if level_for_upgrade in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM) and _broker_upgrade_window_open(state):
+                    deadline_local = (first_dep + timedelta(days=UPGRADE_ACCUM_WINDOW_DAYS)).replace(tzinfo=timezone.utc).astimezone(COLOMBIA_TZ)
+                    if lang == "es":
+                        parts.append(f"En {broker_label}, tu primer depósito validado fue el {first_local.strftime('%d/%m/%Y')} y tu ventana de acumulación vence el {deadline_local.strftime('%d/%m/%Y')}.")
+                    else:
+                        parts.append(f"On {broker_label}, your first validated deposit was on {first_local.strftime('%d/%m/%Y')} and your accumulation window ends on {deadline_local.strftime('%d/%m/%Y')}.")
+                else:
+                    if lang == "es":
+                        parts.append(f"En {broker_label}, la fecha base registrada de tu primer depósito validado es {first_local.strftime('%d/%m/%Y')}.")
+                    else:
+                        parts.append(f"On {broker_label}, the recorded date of your first validated deposit is {first_local.strftime('%d/%m/%Y')}.")
+            msg = "\n\n".join(parts)
+            markup = upgrade_info_keyboard(lang) if level_for_upgrade in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM) else None
+        else:
+            msg = (
+                "Tengo tu nivel activo guardado, pero en el registro actual no encuentro una fecha exacta de primer depósito por broker. No voy a inventarla. Si esta cuenta viene de una versión anterior del bot, el historial pudo quedar migrado sin esa fecha exacta."
+                if lang == "es" else
+                "I have your active level saved, but the current broker record does not contain an exact first-deposit date. I will not invent one. If this account comes from an older bot version, the migrated history may not include that exact date."
+            )
+            markup = upgrade_info_keyboard(lang) if level_for_upgrade in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM) else None
+        await update.message.reply_text(msg, reply_markup=markup)
+        await send_admin_auto_log(context, update, "UPGRADE_DEPOSIT_DATE", msg)
+        return
+
     if upgrade_query and stage_for_upgrade == STAGE_DEPOSITED and level_for_upgrade != VIP_LEVEL_NONE:
         if level_for_upgrade == VIP_LEVEL_PRESTIGE:
             msg = (
@@ -10847,20 +10917,26 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 needed_cents = max(0, target_cents - accum_cents)
                 first_dep = state.get("first_deposit_at")
                 if first_dep:
-                    remaining_days = max(0, (first_dep + timedelta(days=UPGRADE_ACCUM_WINDOW_DAYS) - now_upgrade).days)
+                    first_local = first_dep.replace(tzinfo=timezone.utc).astimezone(COLOMBIA_TZ)
+                    deadline_local = (first_dep + timedelta(days=UPGRADE_ACCUM_WINDOW_DAYS)).replace(tzinfo=timezone.utc).astimezone(COLOMBIA_TZ)
+                    remaining_days = max(0, (deadline_local.date() - datetime.now(COLOMBIA_TZ).date()).days)
+                    first_date = first_local.strftime("%d/%m/%Y")
+                    deadline_date = deadline_local.strftime("%d/%m/%Y")
                 else:
                     remaining_days = UPGRADE_ACCUM_WINDOW_DAYS
+                    first_date = ""
+                    deadline_date = ""
                 if lang == "es":
                     details.append(
                         f"En {broker_label} tienes USD {_usd(accum_cents)} acumulados para upgrade y te faltan USD {_usd(needed_cents)} para llegar a {_vip_level_label(target_level, lang)}. "
                         f"Vas {dep_count} de {UPGRADE_ACCUM_MAX_DEPOSITS} depósitos acumulables y la ventana sigue abierta"
-                        + (f" (aprox. {remaining_days} días restantes)." if first_dep else ".")
+                        + (f". Tu primer depósito validado fue el {first_date} y puedes completar la acumulación hasta el {deadline_date} ({remaining_days} días restantes)." if first_dep else ".")
                     )
                 else:
                     details.append(
                         f"On {broker_label}, you have USD {_usd(accum_cents)} accumulated toward the upgrade and need USD {_usd(needed_cents)} more to reach {_vip_level_label(target_level, lang)}. "
                         f"You are at {dep_count} of {UPGRADE_ACCUM_MAX_DEPOSITS} accumulable deposits and the window is still open"
-                        + (f" (about {remaining_days} days remaining)." if first_dep else ".")
+                        + (f". Your first validated deposit was on {first_date} and you can complete the accumulation until {deadline_date} ({remaining_days} days remaining)." if first_dep else ".")
                     )
             else:
                 if lang == "es":
@@ -11995,7 +12071,10 @@ async def post_init_app(application):
     # Si el Chat ID de Señales Premium +300 ya fue aprendido en pruebas anteriores,
     # reemplazamos para el BOT el enlace histórico por uno propio con solicitud.
     await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
-    await _lock_signals_premium_general_topic(application.bot, notify_admin=False)
+    # NO cerrar/ocultar el tema General en cada redeploy: Telegram genera mensajes
+    # de servicio visibles ("cerró/ocultó el tema"). El estado del tema persiste
+    # en Telegram; la privacidad diaria la mantiene cleanup_vip_membership_service_message,
+    # que elimina nuevas altas/bajas y cualquier contenido que aparezca en General.
     schedule_daily_report(application)
     schedule_promo_expiry_reminder(application)
     await _check_promo_expiry_reminders(application.bot)
