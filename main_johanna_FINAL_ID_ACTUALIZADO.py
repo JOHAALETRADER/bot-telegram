@@ -55,8 +55,10 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.74-20260922-ID-FIRST-BEFORE-DEPOSIT-PROOF-GUARD"
+BOT_VERSION = "v7.10.76-20260922-LEVEL-CONTEXT-UPGRADE-CTA-FIX"
 # v7.10.74: cualquier aviso de depósito respeta la secuencia ID validado → comprobante; PRE nunca pide comprobante antes de confirmar/validar el ID.
+# v7.10.76: las consultas de nivel/upgrade de miembros activos muestran primero su nivel actual y luego UPGRADE; reconoce “siguiente nivel” y conserva el chat personal solo como CTA adicional cuando corresponde.
+# v7.10.75: restaura UPGRADE como segundo CTA al consultar el nivel propio; el chat personal, si corresponde por conversación larga, se añade después sin desplazarlo.
 # v7.10.72: refuerza continuidad del LIVE: misma señal por Telegram, motivo práctico completo de no entregar la interfaz y repreguntas contextuales sobre “las señales que muestras”.
 # v7.10.70: ID VALIDADO consulta directamente TODOS los usuarios POST con ID guardado, sin depender de la cola de 50; paginación de 20 por página.
 # v7.10.71: añade marketing manual exclusivo para IDs validados pendientes de depósito, separado del marketing general y sin botón de registro.
@@ -3774,6 +3776,9 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
         "cuanto tendria que depositar", "cuánto tendría que depositar", "cuanto tengo que depositar",
         "cuánto tengo que depositar", "cuanto debo depositar para subir", "cuánto debo depositar para subir",
         "para llegar a premium", "para llegar a prestige", "me falta para premium", "me falta para prestige",
+        "siguiente nivel", "proximo nivel", "próximo nivel", "ir al siguiente nivel", "pasar al siguiente nivel",
+        "que necesito para subir", "qué necesito para subir", "que necesito para el siguiente nivel", "qué necesito para el siguiente nivel",
+        "next level", "what do i need for the next level", "what do i need to reach the next level",
         "todavia puedo subir", "todavía puedo subir", "aun puedo subir", "aún puedo subir",
         "puedo subir de nivel", "puedo subir", "deposito mas", "depósito más", "depositar mas", "depositar más",
         "hasta que dia puedo depositar", "hasta qué día puedo depositar", "hasta cuando puedo depositar", "hasta cuándo puedo depositar",
@@ -3790,11 +3795,23 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
         and any(x in t for x in ("fecha", "plazo", "hasta", "ventana", "beneficio", "herramient", "nivel", "subir", "upgrade"))
     )
     if active_member and upgrade_query:
-        if current_level == VIP_LEVEL_BASIC:
-            return upgrade_info_keyboard(lang, VIP_LEVEL_PREMIUM)
-        if current_level == VIP_LEVEL_PREMIUM:
-            return upgrade_info_keyboard(lang, VIP_LEVEL_PRESTIGE)
-        return None
+        if lang == "en":
+            labels = {
+                VIP_LEVEL_BASIC: "🟢 VIEW MY BASIC LEVEL",
+                VIP_LEVEL_PREMIUM: "🔵 VIEW MY PREMIUM LEVEL",
+                VIP_LEVEL_PRESTIGE: "🏆 VIEW MY PRESTIGE LEVEL",
+            }
+        else:
+            labels = {
+                VIP_LEVEL_BASIC: "🟢 VER MI NIVEL BÁSICO",
+                VIP_LEVEL_PREMIUM: "🔵 VER MI NIVEL PREMIUM",
+                VIP_LEVEL_PRESTIGE: "🏆 VER MI NIVEL PRESTIGE",
+            }
+        label = labels.get(current_level)
+        rows = [[InlineKeyboardButton(label, callback_data=f"level_detail:{current_level}")]] if label else []
+        if current_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
+            rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data="upgrade_conditions")])
+        return InlineKeyboardMarkup(rows) if rows else None
 
     # Las consultas sobre con cuánto ingresar/empezar SIEMPRE deben acercar la
     # estructura de niveles al usuario; no obligarlo a volver al menú anterior.
@@ -3837,7 +3854,14 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
             }
         label = labels.get(current_level)
         if label:
-            return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"level_detail:{current_level}")]])
+            rows = [[InlineKeyboardButton(label, callback_data=f"level_detail:{current_level}")]]
+            # Al consultar el nivel propio, Básico/Premium deben tener UPGRADE como
+            # segundo CTA. Si la conversación ya es larga, el botón de chat personal
+            # se añadirá DESPUÉS por _append_personal_chat_button(), sin desplazar UPGRADE.
+            if current_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
+                upgrade_label = "⬆️ UPGRADE"
+                rows.append([InlineKeyboardButton(upgrade_label, callback_data="upgrade_conditions")])
+            return InlineKeyboardMarkup(rows)
 
     # Si preguntan por UN nivel concreto, muestra solo ese nivel, no toda la estructura.
     specific_level = VIP_LEVEL_NONE
@@ -11620,6 +11644,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "cuanto tendria que depositar", "cuánto tendría que depositar", "cuanto tengo que depositar",
         "cuánto tengo que depositar", "cuanto debo depositar para subir", "cuánto debo depositar para subir",
         "para llegar a premium", "para llegar a prestige", "me falta para premium", "me falta para prestige",
+        "siguiente nivel", "proximo nivel", "próximo nivel", "ir al siguiente nivel", "pasar al siguiente nivel",
+        "que necesito para subir", "qué necesito para subir", "que necesito para el siguiente nivel", "qué necesito para el siguiente nivel",
+        "next level", "what do i need for the next level", "what do i need to reach the next level",
         "todavia puedo subir", "todavía puedo subir", "aun puedo subir", "aún puedo subir",
         "puedo subir de nivel", "puedo subir", "deposito mas", "depósito más", "depositar mas", "depositar más",
         "hasta que dia puedo depositar", "hasta qué día puedo depositar", "hasta cuando puedo depositar", "hasta cuándo puedo depositar",
@@ -11666,16 +11693,16 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         parts.append(f"On {broker_label}, the recorded date of your first validated deposit is {first_local.strftime('%d/%m/%Y')}.")
             msg = "\n\n".join(parts)
-            target_for_date = VIP_LEVEL_PREMIUM if level_for_upgrade == VIP_LEVEL_BASIC else (VIP_LEVEL_PRESTIGE if level_for_upgrade == VIP_LEVEL_PREMIUM else None)
-            markup = upgrade_info_keyboard(lang, target_for_date) if target_for_date else None
+            markup = ai_context_keyboard(texto + " upgrade", lang, chat_id)
         else:
             msg = (
                 "Tengo tu nivel activo guardado, pero en el registro actual no encuentro una fecha exacta de primer depósito por broker. No voy a inventarla. Si esta cuenta viene de una versión anterior del bot, el historial pudo quedar migrado sin esa fecha exacta."
                 if lang == "es" else
                 "I have your active level saved, but the current broker record does not contain an exact first-deposit date. I will not invent one. If this account comes from an older bot version, the migrated history may not include that exact date."
             )
-            target_for_date = VIP_LEVEL_PREMIUM if level_for_upgrade == VIP_LEVEL_BASIC else (VIP_LEVEL_PRESTIGE if level_for_upgrade == VIP_LEVEL_PREMIUM else None)
-            markup = upgrade_info_keyboard(lang, target_for_date) if target_for_date else None
+            markup = ai_context_keyboard(texto + " upgrade", lang, chat_id)
+        if _should_offer_personal_chat(chat_id, texto):
+            markup = _append_personal_chat_button(markup, lang)
         await update.message.reply_text(msg, reply_markup=markup)
         await send_admin_auto_log(context, update, "UPGRADE_DEPOSIT_DATE", msg)
         return
@@ -11687,10 +11714,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if lang == "es" else
                 "🏆 You are currently Prestige, the highest level in my community. You already have all level-based tools enabled and there is no higher level to upgrade to."
             )
-            prestige_markup = None
-            if any(x in t_upgrade for x in ("herramient", "senal", "señal", "beneficio", "incluye", "que tengo", "qué tengo")):
-                label = "🏆 VIEW MY PRESTIGE LEVEL" if lang == "en" else "🏆 VER MI NIVEL PRESTIGE"
-                prestige_markup = InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"level_detail:{VIP_LEVEL_PRESTIGE}")]])
+            prestige_markup = ai_context_keyboard(texto, lang, chat_id)
+            if _should_offer_personal_chat(chat_id, texto):
+                prestige_markup = _append_personal_chat_button(prestige_markup, lang)
             await update.message.reply_text(msg, reply_markup=prestige_markup)
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_PRESTIGE", msg)
             return
@@ -11758,7 +11784,10 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == "es" else
                     f"\n\nYou can review everything included in {_vip_level_label(target_level, lang)} in the button below."
                 )
-            await update.message.reply_text(msg, reply_markup=upgrade_info_keyboard(lang, target_level))
+            upgrade_markup = ai_context_keyboard(texto, lang, chat_id)
+            if _should_offer_personal_chat(chat_id, texto):
+                upgrade_markup = _append_personal_chat_button(upgrade_markup, lang)
+            await update.message.reply_text(msg, reply_markup=upgrade_markup)
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_CALCULATED", msg)
             return
         else:
@@ -11772,7 +11801,10 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"You are currently {_vip_level_label(level_for_upgrade, lang)}. I have a validated total of USD {_usd(saved_total)} saved, which as a reference leaves USD {_usd(reference_missing)} to {_vip_level_label(target_level, lang)}. "
                 "This legacy account does not yet have the upgrade history separated by broker in the current record, so I will not invent the window or ask you to validate your ID again. If you make an additional deposit, I only need to identify once whether it belongs to Binomo or Stockity."
             )
-            await update.message.reply_text(msg, reply_markup=upgrade_info_keyboard(lang, target_level))
+            upgrade_markup = ai_context_keyboard(texto, lang, chat_id)
+            if _should_offer_personal_chat(chat_id, texto):
+                upgrade_markup = _append_personal_chat_button(upgrade_markup, lang)
+            await update.message.reply_text(msg, reply_markup=upgrade_markup)
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_LEGACY", msg)
             return
 
