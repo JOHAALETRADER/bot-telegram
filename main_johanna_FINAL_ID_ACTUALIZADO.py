@@ -55,7 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.71-20260922-VALIDATED-ID-TARGETED-MARKETING"
+BOT_VERSION = "v7.10.74-20260922-ID-FIRST-BEFORE-DEPOSIT-PROOF-GUARD"
+# v7.10.74: cualquier aviso de depósito respeta la secuencia ID validado → comprobante; PRE nunca pide comprobante antes de confirmar/validar el ID.
+# v7.10.72: refuerza continuidad del LIVE: misma señal por Telegram, motivo práctico completo de no entregar la interfaz y repreguntas contextuales sobre “las señales que muestras”.
 # v7.10.70: ID VALIDADO consulta directamente TODOS los usuarios POST con ID guardado, sin depender de la cola de 50; paginación de 20 por página.
 # v7.10.71: añade marketing manual exclusivo para IDs validados pendientes de depósito, separado del marketing general y sin botón de registro.
 # v7.10.69: añade ID VALIDADO directamente dentro de Gestionar Usuario; muestra nombre + ID de usuarios POST pendientes de depósito.
@@ -6681,22 +6683,32 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- Confirmación de depósito desde botones (tanto del precheck como del flujo POST) ---
+    # Regla operativa: ID validado PRIMERO; comprobante DESPUÉS.
     if q.data and (q.data.startswith("DEP_YES|") or q.data.startswith("dep_yes:")):
-        msg = (
-            (
-                "Perfecto ✅\n\n"
-                "Envíame aquí tu **comprobante de depósito/activación** (foto o captura) y tu **ID de Stockity o Binomo en texto** "
-                "(solo el número) para validarlo y habilitar tu acceso 👇"
+        stage_now = get_user_stage(chat_id)
+        id_ready = _has_validated_trading_id_for_deposit(chat_id)
+        if stage_now == STAGE_DEPOSITED:
+            msg = (
+                "Tu cuenta ya está activa ✅ Si este es un depósito adicional, envíame aquí la captura para revisarlo según las condiciones de actualización de nivel."
+                if lang == "es" else
+                "Your account is already active ✅ If this is an additional deposit, send me the screenshot here so I can review it under the level-update conditions."
             )
-            if lang == "es" else
-            (
-                "Perfect ✅\n\n"
-                "Send me your **deposit/activation proof** here (photo or screenshot) and your **Stockity or Binomo ID as text** "
-                "(numbers only) so I can validate it and enable your access 👇"
+            context.user_data["awaiting_deposit_proof"] = True
+        elif id_ready:
+            msg = (
+                "Perfecto ✅ Tu ID ya está validado conmigo. Ahora envíame aquí el comprobante de tu depósito (foto o captura) para revisar el monto y continuar con la activación."
+                if lang == "es" else
+                "Perfect ✅ Your ID is already validated with me. Now send me your deposit proof here (photo or screenshot) so I can review the amount and continue with the activation."
             )
-        )
-        context.user_data["awaiting_deposit_proof"] = True
-        await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            context.user_data["awaiting_deposit_proof"] = True
+        else:
+            msg = (
+                "Antes de revisar el depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo o Stockity para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
+                if lang == "es" else
+                "Before I review the deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo or Stockity ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
+            )
+            context.user_data.pop("awaiting_deposit_proof", None)
+        await q.message.reply_text(msg)
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM_BTN", msg)
         return
 
@@ -7286,6 +7298,7 @@ NIVELES DENTRO DE JT TRADERS TEAMS
 - Si el monto aparece dentro de una pregunta ESPECÍFICA sobre un curso, señal, bot u otra herramienta, úsalo solo para ubicar el nivel y responde únicamente ese tema; no conviertas el monto en una excusa para listar beneficios no preguntados.
 - Si preguntan por todos los niveles, sí puedes compararlos.
 - Un monto por sí solo NO significa “háblame del bono” ni “enumera beneficios”. El sentido lo define la intención completa: siguiente paso, nivel, curso, señales, depósito, etc.
+- REGLA CRÍTICA DE MONTO AISLADO: frases como “subí mi cuenta a 1000”, “llevé mi saldo a 300”, “mi cuenta va en 500” o cualquier comentario de saldo/rendimiento NO permiten inferir registro, depósito con Johanna, nivel JT, upgrade ni intención de entrar. Si la persona solo comparte un logro o saldo, responde de forma humana y breve; como máximo felicita y recuerda gestión de riesgo.
 
 FORMACIÓN / CURSOS
 - Básico recibe Binary Teams Módulos 1, 2 y 3.
@@ -7312,6 +7325,7 @@ SEÑALES Y SOFTWARE PREMIUM ANTICIPADO
 - En las señales del Software Premium Anticipado se entra en el minuto exacto indicado por la señal, con expiración de 1 minuto. La persona realiza la entrada en su cuenta; eso NO significa que las señales sean enviadas manualmente.
 - Cuando compares el Software Premium Anticipado con un bot IA, evita la frase “ejecutar manualmente” porque puede confundirse con la forma de ENTREGA de la señal. Expresa simplemente que la persona toma/realiza la entrada en su propia cuenta. Reserva la explicación “no opera automáticamente” para cuando realmente pregunten si el bot ejecuta operaciones.
 - Cuando pregunten de forma general por las SEÑALES disponibles en un nivel, considera todas las fuentes que realmente generan señales dentro de ese nivel y separa su frecuencia: en Premium/Prestige están las +300 del Software Premium Anticipado (lunes a sábado) y también las alertas del bot IA correspondiente 24/7. No mezcles aquí cursos ni otros beneficios que no sean señales.
+- Las señales que se entregan dentro de cada nivel corresponden a las mismas señales operativas que Johanna muestra en sus lives; no presentes las señales de Telegram como un conjunto distinto. Lo que cambia entre niveles es el alcance disponible (cantidad, mercados y herramientas).
 - Si preguntan específicamente por el Software Premium Anticipado, responde solo sobre ese software; si preguntan específicamente por el bot IA, responde solo sobre el bot.
 
 BOTS IA 24/7
@@ -7328,12 +7342,14 @@ BOTS IA 24/7
 
 PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE
 - La interfaz visual/panel que Johanna utiliza en sus lives es una herramienta privada de uso interno.
-- No es lo que se instala o entrega a los miembros: mantenerla requeriría instalación, configuración, mantenimiento y actualizaciones, principalmente en computador.
-- Los miembros reciben las MISMAS señales operativas correspondientes por Telegram, lo que permite usarlas cómodamente desde celular o cualquier dispositivo, sin instalar ni configurar esa interfaz.
+- No es lo que se instala o entrega a los miembros: entregarla implicaría descarga, instalación, activación/configuración, mantenimiento y actualizaciones en computador y quedaría ligada principalmente a un solo equipo.
+- Las señales incluidas en los distintos niveles de la comunidad corresponden a las MISMAS señales operativas que Johanna muestra en sus lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles.
+- Esas mismas señales se entregan por Telegram, lo que permite usarlas cómodamente desde celular o cualquier dispositivo y desde cualquier lugar, sin depender de instalar ni mantener esa interfaz.
 - REFERENCIA SEMÁNTICA IMPORTANTE: si alguien dice “el bot que muestras en los lives”, “el programa que usas en vivo”, “eso que se ve en tu pantalla”, “el software que muestras” o una frase equivalente, interpreta que se refiere a ESTA interfaz visual privada, aunque use la palabra “bot”, salvo que nombre de forma explícita el bot IA CRYPTO IDX 24/7 o el bot IA de pares de divisas 24/7.
+- CONTINUIDAD IMPORTANTE: si después de hablar de esa interfaz la persona dice “yo quiero las señales que tú muestras”, “quiero esas señales”, “las señales que muestras” o equivalente, entiende que sigue hablando de las señales del LIVE. Aclara que SÍ son las mismas señales que recibe por Telegram según su nivel; no presentes Telegram como un conjunto distinto de señales.
 - No presentes esta interfaz como beneficio de Premium o Prestige ni digas que se obtiene subiendo de nivel. No se entrega a usuarios.
-- SOLO explica esta diferencia si el usuario pregunta por el panel/interfaz/herramienta que ve en live o si pregunta si recibirá exactamente ese software. No la metas en cada pregunta general sobre bots.
-- Cuando sí lo pregunten, incluye brevemente el motivo práctico: el panel requiere instalación/configuración/actualizaciones en computador; Telegram evita depender de un solo equipo y permite recibir las señales desde cualquier dispositivo y lugar.
+- SOLO explica esta diferencia si el usuario pregunta por el panel/interfaz/herramienta que ve en live, si pregunta si recibirá exactamente ese software o si hace una repregunta contextual sobre las señales que ve allí. No la metas en cada pregunta general sobre bots.
+- Cuando sí lo pregunten, incluye brevemente el motivo práctico completo: descarga/instalación/activación-configuración/actualizaciones en computador + dependencia principal de un solo equipo; Telegram permite recibir las MISMAS señales desde cualquier dispositivo y lugar, por lo que resulta más práctico.
 
 GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
 - MG1 y MG2 son opcionales. Se pueden utilizar con una gestión de riesgo bien calculada y capital suficiente, pero no garantizan recuperación.
@@ -7342,6 +7358,7 @@ GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
 - Método porcentual orientativo: calcular 1–2% del capital y dividir ese presupuesto total en 6 o 7 unidades. La entrada inicial usa 1 unidad, MG1 usa 2 unidades y MG2 puede usar 3–4 unidades según el objetivo de la secuencia. No conviertas esto en una receta rígida; explica el cálculo solo si el usuario pregunta cómo distribuir la gestión.
 - Ejemplo educativo: 400 USD × 2% = 8 USD de riesgo total para la secuencia; 8/7 ≈ 1.14 USD por unidad. No prometas que esta distribución garantiza recuperar o quedar en profit.
 - Como referencia de plan, Johanna prioriza limitar pérdidas y buscar una relación favorable entre riesgo y objetivo; nunca presentes objetivos de ganancia como garantizados.
+- Si preguntan específicamente por una meta/ganancia diaria orientativa, mi referencia habitual es buscar alrededor de 10–12% EN EL DÍA, distribuido en hasta 3 sesiones de unos 40 minutos, sin presentarlo como obligación ni garantía. No confundas esa meta orientativa con la gestión de riesgo de 1–2%: ese 1–2% corresponde al RIESGO de una secuencia/operación planificada, NO a una meta de ganancia diaria.
 - Si preguntan simplemente "¿puedo usar martingala?", responde breve: sí, MG1/MG2 son opcionales y deben quedar dentro de la gestión total de riesgo.
 
 TIEMPO / HORARIOS / PERSONAS QUE TRABAJAN TODO EL DÍA
@@ -7361,6 +7378,7 @@ CUENTAS EXISTENTES / ANTIGUAS
 - Si la persona dice que la cuenta fue registrada con Johanna, o no está segura, el siguiente paso es pedir el ID para VALIDAR primero. No debe depositar de nuevo hasta que esa vinculación sea confirmada.
 - Si después de validar el ID está correctamente vinculada, se continúa con el depósito/comprobante/nivel desde el estado real de la cuenta. No se crea otra cuenta innecesariamente.
 - Si la persona confirma expresamente que la cuenta vieja NO fue registrada con los enlaces de Johanna: si tiene saldo, primero debe retirarlo; después cerrar/eliminar la cuenta anterior; para el NUEVO REGISTRO debe abrir una ventana de incógnito, entrar por uno de los enlaces oficiales y usar un correo diferente que no haya sido utilizado antes en esa plataforma. La ventana de incógnito es especialmente para el registro; después puede iniciar sesión normalmente.
+- Si la persona dice que tiene VARIAS cuentas de Binomo a su nombre (por ejemplo 2, 3, 4 o más cuentas/correos), trátalo como un caso especial: advierte que no debe mantener múltiples cuentas personales de Binomo; si no tienen saldo, deben cerrarse/eliminarse antes de crear una nueva correctamente vinculada; si tienen saldo, primero retirar y después cerrar/eliminar. Como es un caso específico de cuentas, deriva además a mi chat personal antes de crear otra cuenta. No le digas que “elija una y mantenga las demás” ni que puede seguir usando varias para torneos.
 - Tras crear la nueva cuenta debe enviar el nuevo ID ANTES de depositar.
 - Si la cuenta pertenece a una persona de confianza/familiar, debe ser genuinamente de esa persona: datos reales, documento real y medios de depósito/retiro a nombre del titular.
 - No menciones escenarios de familiar si el usuario no está hablando de eso.
@@ -7946,6 +7964,9 @@ def _pending_ai_question_tail(text_value: str) -> str:
     patterns = (
         r"(?:^|[;,.!\n]\s*|\s+y\s+)(¿?\s*(?:qué|que|cómo|como|cuánto|cuanto|cuándo|cuando|dónde|donde|por\s+qué|por\s+que)\b.*)$",
         r"(?:^|[;,.!\n]\s*|\s+y\s+)(¿?\s*(?:puedo|podría|podria|debo|tengo\s+que|quiero\s+saber|me\s+gustaría\s+saber|me\s+gustaria\s+saber)\b.*)$",
+        # Solicitudes pegadas a una acción operativa, aunque no vengan en forma de pregunta.
+        # Ej.: "Ya deposité, quiero el canal de señales diario".
+        r"(?:^|[;,.!\n]\s*|\s+y\s+|\s+también\s+|\s+tambien\s+|\s+además\s+|\s+ademas\s+)(\s*(?:quiero|necesito|dame|envíame|enviame|me\s+gustaría|me\s+gustaria)\b.*)$",
     )
     for pattern in patterns:
         m = re.search(pattern, raw, re.IGNORECASE | re.DOTALL)
@@ -8564,12 +8585,12 @@ def _existing_account_reply(texto: str, lang: str, chat_id: int) -> str:
         )
     if lang == "en":
         return (
-            "Send me the ID of that account first so I can verify whether it is correctly linked to me. "
-            "Do not make a new deposit in that account until I confirm the validation; if it checks out, we continue from there."
+            "If that Binomo/Stockity account was created through my link, or you are not sure, send me its ID first and I will verify the link before you deposit. "
+            "If it was created through someone else’s link, it cannot be used to activate access with me: if it has funds, withdraw them first, then close/delete it; after that create a new account from my official link in an incognito window with a different email and send me the new ID before depositing."
         )
     return (
-        "Envíame primero el ID de esa cuenta para verificar si está correctamente vinculada conmigo. "
-        "No hagas un depósito nuevo en esa cuenta hasta que te confirme la validación; si está todo bien, continuamos desde ahí."
+        "Si esa cuenta de Binomo/Stockity fue creada con mi enlace, o no estás seguro, envíame primero el ID y verifico la vinculación antes de que deposites. "
+        "Si fue creada con el enlace de otra persona, no sirve para activar el acceso conmigo: si tiene saldo, primero retíralo y luego cierra/elimina esa cuenta; después crea una nueva desde mi enlace oficial en una ventana de incógnito con otro correo y envíame el nuevo ID antes de depositar."
     )
 
 
@@ -9428,6 +9449,238 @@ def _is_reaction_only_message(text_value: str) -> bool:
     return emoji_like > 0
 
 
+
+def _is_short_acknowledgement(text_value: str) -> bool:
+    """Mensajes breves tipo OK/gracias no deben reiniciar ningún flujo comercial."""
+    t = _norm(text_value or "").strip()
+    if not t or len(t) > 90 or "?" in (text_value or "") or "¿" in (text_value or ""):
+        return False
+    # Si trae una acción operativa real, no es un simple acuse.
+    blocked = (
+        "deposit", "id ", "registr", "cuenta", "nivel", "bono", "senal", "señal",
+        "bot", "live", "retiro", "retirar", "premium", "prestige", "basico", "básico",
+    )
+    if any(x in t for x in blocked):
+        return False
+    ack_terms = (
+        "ok", "okay", "okey", "vale", "gracias", "muchas gracias", "entiendo", "entendido",
+        "perfecto", "perfect", "listo", "de acuerdo", "bien", "super", "súper", "genial",
+        "ok gracias", "vale gracias", "perfecto gracias",
+    )
+    if t in ack_terms:
+        return True
+    # Frases cortas de cierre como "ok, gracias, escribiré cuando inicie".
+    starts_ack = any(t.startswith(x + " ") or t.startswith(x + ",") for x in ("ok", "okay", "gracias", "entiendo", "perfecto", "vale", "listo"))
+    closing_terms = any(x in t for x in ("quedo pendiente", "te escribo", "escribire", "escribiré", "cuando inicie", "cuando empiece", "luego te escribo"))
+    return bool(starts_ack and (closing_terms or len(t.split()) <= 8))
+
+
+def _is_balance_progress_statement(text_value: str) -> bool:
+    """Saldo/logro contado por el usuario; jamás se interpreta como depósito JT o nivel."""
+    t = _norm(text_value or "")
+    if not t:
+        return False
+    if any(x in t for x in ("cuanto", "cuánto", "que nivel", "qué nivel", "deposit", "ingresar", "entrar", "upgrade", "subir de nivel")):
+        return False
+    patterns = (
+        r"\bsubi\s+(?:mi\s+)?cuenta\s+(?:a|hasta)\s+\$?\s*\d+",
+        r"\blleve\s+(?:mi\s+)?cuenta\s+(?:a|hasta)\s+\$?\s*\d+",
+        r"\bmi\s+cuenta\s+(?:va|esta|quedo|llego)\s+(?:en|a)\s+\$?\s*\d+",
+        r"\bmi\s+saldo\s+(?:va|esta|quedo|llego)\s+(?:en|a)\s+\$?\s*\d+",
+    )
+    return any(re.search(p, t, re.I) for p in patterns)
+
+
+def _multiple_personal_accounts_case(text_value: str) -> bool:
+    """Detecta que la persona afirma tener varias cuentas/correos del broker, incluso por continuidad."""
+    t = _norm(text_value or "")
+    if not t:
+        return False
+    explicit_many = any(x in t for x in (
+        "varias cuentas", "multiples cuentas", "múltiples cuentas", "tres cuentas", "3 cuentas",
+        "cuatro cuentas", "4 cuentas", "cinco cuentas", "5 cuentas", "dos cuentas", "2 cuentas",
+        "cuatro o cinco", "4 o 5", "varios correos", "correos diferentes", "cerrar las otras",
+        "cuentas con varios enlaces", "cuentas con diferentes enlaces", "he creado cuentas con varios enlaces",
+    ))
+    numeric_many = bool(re.search(r"\b(?:2|3|4|5|6|7|8|9|10)\s+cuentas\b", t))
+    # Si habla explícitamente de cuentas/correos múltiples, el contexto del bot es suficiente;
+    # no exigimos que repita 'Binomo' en cada turno consecutivo.
+    return bool(explicit_many or numeric_many)
+
+
+def _emotional_trading_context(text_value: str) -> bool:
+    """Relatos de miedo/frustración deben recibir psicotrading breve, no una venta automática."""
+    t = _norm(text_value or "")
+    if not t:
+        return False
+    emotional = any(x in t for x in (
+        "me da miedo", "tengo miedo", "miedo a perder", "quemado la cuenta", "queme la cuenta", "quemé la cuenta",
+        "termino quemandola", "termino quemándola", "quiero renunciar", "ganas de renunciar",
+        "manejo de emociones", "control emocional", "psicologia", "psicología", "me frustro", "frustracion", "frustración",
+    ))
+    trading_context = any(x in t for x in ("cuenta", "capital", "trading", "operar", "mentor", "torneo", "binomo", "stockity"))
+    return bool(emotional and trading_context)
+
+
+def _emotional_trading_reply(lang: str = "es") -> str:
+    return (
+        "Te entiendo. Después de perder o quemar cuentas es normal que aparezca miedo al usar más capital; antes de aumentarlo, prioriza consistencia, plan y control emocional. No necesitas demostrar nada con una cuenta grande: primero protege el capital con una gestión de riesgo clara y aumenta solo cuando tu proceso sea estable."
+        if lang == "es" else
+        "I understand. After losing or blowing accounts, it is normal to feel fear about using more capital; before increasing it, focus on consistency, a clear plan and emotional control. You do not need to prove anything with a large account—protect the capital first and scale only when your process is stable."
+    )
+
+
+def _profit_target_query(text_value: str) -> bool:
+    t = _norm(text_value or "")
+    if not t:
+        return False
+    return any(x in t for x in (
+        "ganancia diaria", "ganancia al dia", "ganancia por dia", "meta diaria", "objetivo diario",
+        "porcentaje diario", "cuanto ganar al dia", "cuánto ganar al día", "cuanto deberia ganar", "cuánto debería ganar",
+        "daily profit", "daily target", "daily return", "profit per day",
+    ))
+
+
+def _live_schedule_query(text_value: str) -> bool:
+    t = _norm(text_value or "")
+    return any(x in t for x in ("haces live", "haces lives", "live todos los dias", "live todos los días", "cuando haces live", "horario del live"))
+
+
+def _signals_channel_request(text_value: str) -> bool:
+    t = _norm(text_value or "")
+    return any(x in t for x in (
+        "canal de senales", "canal de señales", "canal diario", "senales diarias", "señales diarias",
+        "quiero el canal", "acceso al canal de senales", "acceso al canal de señales",
+    ))
+
+
+def _has_validated_trading_id_for_deposit(chat_id: int) -> bool:
+    """True solo cuando existe evidencia operativa de que el ID ya fue validado.
+
+    POST y DEPOSITED implican que el ID ya pasó la validación. También se consulta
+    BrokerAccountState para cubrir estados multi-broker persistidos. Un ID solamente
+    enviado/pending en PRE nunca habilita el paso de comprobante de depósito.
+    """
+    try:
+        stage_now = get_user_stage(chat_id)
+        if stage_now in (STAGE_POST, STAGE_DEPOSITED):
+            return True
+    except Exception:
+        pass
+    try:
+        return any(
+            str(row.get("trading_id") or "").strip()
+            for row in _broker_rows(chat_id, validated_only=True)
+        )
+    except Exception as e:
+        logging.warning("No pude comprobar ID validado antes del depósito para %s: %s", chat_id, e)
+        return False
+
+
+def _recent_user_turn_count(chat_id: int, minutes: int = 120) -> int:
+    """Cuenta mensajes reales recientes; sirve aunque la respuesta previa haya sido inmediata y no IA."""
+    cutoff = utcnow_naive() - timedelta(minutes=max(10, int(minutes)))
+    try:
+        with Session() as session:
+            count = (
+                session.query(BotEvent)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type == "MESSAGE",
+                    BotEvent.created_at >= cutoff,
+                )
+                .count()
+            )
+        return int(count or 0)
+    except Exception:
+        count = 0
+        for item in _load_ai_history(chat_id):
+            if item.get("role") != "user":
+                continue
+            raw_ts = str(item.get("ts") or "").strip()
+            if raw_ts:
+                try:
+                    if datetime.fromisoformat(raw_ts) < cutoff:
+                        continue
+                except Exception:
+                    pass
+            count += 1
+        return count
+
+
+def _should_offer_personal_chat(chat_id: int, question: str, personal_review: bool = False) -> bool:
+    if personal_review:
+        return True
+    q = question or ""
+    if _multiple_personal_accounts_case(q):
+        return True
+    # Conversación larga o consulta compleja: ofrecer contacto humano sin bloquear la respuesta IA.
+    if _recent_user_turn_count(chat_id) >= 6:
+        return True
+    if len(q) >= 420 and (q.count("?") + q.count("¿") >= 2 or len(_split_question_parts(q)) >= 3):
+        return True
+    return False
+
+
+def _append_personal_chat_button(reply_markup, lang: str = "es"):
+    """Añade el CTA personal sin eliminar el CTA contextual que ya exista."""
+    label = "📩 CHAT WITH ME PERSONALLY" if lang == "en" else "📩 ESCRÍBEME A MI CHAT PERSONAL"
+    personal_row = [InlineKeyboardButton(label, url=SUPPORT_URL)]
+    if reply_markup is None:
+        return InlineKeyboardMarkup([personal_row])
+    try:
+        rows = [list(row) for row in reply_markup.inline_keyboard]
+    except Exception:
+        rows = []
+    if not any(getattr(btn, "url", None) == SUPPORT_URL for row in rows for btn in row):
+        rows.append(personal_row)
+    return InlineKeyboardMarkup(rows or [personal_row])
+
+
+def _concise_ack_reply(lang: str = "es") -> str:
+    return "Perfecto 😊 Quedo pendiente. Cuando quieras continuar, escríbeme por aquí." if lang == "es" else "Perfect 😊 I’ll be here when you’re ready to continue."
+
+
+def _balance_progress_reply(lang: str = "es") -> str:
+    return (
+        "¡Wow, qué bien! 🙌 Felicidades por ese avance. Recuerda mantener siempre una buena gestión de riesgo para cuidar el crecimiento de tu cuenta."
+        if lang == "es" else
+        "Wow, that’s great 🙌 Congrats on the progress. Keep your risk management consistent so you protect the growth of your account."
+    )
+
+
+def _profit_target_reply(lang: str = "es") -> str:
+    return (
+        "Como referencia, suelo buscar alrededor de 10–12% en el día, distribuido en hasta 3 sesiones de unos 40 minutos, sin tomarlo como una meta obligatoria ni garantizada. Lo más importante es mantener la gestión de riesgo; normalmente trabajo con un máximo cercano al 2% para toda la secuencia."
+        if lang == "es" else
+        "As a reference, I normally look for around 10–12% across the day, spread over up to three sessions of about 40 minutes, without treating it as a required or guaranteed target. Risk management comes first; I normally keep the full sequence near a 2% maximum risk."
+    )
+
+
+def _multiple_accounts_reply(text_value: str, lang: str = "es") -> str:
+    t = _norm(text_value or "")
+    broker_name = "Stockity" if "stockity" in t and "binomo" not in t else "Binomo"
+    live_part = ""
+    profit_part = ""
+    if _live_schedule_query(text_value):
+        live_part = (
+            " Sobre los lives: normalmente hago sesiones de lunes a sábado; la primera suele ser alrededor de las 5:00 p. m. y la nocturna puede variar entre 8:00, 8:30 y 9:00 p. m. hora Colombia."
+            if lang == "es" else
+            " About the lives: I usually go live Monday to Saturday; the first session is around 5:00 p.m. and the evening session may vary between 8:00, 8:30 and 9:00 p.m. Colombia time."
+        )
+    if _profit_target_query(text_value):
+        profit_part = " " + _profit_target_reply(lang)
+    if lang == "en":
+        return (
+            f"Be careful with that: you should not keep multiple personal {broker_name} accounts. If those accounts have no funds, close/delete them before creating a new one correctly linked to me; if they have funds, withdraw first and then close them. Because you have several accounts/emails, message me in my personal chat before opening another one so I can guide you through the correct process."
+            + live_part + profit_part
+        )
+    return (
+        f"Ten cuidado con eso: no debes mantener varias cuentas personales de {broker_name}. Si esas cuentas no tienen saldo, ciérralas/elíminalas antes de crear una nueva correctamente vinculada conmigo; si tienen saldo, primero retira y después ciérralas. Como tienes varias cuentas/correos, escríbeme a mi chat personal antes de abrir otra para explicarte el proceso correcto."
+        + live_part + profit_part
+    )
+
+
 def _strip_redundant_ai_greeting(answer: str, question: str, history_text: str, lang: str) -> str:
     """Evita que la IA vuelva a saludar en cada turno de una conversación ya iniciada."""
     value = (answer or "").strip()
@@ -9464,6 +9717,13 @@ def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
         (r"\bcuando est[eé]s list[oa]\b", "cuando quieras continuar"),
         (r"\bsi est[aá]s list[oa]\b", "si quieres continuar"),
         (r"\bsi ya est[aá]s registrad[oa]\b", "si ya completaste el registro"),
+        (r"\bpara que te sientas m[aá]s c[oó]mod[oa]\b", "para que sientas mayor seguridad"),
+        (r"\bpara que te sientas c[oó]mod[oa]\b", "para que sientas mayor seguridad"),
+        (r"\bsi te sientes m[aá]s c[oó]mod[oa]\b", "si así te resulta más fácil"),
+        (r"\bsi te sientes c[oó]mod[oa]\b", "si así te resulta más fácil"),
+        (r"\bsentirte m[aá]s c[oó]mod[oa]\b", "sentir mayor seguridad"),
+        (r"\bsentirte c[oó]mod[oa]\b", "sentir mayor seguridad"),
+        (r"\bestar segur[oa]\b", "tener seguridad"),
         (r"\btú mismo\b", "directamente"),
         (r"\btu mismo\b", "directamente"),
         (r"\btú misma\b", "directamente"),
@@ -9835,14 +10095,15 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "que nivel", "qué nivel", "cual nivel", "cuál nivel", "nivel me toca", "nivel tendria",
             "nivel tendría", "que incluye", "qué incluye", "beneficios", "what level", "which level", "what is included",
         ))
-        entry_minimum_topic = ("entry_minimum" in planner_intents) or _is_min_50_intent(question)
-        # Un miembro activo no vuelve al flujo de ingreso por mencionar un depósito.
-        # Sí aplica si pregunta claramente por entrar/ingresar o habla de otra persona.
+        explicit_join_wording = any(x in q_norm for x in (
+            "para entrar", "para ingresar", "para empezar", "para iniciar", "con cuanto entro", "con cuánto entro",
+            "cuanto debo depositar", "cuánto debo depositar", "deposito minimo", "depósito mínimo",
+            "minimum to join", "need to join", "to enter the community", "minimum deposit", "how much do i need to join",
+        ))
+        # v7.10.73: el planificador NO puede convertir por sí solo un monto/saldo contado
+        # por el usuario en una consulta de ingreso. Se exige intención explícita local.
+        entry_minimum_topic = bool(_is_min_50_intent(question) or (("entry_minimum" in planner_intents) and explicit_join_wording))
         if active_member and not hypothetical_other_person:
-            explicit_join_wording = any(x in q_norm for x in (
-                "para entrar", "para ingresar", "para empezar", "para iniciar",
-                "minimum to join", "need to join", "to enter the community",
-            ))
             entry_minimum_topic = bool(entry_minimum_topic and explicit_join_wording)
         if entry_minimum_topic:
             planner_intents.add("entry_minimum")
@@ -9871,7 +10132,30 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "bot ia", "ia crypto", "crypto idx 24/7", "bot de crypto", "bot crypto", "bot de pares",
             "pares de divisas 24/7", "ai bot", "currency pair bot", "automatic alert", "alerta automatica",
         ))
-        panel_topic = ("live_panel" in planner_intents) or (live_reference and shown_tool_reference and tool_reference and not explicit_member_ai_bot)
+        # v7.10.72: una repregunta como “quiero las señales que tú muestras” debe
+        # conservar el referente del turno anterior (la interfaz/señales del LIVE),
+        # aunque el nuevo mensaje ya no repita las palabras "live", "bot" o "panel".
+        history_norm_live = _norm((history_text or "")[-4500:])
+        recent_live_panel_context = bool(
+            history_norm_live
+            and any(x in history_norm_live for x in ("live", "en vivo", "en vivos", "live session"))
+            and any(x in history_norm_live for x in (
+                "uso interno", "interfaz privada", "bot de uso interno", "herramienta privada",
+                "private tool", "internal use", "telegram",
+            ))
+        )
+        shown_signal_reference = any(x in q_norm for x in (
+            "senales que muestras", "senales que tu muestras", "senal que muestras", "senal que tu muestras",
+            "quiero esas senales", "quiero las senales que muestras", "quiero las senales que tu muestras",
+            "las que muestras", "esas senales que muestras", "signals you show", "the signals you show",
+            "i want those signals", "i want the signals you show",
+        ))
+        live_signal_followup = bool(shown_signal_reference and (recent_live_panel_context or live_reference) and not explicit_member_ai_bot)
+        panel_topic = (
+            ("live_panel" in planner_intents)
+            or (live_reference and shown_tool_reference and tool_reference and not explicit_member_ai_bot)
+            or live_signal_followup
+        )
         if panel_topic:
             planner_intents.add("live_panel")
             if planner_primary in ("", "other", "ai_bot") and not explicit_member_ai_bot:
@@ -9889,8 +10173,15 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
         scope_norm = q_norm + ("\n" + _norm(history_text[-3000:]) if ambiguous_followup and history_text else "")
         multi_pending = bool(planner.get("multi_question")) or question.count("?") >= 2 or len([x for x in re.split(r"[\n\r]+", question or "") if x.strip()]) >= 2
 
-        amount_usd = planner_amount
-        if amount_usd is None:
+        amount_context_allowed = bool(
+            explicit_level_question or entry_minimum_topic or next_step_heuristic or hypothetical_other_person
+            or any(x in q_norm for x in (
+                "deposito adicional", "depósito adicional", "otro deposito", "otro depósito", "redeposito", "redepósito",
+                "subir de nivel", "upgrade", "cuanto me falta", "cuánto me falta", "para llegar a premium", "para llegar a prestige",
+            ))
+        )
+        amount_usd = planner_amount if amount_context_allowed else None
+        if amount_usd is None and amount_context_allowed:
             amount_match = re.search(
                 r"(?:\$\s*)?(\d{2,5}(?:[.,]\d{1,2})?)(?:\s*(?:usd|dolares|dólares))?",
                 q_norm,
@@ -9933,7 +10224,9 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "todo lo que incluye", "que ofrece", "what is included", "what do i get",
         ))
         next_step_topic = "next_step" in planner_intents or next_step_heuristic
-        level_topic = "level" in planner_intents or broad_benefits or explicit_level_question or entry_minimum_topic
+        level_topic = broad_benefits or explicit_level_question or entry_minimum_topic or (
+            "level" in planner_intents and any(x in q_norm for x in ("nivel", "premium", "prestige", "basico", "básico", "basic"))
+        )
         course_topic = "courses" in planner_intents or any(x in scope_norm for x in (
             "curso", "cursos", "formacion", "modulo", "binary teams", "madness", "smart money", "algo & lit", "audiolibro", "material de estudio",
         ))
@@ -9942,7 +10235,8 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
         time_topic = "time_management" in planner_intents or any(x in scope_norm for x in (
             "organizarme", "organizar", "poco tiempo", "solo tengo un rato", "trabajo todo el dia", "cuanto tiempo", "rutina para operar", "2 horas", "dos horas",
         ))
-        risk_topic = "risk" in planner_intents or any(x in scope_norm for x in ("gestion de riesgo", "martingala", "mg1", "mg2", "sobreoper", "cuantas operaciones"))
+        profit_target_topic = _profit_target_query(question)
+        risk_topic = profit_target_topic or "risk" in planner_intents or any(x in scope_norm for x in ("gestion de riesgo", "martingala", "mg1", "mg2", "sobreoper", "cuantas operaciones"))
         account_topic = "existing_account" in planner_intents or any(x in scope_norm for x in ("cuenta antigua", "cuenta vieja", "ya tengo cuenta", "cuenta existente", "vinculada", "registrada contigo"))
         registration_topic = "registration" in planner_intents or account_topic or next_step_topic or any(x in scope_norm for x in ("registrarme", "registro", "enlace", "validar id", "id de binomo", "id de stockity"))
         broker_topic = "broker_upgrade" in planner_intents or any(x in scope_norm for x in ("upgrade", "subir de nivel", "otro deposito", "depositos acumul", "mismo broker", "dos brokers"))
@@ -10130,15 +10424,23 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                 )
         if panel_topic and not explicit_member_ai_bot:
             decision_lines.append(
-                "LIVE PANEL: the tool shown on screen in lives is Johanna's private internal interface. It is not delivered at any level. Members receive the corresponding same operational signals through Telegram for easier use on any device."
-                if lang == "en" else
-                "PANEL DEL LIVE: la herramienta que se muestra en pantalla en los lives es la interfaz privada de uso interno de Johanna. No se entrega en ningún nivel. Los miembros reciben por Telegram las señales operativas correspondientes para usarlas con facilidad desde cualquier dispositivo."
+                (
+                    "LIVE PANEL: the visual interface shown in lives is Johanna's private internal tool and is not delivered at any level. Delivering it would require download, installation, activation/configuration and ongoing updates on a computer, mainly tying it to one device. The signals included in the community levels are the SAME operational signals shown in the lives; what varies by level is quantity, markets and available tools. Those same signals are delivered through Telegram so they can be used from any device and anywhere. If this is a follow-up like 'I want the signals you show', explicitly say they are the same signals, not a different set."
+                    if lang == "en" else
+                    "PANEL DEL LIVE: la interfaz visual que se muestra en los lives es una herramienta privada de uso interno y no se entrega en ningún nivel. Entregarla implicaría descarga, instalación, activación/configuración y actualizaciones en computador, quedando ligada principalmente a un solo equipo. Las señales incluidas en los niveles de la comunidad son las MISMAS señales operativas que se muestran en los lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles. Esas mismas señales se entregan por Telegram para usarlas desde cualquier dispositivo y lugar. Si es una repregunta como 'quiero las señales que muestras', aclara explícitamente que son las mismas señales, no un conjunto diferente."
+                )
             )
         if bot_topic:
             decision_lines.append(
                 "AI BOT FACT: alerts are generated automatically 24/7, but the bot does not operate the user's account. The entry time is NOT freely chosen: take the entry on the minute immediately after the alert."
                 if lang == "en" else
                 "HECHO BOT IA: las alertas se generan automáticamente 24/7, pero el bot no opera la cuenta. El momento de entrada NO se elige libremente: la entrada se toma al minuto siguiente de recibir la alerta."
+            )
+        if profit_target_topic:
+            decision_lines.append(
+                "DAILY PROFIT TARGET: answer briefly with my reference of around 10–12% across the day, up to three ~40-minute sessions, explicitly as a non-guaranteed reference. Do NOT confuse 1–2% risk management with a daily profit target."
+                if lang == "en" else
+                "META DIARIA: responde breve con mi referencia de alrededor de 10–12% en el día, distribuida en hasta 3 sesiones de ~40 minutos, dejando claro que es una referencia no garantizada. NO confundas el 1–2% de gestión de riesgo con una meta de ganancia diaria."
             )
         if current_level_query:
             decision_lines.append(
@@ -10185,6 +10487,8 @@ OBJETIVO PRINCIPAL
 - PRINCIPIO DE MISMA CATEGORÍA: si preguntan por un curso, responde sobre cursos; si preguntan por señales, responde sobre las fuentes de señales; si preguntan por bots, responde sobre bots. Solo cruza categorías cuando sea necesario para contestar correctamente o cuando la pregunta sea amplia sobre beneficios/qué incluye.
 - REFERENCIAS A LO QUE SE VE EN LIVE: si el usuario habla del “bot/software/programa/herramienta que muestras o usas en vivo”, resuelve primero esa referencia como la interfaz visual privada del live. NO la conviertas en un bot de Premium/Prestige ni en un beneficio por nivel, salvo que la persona nombre explícitamente CRYPTO IDX 24/7 o el bot de pares de divisas 24/7.
 - Un monto o el nombre “Premium/Prestige/Básico” NO significa automáticamente “dime todos los beneficios”. Si la pregunta es específica, el nivel/monto solo sirve para ubicar la respuesta.
+- MONTO AISLADO ≠ NIVEL: si alguien solo cuenta “subí mi cuenta a 1000”, “mi cuenta llegó a 300”, “he operado con 300” o menciona un saldo pasado/presente sin preguntar por ingreso/nivel/depósito, NO infieras que está registrado conmigo, NO le asignes nivel y NO actives la explicación de 50/200/500. Responde al hecho humano que contó.
+- MENSAJES EMOCIONALES/EXPERIENCIA: si la persona cuenta miedo a perder, cuentas quemadas, frustración o ganas de renunciar, responde primero a ESO de forma humana y breve. No conviertas el relato en una venta ni metas mínimo 50/Premium 200 salvo que lo pregunte explícitamente.
 - “Qué me toca / qué hago / cómo sigo / por dónde empiezo” es lenguaje de FLUJO/SIGUIENTE PASO salvo que el mensaje diga explícitamente “qué nivel” o pregunte beneficios. Responde desde el estado operativo y luego, si hay monto, menciona el nivel de forma breve. No conviertas esto en una plantilla: redacta natural según la conversación.
 - MIEMBROS ACTIVOS: si ESTADO OPERATIVO REAL indica DEPOSITED + Básico/Premium/Prestige, ese nivel es la verdad actual. Nunca lo reemplaces por el nivel teórico de un monto mencionado. Responde sobre SUS herramientas/beneficios desde ese nivel; un depósito adicional solo puede cambiar el nivel después de validarse según las reglas de upgrade. Si ya es Prestige, no existe un nivel superior.
 - UPGRADE DE MIEMBRO ACTIVO: si pregunta “cuánto me falta”, “cuánto debo depositar para subir” o equivalente, usa SIEMPRE los datos persistidos por broker del CONTEXTO OPERATIVO REAL (acumulado upgrade, número de depósitos, ventana de 30 días y nivel actual). NO pidas su ID otra vez. Si la ventana está abierta, calcula la diferencia exacta hasta el siguiente nivel; si está cerrada, explica que el siguiente depósito debe alcanzar por sí solo el mínimo completo del nuevo nivel. Binomo y Stockity jamás se suman entre sí. Si hay más de un broker, explica el cálculo por separado.
@@ -10204,6 +10508,7 @@ CONTINUIDAD Y COMPRENSIÓN
 - TUTEA SIEMPRE: usa tú/te/tu/tus. No trates al usuario de “usted” ni uses “su/sus” para dirigirte directamente a esa persona. Si el nombre visible aparece en el contexto, puedes usarlo ocasionalmente cuando quede natural, no en cada respuesta.
 - No cierres por costumbre con "si tienes más preguntas", "estoy aquí para ayudarte", "¿cómo deseas proceder?" u otros cierres genéricos. Úsalos solo si aportan algo real.
 - Usa emojis con moderación. Si el usuario manda solo emojis/reacciones, responde como máximo con una reacción breve y no inventes emociones o intención de compra.
+- ACUSES BREVES: si la persona responde solo “ok”, “okay”, “gracias”, “entiendo”, “vale”, “perfecto”, “listo”, “de acuerdo” o una combinación breve equivalente, NO reinicies registro, niveles, mínimo de 50, beneficios ni enlaces. Responde únicamente con un acuse humano y corto, por ejemplo “Perfecto 😊, quedo pendiente” o equivalente contextual.
 
 VARIAS PREGUNTAS / MENSAJES SEGUIDOS
 - Lee el conjunto completo antes de responder. El usuario puede enviar 2, 3, 4 o más mensajes durante la espera de 4 minutos.
@@ -10238,6 +10543,7 @@ TEMAS PERSONALES / ESCALAMIENTO
 - Gestión de capital o gestión de cuenta: comienza EXACTAMENTE con [[PERSONAL_CHAT]] y deriva a mi chat personal; no expliques modalidades por iniciativa propia.
 - Problemas de disponibilidad/restricción por país o plataforma no disponible para registrarse: comienza EXACTAMENTE con [[PERSONAL_CHAT]] y deriva a mi chat personal. No expliques métodos para alterar ubicación ni repitas términos técnicos del usuario.
 - Casos extraordinarios de una cuenta específica que requieren revisar su estado real: [[PERSONAL_CHAT]].
+- Si el caso tiene varias cuentas/correos, reglas contradictorias, o requiere revisar un estado que no está confirmado en CONTEXTO OPERATIVO REAL, responde lo que sí sabes de forma breve y comienza con [[PERSONAL_CHAT]] para mostrar el botón de mi chat personal. No inventes para evitar escalar.
 - No prometas que voy a gestionar, crear, operar o administrar una cuenta salvo que exista una RESPUESTA PERSONAL REAL mía que lo confirme.
 
 LÍMITES
@@ -10277,7 +10583,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             "model": OPENAI_MODEL,
             "instructions": system,
             "input": user_input,
-            "max_output_tokens": 520 if multi_pending else 320,
+            "max_output_tokens": 420 if multi_pending else 220,
             "store": False,
         }
         async with httpx.AsyncClient(timeout=35) as client:
@@ -10457,34 +10763,75 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             answer = _trim_generic_ai_closer(answer, lang)
             answer = _clean_ai_plain_text_format(answer)
 
-        # v7.10.56 — GUARDIAS DURAS POST-GENERACIÓN. Estas dos verdades críticas
-        # no dependen de que el modelo "recuerde" obedecer el prompt.
-        # 1) La interfaz del LIVE es privada y nunca es un beneficio por nivel.
+        # v7.10.56 / v7.10.72 — GUARDIAS DURAS POST-GENERACIÓN.
+        # La interfaz del LIVE es privada y la explicación no puede hacer parecer
+        # que Telegram entrega señales distintas a las que se muestran en los lives.
         if panel_topic and not explicit_member_ai_bot:
             panel_norm = _norm(answer or "")
             panel_has_private_fact = any(x in panel_norm for x in (
                 "uso interno", "uso personal", "interfaz privada", "private internal", "private tool", "internal use"
             ))
             panel_has_telegram_fact = "telegram" in panel_norm
+            panel_has_same_signals_fact = any(x in panel_norm for x in (
+                "mismas senales", "misma senal", "same operational signals", "same signals"
+            ))
+            panel_has_install_fact = any(x in panel_norm for x in (
+                "instalacion", "instalar", "descarga", "download", "installation", "install"
+            ))
+            panel_has_setup_update_fact = any(x in panel_norm for x in (
+                "configuracion", "activacion", "actualizacion", "mantenimiento",
+                "configuration", "activation", "update", "maintenance"
+            ))
+            panel_has_single_device_fact = any(x in panel_norm for x in (
+                "un solo equipo", "un equipo", "single device", "one device", "one computer"
+            ))
+            panel_has_any_device_fact = any(x in panel_norm for x in (
+                "cualquier dispositivo", "any device"
+            ))
+            panel_has_anywhere_fact = any(x in panel_norm for x in (
+                "cualquier lugar", "desde cualquier lugar", "wherever", "anywhere"
+            ))
             panel_wrong_level = any(x in panel_norm for x in (
                 "parte de mis herramientas en la comunidad", "incluida en prestige", "incluido en prestige",
                 "acceso por estar en prestige", "part of my community tools", "included with prestige",
                 "access because you are prestige"
             ))
-            if (not panel_has_private_fact) or (not panel_has_telegram_fact) or panel_wrong_level:
+            panel_incomplete = not all((
+                panel_has_private_fact,
+                panel_has_telegram_fact,
+                panel_has_same_signals_fact,
+                panel_has_install_fact,
+                panel_has_setup_update_fact,
+                panel_has_single_device_fact,
+                panel_has_any_device_fact,
+                panel_has_anywhere_fact,
+            ))
+            if panel_incomplete or panel_wrong_level:
                 if lang == "en":
-                    panel_block = (
-                        "The interface I show during my live sessions is a private tool I use internally, so I don't deliver or install it for community members. "
-                        "It requires computer installation, configuration and updates; the same operational signals are delivered through Telegram so you can access them more easily from any device and wherever you are."
-                    )
+                    if live_signal_followup:
+                        panel_block = (
+                            "Yes. The signals included in the different levels of my community are the same operational signals I show during my live sessions; what changes by level is the quantity, markets and available tools. "
+                            "What I don't deliver is the visual interface itself, because it would require download, installation, activation/configuration and ongoing updates on a computer and would mainly be tied to one device. Through Telegram you receive those same signals from any device and anywhere, which is much more practical."
+                        )
+                    else:
+                        panel_block = (
+                            "The visual interface I show during my live sessions is a private internal tool, so I don't deliver or install it for community members. "
+                            "It would require download, installation, activation/configuration and ongoing updates on a computer and would mainly be tied to one device. The signals included in the different community levels are the same operational signals I show in the lives; what changes by level is the quantity, markets and available tools. Through Telegram you receive those same signals from any device and anywhere, which is much more practical."
+                        )
                 else:
-                    panel_block = (
-                        "La interfaz que muestro en los en vivos es una herramienta privada de uso personal e interno, por eso no la entrego ni la instalo a los miembros de la comunidad. "
-                        "Requiere instalación, configuración y actualizaciones en computador; las mismas señales operativas se entregan por Telegram para que puedas acceder a ellas de forma práctica desde cualquier dispositivo y lugar."
-                    )
+                    if live_signal_followup:
+                        panel_block = (
+                            "Sí. Las señales incluidas en los distintos niveles de mi comunidad son las mismas señales operativas que muestro en mis lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles. "
+                            "Lo que no entrego es la interfaz visual como tal, porque requeriría descarga, instalación, activación/configuración y actualizaciones en computador y quedaría ligada principalmente a un solo equipo. Por Telegram recibes esas mismas señales desde cualquier dispositivo y cualquier lugar, por eso resulta mucho más práctico."
+                        )
+                    else:
+                        panel_block = (
+                            "La interfaz visual que muestro en mis lives es una herramienta privada de uso interno, por eso no la entrego ni la instalo a los miembros de la comunidad. "
+                            "Requeriría descarga, instalación, activación/configuración y actualizaciones en computador y quedaría ligada principalmente a un solo equipo. Las señales incluidas en los distintos niveles son las mismas señales operativas que muestro en los lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles. Por Telegram recibes esas mismas señales desde cualquier dispositivo y cualquier lugar, por eso resulta mucho más práctico."
+                        )
                 if multi_pending:
                     # No borrar las demás respuestas del paquete: quitamos únicamente
-                    # párrafos que intentaron responder MAL sobre la interfaz del live.
+                    # párrafos que intentaron responder MAL sobre la interfaz/señales del live.
                     kept_parts = []
                     for part in re.split(r"\n\s*\n+", answer or ""):
                         pn = _norm(part)
@@ -10492,6 +10839,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                             "en vivo", "en los vivos", "live session", "during live", "on live",
                             "interfaz", "panel", "programa que muestro", "software que muestro",
                             "herramienta que muestro", "bot que muestro", "on screen",
+                            "senales que muestro", "signals i show", "signals you show",
                         ))
                         if part.strip() and not live_specific:
                             kept_parts.append(part.strip())
@@ -10647,10 +10995,10 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         if answer:
             if lang == "en":
                 replacements = (
-                    (r"\bJohanna\s+(?:typically|normally|usually)\s+recommends?\b", "I normally recommend"),
-                    (r"\bJohanna\s+recommends?\b", "I recommend"),
-                    (r"\bJohanna\s+suggests?\b", "I suggest"),
-                    (r"\bJohanna\s+advises?\b", "I recommend"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+(?:typically|normally|usually)\s+recommends?\b", "I normally recommend"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+recommends?\b", "I recommend"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+suggests?\b", "I suggest"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+advises?\b", "I recommend"),
                     (r"\bJohanna['’]s\s+community\b", "my community"),
                     (r"\bJohanna['’]s\s+links?\b", "my links"),
                     (r"\bJohanna['’]s\s+recommendation\b", "my recommendation"),
@@ -10661,11 +11009,11 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                 )
             else:
                 replacements = (
-                    (r"\bJohanna\s+suele\s+recomendar\b", "suelo recomendar"),
-                    (r"\bJohanna\s+normalmente\s+recomienda\b", "normalmente recomiendo"),
-                    (r"\bJohanna\s+recomienda\b", "recomiendo"),
-                    (r"\bJohanna\s+sugiere\b", "sugiero"),
-                    (r"\bJohanna\s+aconseja\b", "aconsejo"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+suele\s+recomendar\b", "suelo recomendar"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+normalmente\s+recomienda\b", "normalmente recomiendo"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+recomienda\b", "recomiendo"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+sugiere\b", "sugiero"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+aconseja\b", "aconsejo"),
                     (r"\bla\s+comunidad\s+de\s+Johanna\b", "mi comunidad"),
                     (r"\blos\s+enlaces\s+de\s+Johanna\b", "mis enlaces"),
                     (r"\bla\s+recomendaci[oó]n\s+de\s+Johanna\b", "mi recomendación"),
@@ -10674,10 +11022,24 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                 )
             for pattern, repl in replacements:
                 answer = re.sub(pattern, repl, answer, flags=re.IGNORECASE)
+            # Casos donde el modelo mezcla primera y tercera persona sin escribir mi nombre.
+            if lang == "en":
+                answer = re.sub(r"\buse\s+her\s+(link|links)\b", r"use my \1", answer, flags=re.I)
+                answer = re.sub(r"\busing\s+her\s+(link|links)\b", r"using my \1", answer, flags=re.I)
+                answer = re.sub(r"\bthrough\s+her\s+(link|links)\b", r"through my \1", answer, flags=re.I)
+                answer = re.sub(r"\bwith\s+her\s+(link|links)\b", r"with my \1", answer, flags=re.I)
+                answer = re.sub(r"\bher\s+community\b", "my community", answer, flags=re.I)
+            else:
+                answer = re.sub(r"\busar\s+su\s+enlace\b", "usar mi enlace", answer, flags=re.I)
+                answer = re.sub(r"\busando\s+su\s+enlace\b", "usando mi enlace", answer, flags=re.I)
+                answer = re.sub(r"\bcon\s+su\s+enlace\b", "con mi enlace", answer, flags=re.I)
+                answer = re.sub(r"\bmediante\s+su\s+enlace\b", "mediante mi enlace", answer, flags=re.I)
+                answer = re.sub(r"\ba trav[eé]s de\s+su\s+enlace\b", "a través de mi enlace", answer, flags=re.I)
+                answer = re.sub(r"\bsu\s+comunidad\b", "mi comunidad", answer, flags=re.I)
 
             # Si el nombre aparece todavía como sujeto/posesivo fuera de una identificación
             # explícita ("I am Johanna" / "Soy Johanna"), registra el caso para auditoría.
-            residual = re.search(r"\bJohanna\b", answer, flags=re.IGNORECASE)
+            residual = re.search(r"\b(?:Johanna|Joana|Johana)\b", answer, flags=re.IGNORECASE)
             identity_ok = re.search(r"\b(?:I\s+am|I['’]m|Soy)\s+Johanna\b", answer, flags=re.IGNORECASE)
             if residual and not identity_ok:
                 logging.warning("Guardia de primera persona detectó referencia residual a Johanna para %s: %s", chat_id, answer[:300])
@@ -10805,10 +11167,13 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         answer = _personalize_referral_links(answer, chat_id)
+        base_markup = personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang, chat_id)
+        if _should_offer_personal_chat(chat_id, question, personal_review=personal_review):
+            base_markup = _append_personal_chat_button(base_markup, lang)
         await context.bot.send_message(
             chat_id=chat_id,
             text=answer,
-            reply_markup=personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang, chat_id),
+            reply_markup=base_markup,
             disable_web_page_preview=True,
         )
         _clear_pending_ai_db(chat_id)
@@ -11003,18 +11368,34 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
                     if lang == "es" else
                     "💳 Perfect. Send me the screenshot of the additional deposit and I’ll review it under the level-update conditions."
                 )
-        elif stage_now == STAGE_POST:
+        elif _has_validated_trading_id_for_deposit(chat_id):
             block = (
-                "💳 Perfecto. Envíame aquí el comprobante de depósito/activación para revisar el monto y habilitar el nivel que corresponda."
+                "💳 Perfecto. Tu ID ya está validado conmigo. Ahora envíame aquí el comprobante de tu depósito para revisar el monto y habilitar el nivel que corresponda."
                 if lang == "es" else
-                "💳 Perfect. Send me the deposit/activation proof here so I can review the amount and enable the corresponding level."
+                "💳 Perfect. Your ID is already validated with me. Now send me your deposit proof so I can review the amount and enable the corresponding level."
             )
+            if _signals_channel_request(texto):
+                block += (
+                    " En cuanto valide el depósito, te habilito los accesos de señales que correspondan a tu nivel."
+                    if lang == "es" else
+                    " As soon as I validate the deposit, I’ll enable the signal access included in your level."
+                )
+                if "SENALES" in effective_intents and "SENALES" not in handled_operational:
+                    handled_operational.append("SENALES")
         else:
             block = (
-                "💳 Perfecto. Envíame aquí el comprobante y tu ID de Stockity o Binomo en texto para revisarlo y continuar."
+                "💳 Antes de revisar tu depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo o Stockity para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
                 if lang == "es" else
-                "💳 Perfect. Send me the proof and your Stockity/Binomo ID as text so I can review it and continue."
+                "💳 Before I review your deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo or Stockity ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
             )
+            if _signals_channel_request(texto):
+                block += (
+                    " Después de validar primero el ID y luego el depósito, te habilito los accesos de señales que correspondan a tu nivel."
+                    if lang == "es" else
+                    " After the ID is validated first and then the deposit is validated, I’ll enable the signal access included in your level."
+                )
+                if "SENALES" in effective_intents and "SENALES" not in handled_operational:
+                    handled_operational.append("SENALES")
         await update.effective_message.reply_text(block)
         handled_operational.append("DEPOSITO")
 
@@ -11163,6 +11544,43 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     texto = update.message.text or update.message.caption or user_audio_transcript or ""
     if not texto.strip():
+        return
+
+    # v7.10.73 — ROUTER CONVERSACIONAL PREVIO A INTENCIONES COMERCIALES.
+    # Evita que un "OK", un logro de saldo o una historia de varias cuentas
+    # sea secuestrada por reglas de niveles/ingreso.
+    if _is_short_acknowledgement(texto):
+        msg = _concise_ack_reply(lang)
+        kb = _append_personal_chat_button(None, lang) if _should_offer_personal_chat(chat_id, texto) else None
+        await update.message.reply_text(msg, reply_markup=kb)
+        await send_admin_auto_log(context, update, "AI_SHORT_ACK", msg)
+        return
+
+    if _is_balance_progress_statement(texto):
+        msg = _balance_progress_reply(lang)
+        kb = _append_personal_chat_button(None, lang) if _should_offer_personal_chat(chat_id, texto) else None
+        await update.message.reply_text(msg, reply_markup=kb)
+        await send_admin_auto_log(context, update, "AI_BALANCE_PROGRESS", msg)
+        return
+
+    if _emotional_trading_context(texto):
+        msg = _emotional_trading_reply(lang)
+        kb = _append_personal_chat_button(None, lang) if _should_offer_personal_chat(chat_id, texto) else None
+        await update.message.reply_text(msg, reply_markup=kb)
+        await send_admin_auto_log(context, update, "EMOTIONAL_TRADING_CONTEXT", msg)
+        return
+
+    if _multiple_personal_accounts_case(texto):
+        msg = _multiple_accounts_reply(texto, lang)
+        await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
+        await send_admin_auto_log(context, update, "MULTIPLE_PERSONAL_ACCOUNTS", msg)
+        return
+
+    if _profit_target_query(texto) and not any(x in _norm(texto) for x in ("deposito", "depósito", "registro", "registr", "nivel", "premium", "prestige")):
+        msg = _profit_target_reply(lang)
+        kb = _append_personal_chat_button(None, lang) if _should_offer_personal_chat(chat_id, texto) else None
+        await update.message.reply_text(msg, reply_markup=kb)
+        await send_admin_auto_log(context, update, "DAILY_PROFIT_TARGET", msg)
         return
 
     # Soporte operativo conocido: si Telegram limita varias incorporaciones
@@ -11488,18 +11906,30 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == "es" else
                     "Perfect ✅\n\nSend me the screenshot of the additional deposit. I’ll review it under the level-update conditions and confirm the result."
                 )
-        elif stage_now == STAGE_POST:
+        elif _has_validated_trading_id_for_deposit(chat_id):
             msg = (
-                "Perfecto ✅\n\nEnvíame aquí tu comprobante de depósito/activación (foto o captura). Revisaré el monto y te confirmaré el nivel que queda habilitado."
+                "Perfecto ✅ Tu ID ya está validado conmigo. Ahora envíame aquí el comprobante de tu depósito (foto o captura). Revisaré el monto y te confirmaré el nivel que queda habilitado."
                 if lang == "es" else
-                "Perfect ✅\n\nSend me your deposit/activation proof here (photo or screenshot). I’ll review the amount and confirm which level is enabled."
+                "Perfect ✅ Your ID is already validated with me. Now send me your deposit proof here (photo or screenshot). I’ll review the amount and confirm which level is enabled."
             )
+            if _signals_channel_request(texto):
+                msg += (
+                    " En cuanto valide el depósito, te habilito los accesos de señales que correspondan a tu nivel."
+                    if lang == "es" else
+                    " As soon as I validate the deposit, I’ll enable the signal access included in your level."
+                )
         else:
             msg = (
-                "Perfecto ✅\n\nEnvíame aquí tu comprobante de depósito/activación (foto o captura) y también tu ID de Stockity o Binomo en texto para validarlo y habilitar tu acceso."
+                "Antes de revisar tu depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo o Stockity para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
                 if lang == "es" else
-                "Perfect ✅\n\nSend me your deposit/activation proof and your Stockity/Binomo ID as text so it can be validated and your access enabled."
+                "Before I review your deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo or Stockity ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
             )
+            if _signals_channel_request(texto):
+                msg += (
+                    " Después de validar primero el ID y luego el depósito, te habilito los accesos de señales que correspondan a tu nivel."
+                    if lang == "es" else
+                    " After the ID is validated first and then the deposit is validated, I’ll enable the signal access included in your level."
+                )
         await update.message.reply_text(msg)
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM", msg)
         return
