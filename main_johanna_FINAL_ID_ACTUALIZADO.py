@@ -55,7 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.64-20260921-UPGRADE-DEADLINE-PRESTIGE-TOPIC-PRIVACY-FIX"
+BOT_VERSION = "v7.10.68-20260922-FIRST-PERSON-HARD-GUARD-AUDITED"
+# v7.10.67: restaura el ÚNICO reporte automático diario a las 6:58 p. m. Colombia, elimina cualquier job heredado de las 11:00 p. m. y conserva la claridad de métricas de v7.10.66.
+# v7.10.66: aclaró visualmente métricas Canal→Bot, pendientes del bot y Affiliate sin cambiar su cálculo.
 # v7.10.64: upgrade activo responde desde estado persistido con monto + fecha límite exacta; Prestige corta falsas subidas; no vuelve a cerrar/ocultar General en cada redeploy.
 # v7.10.62: mínimo/ingreso mantiene respuesta generativa, pero valida y completa hechos obligatorios antes de enviar; sin inventar montos por país/broker.
 # v7.10.59: CTA específico por nivel + respuestas de nivel compactas + repreguntas contextuales sin repetir señales ya explicadas.
@@ -199,6 +201,10 @@ class Usuario(Base):
     stage          = Column(String, default="PRE")
     # Memoria y cola persistente para respuestas con IA
     ai_history             = Column(Text)
+    # Memoria conversacional de largo plazo. Solo conserva contexto confiable
+    # (mensajes del usuario y respuestas manuales reales de Johanna), nunca
+    # respuestas generadas por IA como fuente factual.
+    ai_memory_summary      = Column(Text)
     ai_pending_text        = Column(Text)
     ai_pending_message_id  = Column(String)
     ai_pending_due_at      = Column(DateTime)
@@ -639,6 +645,7 @@ try:
     if backend.startswith("postgres"):
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_history TEXT"))
+            conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_memory_summary TEXT"))
             conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_pending_text TEXT"))
             conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_pending_message_id VARCHAR"))
             conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ai_pending_due_at TIMESTAMP"))
@@ -648,6 +655,8 @@ try:
             names = {c[1] for c in cols}
             if "ai_history" not in names:
                 conn.execute(text("ALTER TABLE usuarios ADD COLUMN ai_history TEXT"))
+            if "ai_memory_summary" not in names:
+                conn.execute(text("ALTER TABLE usuarios ADD COLUMN ai_memory_summary TEXT"))
             if "ai_pending_text" not in names:
                 conn.execute(text("ALTER TABLE usuarios ADD COLUMN ai_pending_text TEXT"))
             if "ai_pending_message_id" not in names:
@@ -1068,12 +1077,26 @@ def upgrade_conditions_text(lang: str = "es") -> str:
     )
 
 
-def upgrade_info_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
-    """En confirmaciones de depósito muestra solo la información útil del upgrade."""
+def upgrade_info_keyboard(lang: str = "es", target_level: str = None) -> InlineKeyboardMarkup:
+    """CTA de upgrade: nivel objetivo cuando se conoce + condiciones de acumulación."""
+    rows = []
+    if target_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE):
+        if lang == "en":
+            labels = {
+                VIP_LEVEL_BASIC: "🟢 VIEW BASIC LEVEL",
+                VIP_LEVEL_PREMIUM: "🔵 VIEW PREMIUM LEVEL",
+                VIP_LEVEL_PRESTIGE: "🏆 VIEW PRESTIGE LEVEL",
+            }
+        else:
+            labels = {
+                VIP_LEVEL_BASIC: "🟢 VER NIVEL BÁSICO",
+                VIP_LEVEL_PREMIUM: "🔵 VER NIVEL PREMIUM",
+                VIP_LEVEL_PRESTIGE: "🏆 VER NIVEL PRESTIGE",
+            }
+        rows.append([InlineKeyboardButton(labels[target_level], callback_data=f"level_detail:{target_level}")])
     label = "ℹ️ VIEW UPGRADE CONDITIONS" if lang == "en" else "ℹ️ VER CONDICIONES DE UPGRADE"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(label, callback_data="upgrade_conditions")],
-    ])
+    rows.append([InlineKeyboardButton(label, callback_data="upgrade_conditions")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _broker_preview_deposit(chat_id: int, broker: str, amount_cents: int, timely: bool):
@@ -3428,20 +3451,28 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
 
     if affiliate_ok:
         affiliate_ads_line = (
-            f"📈 Affiliate Top: 📝 Registros {aff_ads[0]} | 💰 1er depósito {aff_ads[1]} | ♻️ Redepósitos {aff_ads[2]}\n"
+            f"📈 AFFILIATE · ADS\n"
+            f"📝 Registros partner: {aff_ads[0]}\n"
+            f"💰 Primer depósito partner: {aff_ads[1]}\n"
+            f"♻️ Redepósitos partner: {aff_ads[2]}\n"
         )
         affiliate_organic_line = (
-            f"📈 Affiliate Top: 📝 Registros {aff_organic[0]} | 💰 1er depósito {aff_organic[1]} | ♻️ Redepósitos {aff_organic[2]}\n"
+            f"📈 AFFILIATE · ORGÁNICO / OTROS\n"
+            f"📝 Registros partner: {aff_organic[0]}\n"
+            f"💰 Primer depósito partner: {aff_organic[1]}\n"
+            f"♻️ Redepósitos partner: {aff_organic[2]}\n"
         )
         affiliate_unattributed_line = ""
         if any(aff_unattributed):
             affiliate_unattributed_line = (
-                f"🔎 Affiliate sin atribuir: Registros {aff_unattributed[0]} | "
-                f"1er depósito {aff_unattributed[1]} | Redepósitos {aff_unattributed[2]}\n"
+                f"🔎 AFFILIATE SIN ATRIBUIR\n"
+                f"📝 Registros partner: {aff_unattributed[0]}\n"
+                f"💰 Primer depósito partner: {aff_unattributed[1]}\n"
+                f"♻️ Redepósitos partner: {aff_unattributed[2]}\n"
             )
     else:
-        affiliate_ads_line = "📈 Affiliate Top: ⚠️ no disponible\n"
-        affiliate_organic_line = "📈 Affiliate Top: ⚠️ no disponible\n"
+        affiliate_ads_line = "📈 AFFILIATE · ADS\n⚠️ Datos partner no disponibles\n"
+        affiliate_organic_line = "📈 AFFILIATE · ORGÁNICO / OTROS\n⚠️ Datos partner no disponibles\n"
         affiliate_unattributed_line = ""
 
     no_id_users = set()
@@ -3468,26 +3499,40 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
 
     fecha = now_local.strftime("%d/%m/%Y")
     return (
-        f"📊 REPORTE DIARIO — {fecha}\n\n"
+        f"📊 REPORTE DEL DÍA — {fecha}\n\n"
         f"📣 ADS\n"
-        f"🎯 Bot-puerta: {len(ads_gate_starts)} | 📥 Canal: {len(channel_join_ads_ids)}\n"
-        f"🤖 Del canal al bot: {welcome_ads} | 🚀 Entrada registro: {registration_entry_ads}\n"
-        f"👤 Escribieron: {writers_ads} | 💬 Mensajes: {messages_ads}\n"
-        f"🆔 ID enviados: {ids_sent_ads} | ✅ Validados: {ids_validated_ads}\n"
-        f"💳 Avisaron depósito: {deposits_reported_ads} | 🟢 Confirmados: {activated_ads}\n"
-        f"{affiliate_ads_line}"
-        f"⏳ Sin ID: {no_id_ads} | ID validado sin depósito: {waiting_ads}\n\n"
+        f"🎯 Bot-puerta ADS: {len(ads_gate_starts)}\n"
+        f"📥 Nuevos en canal: {len(channel_join_ads_ids)}\n"
+        f"🤖 Canal → bot (enlace de bienvenida): {welcome_ads}\n"
+        f"🚀 Iniciaron registro: {registration_entry_ads}\n"
+        f"👤 Usuarios que escribieron: {writers_ads}\n"
+        f"💬 Mensajes recibidos: {messages_ads}\n"
+        f"🆔 ID enviados: {ids_sent_ads}\n"
+        f"✅ ID validados: {ids_validated_ads}\n"
+        f"💳 Avisaron depósito: {deposits_reported_ads}\n"
+        f"🟢 Depósitos confirmados: {activated_ads}\n\n"
+        f"⏳ PENDIENTES DEL BOT · ADS\n"
+        f"🕓 Escribieron y siguen sin ID: {no_id_ads}\n"
+        f"⌛ ID validado hoy y aún sin depósito reportado: {waiting_ads}\n\n"
+        f"{affiliate_ads_line}\n"
         f"🌱 ORGÁNICO / OTROS\n"
-        f"📥 Canal: {len(channel_join_organic_ids)} | 🤖 Del canal al bot: {welcome_organic}\n"
-        f"🚀 Entrada registro: {registration_entry_organic}\n"
-        f"👤 Escribieron: {writers_organic} | 💬 Mensajes: {messages_organic}\n"
-        f"🆔 ID enviados: {ids_sent_organic} | ✅ Validados: {ids_validated_organic}\n"
-        f"💳 Avisaron depósito: {deposits_reported_organic} | 🟢 Confirmados: {activated_organic}\n"
+        f"📥 Nuevos en canal: {len(channel_join_organic_ids)}\n"
+        f"🤖 Canal → bot (enlace de bienvenida): {welcome_organic}\n"
+        f"🚀 Iniciaron registro: {registration_entry_organic}\n"
+        f"👤 Usuarios que escribieron: {writers_organic}\n"
+        f"💬 Mensajes recibidos: {messages_organic}\n"
+        f"🆔 ID enviados: {ids_sent_organic}\n"
+        f"✅ ID validados: {ids_validated_organic}\n"
+        f"💳 Avisaron depósito: {deposits_reported_organic}\n"
+        f"🟢 Depósitos confirmados: {activated_organic}\n\n"
+        f"⏳ PENDIENTES DEL BOT · ORGÁNICO / OTROS\n"
+        f"🕓 Escribieron y siguen sin ID: {no_id_organic}\n"
+        f"⌛ ID validado hoy y aún sin depósito reportado: {waiting_organic}\n\n"
         f"{affiliate_organic_line}"
-        f"⏳ Sin ID: {no_id_organic} | ID validado sin depósito: {waiting_organic}\n\n"
         f"{affiliate_unattributed_line}"
+        "\nℹ️ 'Nuevos en canal' y 'Canal → bot' son pasos distintos del recorrido.\n"
         "ℹ️ Orgánico/Otros = toda persona sin atribución ADS confirmada.\n"
-        "⏰ Corte: 11:00 p. m. Colombia."
+        "🕒 Datos acumulados del día hasta el momento de generar el reporte."
     )
 
 
@@ -3580,18 +3625,26 @@ async def report_group_test_command(update: Update, context: ContextTypes.DEFAUL
 
 
 def schedule_daily_report(application):
+    """Mantiene UN SOLO reporte automático diario: 6:58 p. m. Colombia.
+
+    Antes de programarlo elimina tanto el job histórico de las 11:00 p. m. como
+    cualquier instancia previa del job de las 6:58 p. m., evitando duplicados tras
+    redeploys/reinicios. Se conservan /reporte, el botón del panel y /reportegrupo.
+    """
     if not application.job_queue:
         return
     try:
-        for job in application.job_queue.get_jobs_by_name("DAILY_REPORT_23_CO"):
-            job.schedule_removal()
+        for job_name in ("DAILY_REPORT_23_CO", "DAILY_REPORT_1858_CO"):
+            for job in application.job_queue.get_jobs_by_name(job_name):
+                job.schedule_removal()
     except Exception:
         pass
     application.job_queue.run_daily(
         daily_report_job,
-        time=dt_time(hour=23, minute=0, tzinfo=COLOMBIA_TZ),
-        name="DAILY_REPORT_23_CO",
+        time=dt_time(hour=18, minute=58, tzinfo=COLOMBIA_TZ),
+        name="DAILY_REPORT_1858_CO",
     )
+    logging.info("📊 Reporte automático diario programado: 6:58 p. m. Colombia (único horario).")
 
 
 # === Teclado de soporte (ES/EN según idioma del usuario) ===
@@ -3719,14 +3772,23 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
         "todavia puedo subir", "todavía puedo subir", "aun puedo subir", "aún puedo subir",
         "puedo subir de nivel", "puedo subir", "deposito mas", "depósito más", "depositar mas", "depositar más",
         "hasta que dia puedo depositar", "hasta qué día puedo depositar", "hasta cuando puedo depositar", "hasta cuándo puedo depositar",
+        "hasta que fecha puedo depositar", "hasta qué fecha puedo depositar", "fecha limite para depositar", "fecha límite para depositar",
+        "cuantos dias tengo", "cuántos días tengo", "cuanto tiempo tengo para depositar", "cuánto tiempo tengo para depositar",
+        "plazo para depositar", "ventana de 30 dias", "ventana de 30 días",
         "how much do i need to upgrade", "how much am i missing", "upgrade my level", "can i still upgrade",
+        "upgrade deadline", "how long do i have to deposit",
+    )) or any(x in t for x in (
+        "mas herramientas", "más herramientas", "herramientas adicionales", "more tools",
+        "mas señales", "más señales", "more signals", "more resources",
     )) or (
-        any(x in t for x in ("mas herramientas", "más herramientas", "herramientas adicionales", "more tools"))
-        and any(x in t for x in ("deposit", "subir", "nivel", "upgrade"))
+        any(x in t for x in ("deposit", "depósit", "recarg", "redeposit"))
+        and any(x in t for x in ("fecha", "plazo", "hasta", "ventana", "beneficio", "herramient", "nivel", "subir", "upgrade"))
     )
     if active_member and upgrade_query:
-        if current_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
-            return upgrade_info_keyboard(lang)
+        if current_level == VIP_LEVEL_BASIC:
+            return upgrade_info_keyboard(lang, VIP_LEVEL_PREMIUM)
+        if current_level == VIP_LEVEL_PREMIUM:
+            return upgrade_info_keyboard(lang, VIP_LEVEL_PRESTIGE)
         return None
 
     # Las consultas sobre con cuánto ingresar/empezar SIEMPRE deben acercar la
@@ -3739,6 +3801,13 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     current_level_query = any(x in t for x in (
         "que nivel tengo", "qué nivel tengo", "cual es mi nivel", "cuál es mi nivel",
         "mi nivel actual", "actualmente que nivel", "actualmente qué nivel", "en que nivel estoy", "en qué nivel estoy",
+        "soy premium", "soy prestige", "soy basico", "soy básico",
+        "soy nivel premium", "soy nivel prestige", "soy nivel basico", "soy nivel básico",
+        "estoy en premium", "estoy en prestige", "estoy en basico", "estoy en básico",
+        "estoy en nivel premium", "estoy en nivel prestige", "estoy en nivel basico", "estoy en nivel básico",
+        "mi nivel es premium", "mi nivel es prestige", "mi nivel es basico", "mi nivel es básico",
+        "sigo en premium", "sigo en prestige", "sigo siendo premium", "sigo siendo prestige",
+        "am i premium", "am i prestige", "am i basic", "i am premium", "i am prestige",
         "what level am i", "what is my level", "my current level",
     ))
     own_level_benefits = any(x in t for x in (
@@ -4143,9 +4212,13 @@ def _admin_user_list_keyboard(rows, page: int = 0, total_count: int | None = Non
 
 
 def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
-    """Muestra solo la siguiente acción válida según la etapa actual."""
+    """Muestra acciones válidas y acceso rápido de solo lectura al ID validado."""
     stage = get_user_stage(chat_id)
     buttons = []
+    validated_brokers = [r for r in _broker_rows(chat_id, validated_only=True) if str(r.get("trading_id") or "").strip()]
+    has_validated_id = bool(validated_brokers) or (stage in (STAGE_POST, STAGE_DEPOSITED) and bool((_get_saved_trading_id(chat_id) or "").strip()))
+    if has_validated_id:
+        buttons.append([InlineKeyboardButton("🆔 VER ID VALIDADO", callback_data=f"admin_user_ids:{chat_id}")])
     if stage == STAGE_PRE:
         buttons.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
         if _get_saved_trading_id(chat_id):
@@ -4153,7 +4226,9 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     elif stage == STAGE_POST:
         buttons.append([InlineKeyboardButton("💰 REVISAR DEPÓSITO", callback_data=f"admin_user_deposit:{chat_id}")])
     elif stage == STAGE_DEPOSITED:
-        buttons.append([InlineKeyboardButton("💰 REVISAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
+        active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        if active_level != VIP_LEVEL_PRESTIGE:
+            buttons.append([InlineKeyboardButton("💰 REVISAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
     buttons.extend([
         [InlineKeyboardButton("🔎 BUSCAR OTRO", callback_data="admin_user_search")],
         [InlineKeyboardButton("👥 PENDIENTES RECIENTES", callback_data="admin_user_list")],
@@ -4175,8 +4250,13 @@ def admin_user_quick_keyboard(chat_id: int, event_kind: str = "") -> InlineKeybo
         rows.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
         rows.append([InlineKeyboardButton("❌ ID ERRADO", callback_data=f"admin_user_reject:{chat_id}")])
     elif event_kind == "deposit_proof" and stage in (STAGE_POST, STAGE_DEPOSITED):
-        label = "💰 REVISAR DEPÓSITO" if stage == STAGE_POST else "💰 REVISAR DEPÓSITO / SUBIR NIVEL"
-        rows.append([InlineKeyboardButton(label, callback_data=f"admin_user_deposit:{chat_id}")])
+        active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        if stage == STAGE_POST or active_level != VIP_LEVEL_PRESTIGE:
+            label = "💰 REVISAR DEPÓSITO" if stage == STAGE_POST else "💰 REVISAR DEPÓSITO / SUBIR NIVEL"
+            rows.append([InlineKeyboardButton(label, callback_data=f"admin_user_deposit:{chat_id}")])
+        validated_brokers = [r for r in _broker_rows(chat_id, validated_only=True) if str(r.get("trading_id") or "").strip()]
+        if validated_brokers or (stage in (STAGE_POST, STAGE_DEPOSITED) and bool((_get_saved_trading_id(chat_id) or "").strip())):
+            rows.append([InlineKeyboardButton("🆔 VER ID VALIDADO", callback_data=f"admin_user_ids:{chat_id}")])
     rows.append([InlineKeyboardButton("👤 GESTIONAR", callback_data=f"admin_user_open:{chat_id}")])
     return InlineKeyboardMarkup(rows)
 
@@ -4951,7 +5031,7 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await _show_admin_user_list(context, page=int(page_match.group(1)))
         return
 
-    m = re.fullmatch(r"admin_user_(open|validate|validate_confirm|reject|reject_confirm|deposit|deposit_confirm|activate|activate_confirm):(\d+)", data)
+    m = re.fullmatch(r"admin_user_(open|ids|validate|validate_confirm|reject|reject_confirm|deposit|deposit_confirm|activate|activate_confirm):(\d+)", data)
     if not m:
         return
     action, raw_id = m.groups()
@@ -4965,6 +5045,37 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop("admin_user_action", None)
         context.user_data.pop("admin_pending_deposit", None)
         await _show_admin_user(context, chat_id)
+        return
+
+    if action == "ids":
+        record = _admin_user_record(chat_id)
+        if not record:
+            await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ No encontré ese usuario.")
+            return
+        validated_rows = [
+            r for r in _broker_rows(chat_id, validated_only=True)
+            if str(r.get("trading_id") or "").strip()
+        ]
+        lines = [f"👤 {record['nombre']}"]
+        if len(validated_rows) == 1:
+            lines.append(f"🆔 {str(validated_rows[0].get('trading_id') or '').strip()}")
+        elif len(validated_rows) > 1:
+            for state in validated_rows:
+                icon = "🟡" if _broker_norm(state.get("broker")) == "BINOMO" else "🔵"
+                lines.append(f"{icon} {_broker_label(state.get('broker')).upper()}: {str(state.get('trading_id') or '').strip()}")
+        else:
+            legacy_id = (record.get("trading_id") or "").strip()
+            if record.get("stage") in (STAGE_POST, STAGE_DEPOSITED) and legacy_id:
+                lines.append(f"🆔 {legacy_id}")
+            else:
+                lines.append("🆔 No hay un ID validado guardado.")
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="\n".join(lines),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("↩️ VOLVER A GESTIONAR", callback_data=f"admin_user_open:{chat_id}")
+            ]]),
+        )
         return
 
     if action == "validate":
@@ -6647,7 +6758,12 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )])
         elif candidate_id:
             # Primero el usuario identifica BINOMO/STOCKITY. Luego llega el bloque admin específico.
+            # La validación no se habilita antes para evitar asociar el ID al broker equivocado.
             pass
+        if update.message.photo and stage in (STAGE_POST, STAGE_DEPOSITED):
+            validated_brokers = [r for r in _broker_rows(chat_id, validated_only=True) if str(r.get("trading_id") or "").strip()]
+            if validated_brokers or bool((_get_saved_trading_id(chat_id) or "").strip()):
+                action_rows.append([InlineKeyboardButton("🆔 VER ID VALIDADO", callback_data=f"admin_user_ids:{chat_id}")])
         action_rows.append([InlineKeyboardButton("👤 Gestionar usuario", callback_data=f"admin_user_open:{chat_id}")])
         admin_markup = InlineKeyboardMarkup(action_rows)
 
@@ -6674,10 +6790,15 @@ async def notificar_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_voice(chat_id=ADMIN_ID, voice=update.message.voice.file_id, caption=cap_final, reply_markup=admin_markup)
         else:
             mensaje_usuario = update.message.text or ""
+            broker_wait_note = (
+                "\n\n⏳ ID recibido: esperando que el usuario elija BINOMO o STOCKITY. Al elegirlo recibirás los botones VALIDAR ID / ID ERRADO."
+                if candidate_id and stage == STAGE_PRE else ""
+            )
             texto = (
                 f"📩 Nuevo mensaje de {nombre} (ID: {chat_id}) [lang={lang}]:\n\n"
                 f"🗨️ {mensaje_usuario}\n\n"
                 "✏️ Puedes responder desde este mismo aviso."
+                + broker_wait_note
             )
             await context.bot.send_message(chat_id=ADMIN_ID, text=texto, reply_markup=admin_markup)
 
@@ -6774,13 +6895,29 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
             or update.message.reply_to_message.caption
             or ""
         )
-        chat_id_match = re.search(r'ID(?:\s+del\s+usuario)?[^0-9-]{0,40}(-?\d+)', base_text, re.IGNORECASE)
+        # Extrae SOLO IDs estructurados por el propio bot. Nunca interpreta "id"
+        # dentro de un username (p. ej. @david...) ni toma números del texto/ID de trading.
+        chat_id_match = None
+        for _pattern in (
+            r'\(ID:\s*(\d{5,15})\)',
+            r'ID\s+del\s+usuario:\s*(\d{5,15})\b',
+            r'Usuario\s+ID:\s*(\d{5,15})\b',
+        ):
+            chat_id_match = re.search(_pattern, base_text, re.IGNORECASE)
+            if chat_id_match:
+                break
         if chat_id_match:
             destinatario_id = int(chat_id_match.group(1))
             if not _is_private_user_id(destinatario_id):
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text="🛡️ Envío bloqueado: ese registro pertenece a un grupo/canal/tema, no a un usuario privado.",
+                )
+                return
+            if not _admin_user_record(destinatario_id):
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ No envié el mensaje: el Telegram ID extraído no corresponde a un usuario registrado en la base del bot.",
                 )
                 return
             pending_before = _get_pending_ai(destinatario_id)
@@ -6996,6 +7133,10 @@ except Exception:
     AI_WAIT_MINUTES = 4
 AI_WAIT_SECONDS = AI_WAIT_MINUTES * 60
 AI_HISTORY_MAX_MESSAGES = 16
+try:
+    AI_LONG_MEMORY_MAX_CHARS = max(4000, min(20000, int(os.getenv("AI_LONG_MEMORY_MAX_CHARS", "9000"))))
+except Exception:
+    AI_LONG_MEMORY_MAX_CHARS = 9000
 # Si Johanna respondió personalmente hace poco, los siguientes mensajes se tratan
 # como continuación de ESA conversación antes de disparar respuestas fijas por palabras clave.
 try:
@@ -7008,6 +7149,7 @@ INFORMACIÓN OFICIAL DE JOHAALETRADER / JT TRADERS TEAMS
 
 IDENTIDAD Y PRINCIPIO DE RESPUESTA
 - Responde siempre en primera persona como Johanna / JOHAALETRADER. Nunca digas que eres una IA, un bot de atención o un asistente virtual.
+- REGLA DURA DE VOZ: en mensajes visibles al usuario NUNCA hables de Johanna/JOHAALETRADER en tercera persona (por ejemplo: "Johanna recomienda", "Johanna sugiere", "Johanna normalmente...", "la comunidad de Johanna"). Habla como yo: "recomiendo", "sugiero", "mi comunidad", "mis enlaces", "conmigo". Esta regla aplica igual en español e inglés.
 - Atiendes prospectos y miembros actuales.
 - La prioridad es comprender la intención completa y responder SOLO lo necesario para esa pregunta. No descargues toda la información disponible sobre un tema.
 - Antes de responder, identifica mentalmente el OBJETO preguntado (curso/formación, señales, bot, nivel, depósito, promo, acceso, horarios, etc.) y limita la respuesta a ese ámbito. El nombre de un nivel o un monto puede ser solo contexto y NO autoriza a enumerar beneficios de otras categorías.
@@ -7410,11 +7552,42 @@ def _load_ai_history(chat_id: int):
 
 
 def _save_ai_history(chat_id: int, history):
-    history = history[-AI_HISTORY_MAX_MESSAGES:]
+    history = list(history or [])
+    overflow = history[:-AI_HISTORY_MAX_MESSAGES] if len(history) > AI_HISTORY_MAX_MESSAGES else []
+    recent = history[-AI_HISTORY_MAX_MESSAGES:]
     with Session() as session:
         u = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
         if u:
-            u.ai_history = json.dumps(history, ensure_ascii=False)
+            # Al salir mensajes del historial corto, conserva a largo plazo SOLO evidencia
+            # conversacional confiable: lo escrito por el usuario y respuestas manuales
+            # reales de Johanna. Nunca guarda respuestas IA como verdad persistente.
+            if overflow:
+                memory_lines = []
+                existing = (u.ai_memory_summary or "").strip()
+                if existing:
+                    memory_lines.append(existing)
+                for item in overflow:
+                    role = item.get("role")
+                    source = str(item.get("source") or "").lower()
+                    content = str(item.get("content") or "").strip()
+                    if not content:
+                        continue
+                    if role == "user":
+                        if re.fullmatch(r"\d{6,12}", content):
+                            continue
+                        label = "USUARIO"
+                    elif role == "assistant" and source == "manual":
+                        label = "JOHANNA REAL"
+                    else:
+                        continue
+                    memory_lines.append(f"{label}: {content[:1400]}")
+                combined = "\n".join(memory_lines).strip()
+                if len(combined) > AI_LONG_MEMORY_MAX_CHARS:
+                    combined = combined[-AI_LONG_MEMORY_MAX_CHARS:]
+                    if "\n" in combined:
+                        combined = combined.split("\n", 1)[1]
+                u.ai_memory_summary = combined
+            u.ai_history = json.dumps(recent, ensure_ascii=False)
             session.commit()
 
 
@@ -7451,13 +7624,29 @@ def _history_as_text(chat_id: int) -> str:
         elif source == "manual":
             role = "JOHANNA (RESPUESTA PERSONAL REAL)"
         elif source == "ai":
-            role = "JOHANNA (RESPUESTA IA ANTERIOR)"
+            role = "JOHANNA (RESPUESTA IA ANTERIOR — CONTEXTO, NO HECHO)"
         else:
-            role = "JOHANNA / BOT"
+            role = "JOHANNA / BOT (CONTEXTO, NO HECHO)"
         content = str(item.get("content") or "").strip()
         if content:
             parts.append(f"{role}: {content}")
-    return "\n".join(parts)
+    recent_text = "\n".join(parts)
+    long_memory = ""
+    try:
+        with Session() as session:
+            u = session.query(Usuario.ai_memory_summary).filter_by(telegram_id=str(chat_id)).first()
+            long_memory = (u[0] or "").strip() if u else ""
+    except Exception:
+        long_memory = ""
+    blocks = []
+    if long_memory:
+        blocks.append(
+            "MEMORIA CONVERSACIONAL PERSISTENTE (solo usuario + respuestas manuales reales; sirve para continuidad, NUNCA reemplaza el estado operativo de la base):\n"
+            + long_memory
+        )
+    if recent_text:
+        blocks.append("HISTORIAL RECIENTE:\n" + recent_text)
+    return "\n\n".join(blocks)
 
 
 def _has_recent_manual_conversation(chat_id: int, minutes: int = None) -> bool:
@@ -9460,6 +9649,13 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
         current_level_query = active_member and any(x in q_norm for x in (
             "que nivel tengo", "qué nivel tengo", "cual es mi nivel", "cuál es mi nivel",
             "mi nivel actual", "actualmente que nivel", "actualmente qué nivel", "en que nivel estoy", "en qué nivel estoy",
+            "soy premium", "soy prestige", "soy basico", "soy básico",
+            "soy nivel premium", "soy nivel prestige", "soy nivel basico", "soy nivel básico",
+            "estoy en premium", "estoy en prestige", "estoy en basico", "estoy en básico",
+            "estoy en nivel premium", "estoy en nivel prestige", "estoy en nivel basico", "estoy en nivel básico",
+            "mi nivel es premium", "mi nivel es prestige", "mi nivel es basico", "mi nivel es básico",
+            "sigo en premium", "sigo en prestige", "sigo siendo premium", "sigo siendo prestige",
+            "am i premium", "am i prestige", "am i basic", "i am premium", "i am prestige",
             "what level am i", "what is my level", "my current level",
         ))
         only_signals_followup = active_member and any(x in q_norm for x in (
@@ -9871,6 +10067,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
 
 Eres la voz digital de Johanna, conocida como JOHAALETRADER / JT TRADERS TEAMS.
 Habla SIEMPRE en primera persona como Johanna. Nunca digas que eres una IA, un bot de atención o un asistente virtual.
+REGLA DURA DE VOZ ES/EN: NUNCA te refieras a Johanna/JOHAALETRADER en tercera persona dentro de la respuesta visible. En inglés usa I / my / me (por ejemplo, "I normally recommend", nunca "Johanna recommends"). En español usa recomiendo / mi / conmigo (nunca "Johanna recomienda").
 
 OBJETIVO PRINCIPAL
 - Conversa de forma humana, natural y contextual. NO respondas como una FAQ rígida ni copies la base de conocimiento como plantilla.
@@ -9931,7 +10128,9 @@ ESTILO Y CTA
 
 CONTEXTO HUMANO Y OPERATIVO
 - Si el historial muestra "JOHANNA (RESPUESTA PERSONAL REAL)", esa respuesta proviene realmente de Johanna por texto o audio transcrito. Continúa desde lo ya acordado y no reinicies la conversación.
-- PRE/POST/DEPOSITED, nivel y depósitos guardados son contexto operativo, NO sustituyen lo que se dijo. No afirmes que alguien acaba de registrarse/depositar solo por el stage.
+- La MEMORIA CONVERSACIONAL PERSISTENTE sirve para recordar el hilo después de días o semanas, pero NO es fuente de verdad para nivel, depósitos, IDs, brokers o accesos.
+- Las respuestas anteriores marcadas como RESPUESTA IA ANTERIOR son solo contexto lingüístico: pueden contener errores y JAMÁS deben usarse para decidir el nivel o estado real.
+- PRE/POST/DEPOSITED, nivel, brokers, IDs validados, depósitos y fechas guardadas en CONTEXTO OPERATIVO REAL son la fuente autoritativa y siempre prevalecen sobre historial/memoria. No afirmes que alguien acaba de registrarse/depositar solo por el stage.
 - Si el estado dice POST, no vuelvas a pedir un ID ya procesado. Si dice DEPOSITED, no reinicies registro/ID/primer depósito.
 - Nunca confirmes por tu cuenta que un ID, depósito, afiliación o acceso quedó validado.
 
@@ -10200,10 +10399,9 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                 else:
                     answer = panel_block
 
-        # 2) ESTADO ACTIVO DURO: ningún miembro activo (Básico/Premium/Prestige)
-        # puede ser reclasificado por un monto escrito en chat. Se preservan las demás
-        # partes de una respuesta múltiple y solo se elimina/corrige la afirmación de nivel falsa.
-        if active_member and amount_usd is not None and not hypothetical_other_person:
+        # 2) ESTADO ACTIVO DURO UNIVERSAL: la base manda SIEMPRE, haya o no monto.
+        # El historial y una respuesta IA anterior nunca pueden reclasificar a un miembro activo.
+        if active_member and not hypothetical_other_person:
             ans_norm = _norm(answer or "")
             active_label = _vip_level_label(current_active_level, lang)
             other_levels = [lvl for lvl in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE) if lvl != current_active_level]
@@ -10211,56 +10409,75 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             classification_terms = (
                 "estas en", "estás en", "tu nivel es", "tu nivel actual es", "te corresponde", "corresponde al nivel",
                 "accedes al nivel", "accedes a", "accederias al nivel", "accederías al nivel", "accederias a", "accederías a",
-                "quedas en", "pasas a", "te deja en", "seria", "sería", "serias", "serías",
-                "you are", "your level is", "your current level is", "you qualify for",
+                "con tu nivel", "quedas en", "pasas a", "te deja en", "seria", "sería", "serias", "serías",
+                "you are", "your level is", "your current level is", "with your level", "you qualify for",
                 "you would be", "you'd be", "you get the", "you move to",
             )
+            state_sensitive_question = any(x in q_norm for x in (
+                "nivel", "premium", "prestige", "basico", "básico", "herramient", "senal", "señal",
+                "deposit", "subir", "upgrade", "beneficio", "que tengo", "qué tengo", "what do i have", "tools", "signals",
+            ))
             wrong_active_claim = any(
                 other_label and other_label in ans_norm and any(term in ans_norm for term in classification_terms)
                 for other_label in other_labels
             )
-            if wrong_active_claim:
+            prestige_false_upgrade = (
+                current_active_level == VIP_LEVEL_PRESTIGE
+                and any(x in ans_norm for x in (
+                    "subir a prestige", "llegar a prestige", "alcanzar prestige", "actualizarte a prestige",
+                    "elevarte a prestige", "pasar a prestige", "upgrade to prestige", "reach prestige", "move to prestige",
+                    "depositar para alcanzar", "deposit to reach prestige",
+                ))
+            )
+            if wrong_active_claim or prestige_false_upgrade:
                 kept_parts = []
                 for part in re.split(r"(?<=[.!?])\s+|\n\s*\n+", answer or ""):
                     pn = _norm(part)
-                    is_bad_level_sentence = any(
+                    bad_level_sentence = any(
                         other_label and other_label in pn and any(term in pn for term in classification_terms)
                         for other_label in other_labels
                     )
-                    if part.strip() and not is_bad_level_sentence:
+                    bad_prestige_upgrade = (
+                        current_active_level == VIP_LEVEL_PRESTIGE
+                        and any(x in pn for x in (
+                            "subir a prestige", "llegar a prestige", "alcanzar prestige", "actualizarte a prestige",
+                            "elevarte a prestige", "pasar a prestige", "upgrade to prestige", "reach prestige", "move to prestige",
+                            "depositar para alcanzar", "deposit to reach prestige",
+                        ))
+                    )
+                    if part.strip() and not bad_level_sentence and not bad_prestige_upgrade:
                         kept_parts.append(part.strip())
 
+                amount_text_es = f" esos USD {amount_usd:g}" if amount_usd is not None else " ese depósito"
+                amount_text_en = f" those USD {amount_usd:g}" if amount_usd is not None else " that deposit"
                 if current_active_level == VIP_LEVEL_PRESTIGE:
                     if lang == "en":
-                        state_block = f"You're already Prestige, the highest level in my JT TRADERS TEAMS community."
+                        state_block = "You're already Prestige 🏆, the highest level in my JT TRADERS TEAMS community, and you already have all level-based tools enabled."
                         if explicit_additional_deposit:
-                            state_block += (
-                                f" If those USD {amount_usd:g} are an additional deposit, your level stays Prestige and you already have all level tools enabled; "
-                                "that capital remains in your own account for your trading. If you want, I can also tell you about the current bonus available for subsequent deposits."
-                            )
+                            state_block += f" If{amount_text_en} is an additional deposit, your level remains Prestige because there is no higher level."
                     else:
-                        state_block = f"Ya estás en Prestige, el nivel más alto de mi comunidad JT TRADERS TEAMS."
+                        state_block = "Ya estás en Prestige 🏆, el nivel más alto de mi comunidad JT TRADERS TEAMS, y ya tienes habilitadas todas las herramientas correspondientes a ese nivel."
                         if explicit_additional_deposit:
-                            state_block += (
-                                f" Si esos USD {amount_usd:g} son un depósito adicional, tu nivel se mantiene en Prestige y ya tienes habilitadas todas las herramientas del nivel; "
-                                "ese capital queda en tu propia cuenta para tu operativa. Si quieres, también puedo indicarte el bono vigente para depósitos posteriores."
-                            )
+                            state_block += f" Si{amount_text_es} es adicional, tu nivel se mantiene en Prestige porque no existe un nivel superior."
                 else:
                     if lang == "en":
                         state_block = f"Your current JT TRADERS TEAMS level is {active_label}."
                         if explicit_additional_deposit:
-                            state_block += (
-                                f" If those USD {amount_usd:g} are an additional deposit, your current level does not change until the deposit is validated; "
-                                "any upgrade is then evaluated under the rules for that broker/account."
-                            )
+                            state_block += f" If{amount_text_en} is additional, your current level does not change until the deposit is actually validated under the upgrade rules."
                     else:
                         state_block = f"Tu nivel actual en JT TRADERS TEAMS es {active_label}."
                         if explicit_additional_deposit:
-                            state_block += (
-                                f" Si esos USD {amount_usd:g} son un depósito adicional, tu nivel actual no cambia hasta que el depósito sea validado; "
-                                "cualquier upgrade se evalúa después según las reglas de esa cuenta/broker."
-                            )
-                answer = state_block + ((" " + " ".join(kept_parts)) if kept_parts else "")
+                            state_block += f" Si{amount_text_es} es adicional, tu nivel actual no cambia hasta que el depósito sea validado realmente según las reglas de upgrade."
+                # Solo ante preguntas relacionadas con estado/herramientas/upgrade se antepone
+                # el estado; en otros temas se limita a retirar la afirmación falsa.
+                if current_active_level == VIP_LEVEL_PRESTIGE and state_sensitive_question:
+                    # Cuando la IA partió de un nivel falso, no conservamos explicaciones
+                    # dependientes de ese supuesto ("esto te daría...", "al subir...").
+                    answer = state_block
+                elif state_sensitive_question or not kept_parts:
+                    answer = state_block + ((" " + " ".join(kept_parts)) if kept_parts else "")
+                else:
+                    answer = " ".join(kept_parts)
                 answer = _clean_ai_plain_text_format(answer)
 
         # v7.10.59 — RESPUESTAS DETERMINÍSTICAS SOLO PARA DOS INTENCIONES DE ESTADO
@@ -10322,6 +10539,50 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                 logging.warning("Guardia FINAL de idioma EN no pudo normalizar respuesta para %s", chat_id)
                 return ""
             answer = _clean_ai_plain_text_format(translated)
+
+        # v7.10.68 — GUARDIA FINAL DURA DE PRIMERA PERSONA.
+        # Se ejecuta DESPUÉS de traducciones/regeneraciones para que ninguna capa posterior
+        # pueda convertir la voz de Johanna en tercera persona. No cambia hechos, estados,
+        # niveles, montos ni lógica operativa: únicamente normaliza la voz del texto visible.
+        if answer:
+            if lang == "en":
+                replacements = (
+                    (r"\bJohanna\s+(?:typically|normally|usually)\s+recommends?\b", "I normally recommend"),
+                    (r"\bJohanna\s+recommends?\b", "I recommend"),
+                    (r"\bJohanna\s+suggests?\b", "I suggest"),
+                    (r"\bJohanna\s+advises?\b", "I recommend"),
+                    (r"\bJohanna['’]s\s+community\b", "my community"),
+                    (r"\bJohanna['’]s\s+links?\b", "my links"),
+                    (r"\bJohanna['’]s\s+recommendation\b", "my recommendation"),
+                    (r"\bwith\s+Johanna\b", "with me"),
+                    (r"\bfrom\s+Johanna\b", "from me"),
+                    (r"\baccording\s+to\s+Johanna\b", "based on my guidance"),
+                    (r"\bthe\s+Johanna\s+community\b", "my community"),
+                )
+            else:
+                replacements = (
+                    (r"\bJohanna\s+suele\s+recomendar\b", "suelo recomendar"),
+                    (r"\bJohanna\s+normalmente\s+recomienda\b", "normalmente recomiendo"),
+                    (r"\bJohanna\s+recomienda\b", "recomiendo"),
+                    (r"\bJohanna\s+sugiere\b", "sugiero"),
+                    (r"\bJohanna\s+aconseja\b", "aconsejo"),
+                    (r"\bla\s+comunidad\s+de\s+Johanna\b", "mi comunidad"),
+                    (r"\blos\s+enlaces\s+de\s+Johanna\b", "mis enlaces"),
+                    (r"\bla\s+recomendaci[oó]n\s+de\s+Johanna\b", "mi recomendación"),
+                    (r"\bcon\s+Johanna\b", "conmigo"),
+                    (r"\bseg[uú]n\s+Johanna\b", "según mi recomendación"),
+                )
+            for pattern, repl in replacements:
+                answer = re.sub(pattern, repl, answer, flags=re.IGNORECASE)
+
+            # Si el nombre aparece todavía como sujeto/posesivo fuera de una identificación
+            # explícita ("I am Johanna" / "Soy Johanna"), registra el caso para auditoría.
+            residual = re.search(r"\bJohanna\b", answer, flags=re.IGNORECASE)
+            identity_ok = re.search(r"\b(?:I\s+am|I['’]m|Soy)\s+Johanna\b", answer, flags=re.IGNORECASE)
+            if residual and not identity_ok:
+                logging.warning("Guardia de primera persona detectó referencia residual a Johanna para %s: %s", chat_id, answer[:300])
+
+            answer = _clean_ai_plain_text_format(answer)
 
         return answer
     except Exception as e:
@@ -10844,10 +11105,17 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "todavia puedo subir", "todavía puedo subir", "aun puedo subir", "aún puedo subir",
         "puedo subir de nivel", "puedo subir", "deposito mas", "depósito más", "depositar mas", "depositar más",
         "hasta que dia puedo depositar", "hasta qué día puedo depositar", "hasta cuando puedo depositar", "hasta cuándo puedo depositar",
+        "hasta que fecha puedo depositar", "hasta qué fecha puedo depositar", "fecha limite para depositar", "fecha límite para depositar",
+        "cuantos dias tengo", "cuántos días tengo", "cuanto tiempo tengo para depositar", "cuánto tiempo tengo para depositar",
+        "plazo para depositar", "ventana de 30 dias", "ventana de 30 días",
         "how much do i need to upgrade", "how much am i missing", "upgrade my level", "can i still upgrade",
+        "upgrade deadline", "how long do i have to deposit",
+    )) or any(x in t_upgrade for x in (
+        "mas herramientas", "más herramientas", "herramientas adicionales", "more tools",
+        "mas señales", "más señales", "more signals", "more resources",
     )) or (
-        any(x in t_upgrade for x in ("mas herramientas", "más herramientas", "herramientas adicionales", "more tools"))
-        and any(x in t_upgrade for x in ("deposit", "subir", "nivel", "upgrade"))
+        any(x in t_upgrade for x in ("deposit", "depósit", "recarg", "redeposit"))
+        and any(x in t_upgrade for x in ("fecha", "plazo", "hasta", "ventana", "beneficio", "herramient", "nivel", "subir", "upgrade"))
     )
     stage_for_upgrade = get_user_stage(chat_id)
     vip_for_upgrade = _vip_get_state(chat_id, create=False) or {}
@@ -10880,14 +11148,16 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         parts.append(f"On {broker_label}, the recorded date of your first validated deposit is {first_local.strftime('%d/%m/%Y')}.")
             msg = "\n\n".join(parts)
-            markup = upgrade_info_keyboard(lang) if level_for_upgrade in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM) else None
+            target_for_date = VIP_LEVEL_PREMIUM if level_for_upgrade == VIP_LEVEL_BASIC else (VIP_LEVEL_PRESTIGE if level_for_upgrade == VIP_LEVEL_PREMIUM else None)
+            markup = upgrade_info_keyboard(lang, target_for_date) if target_for_date else None
         else:
             msg = (
                 "Tengo tu nivel activo guardado, pero en el registro actual no encuentro una fecha exacta de primer depósito por broker. No voy a inventarla. Si esta cuenta viene de una versión anterior del bot, el historial pudo quedar migrado sin esa fecha exacta."
                 if lang == "es" else
                 "I have your active level saved, but the current broker record does not contain an exact first-deposit date. I will not invent one. If this account comes from an older bot version, the migrated history may not include that exact date."
             )
-            markup = upgrade_info_keyboard(lang) if level_for_upgrade in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM) else None
+            target_for_date = VIP_LEVEL_PREMIUM if level_for_upgrade == VIP_LEVEL_BASIC else (VIP_LEVEL_PRESTIGE if level_for_upgrade == VIP_LEVEL_PREMIUM else None)
+            markup = upgrade_info_keyboard(lang, target_for_date) if target_for_date else None
         await update.message.reply_text(msg, reply_markup=markup)
         await send_admin_auto_log(context, update, "UPGRADE_DEPOSIT_DATE", msg)
         return
@@ -10899,7 +11169,11 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if lang == "es" else
                 "🏆 You are currently Prestige, the highest level in my community. You already have all level-based tools enabled and there is no higher level to upgrade to."
             )
-            await update.message.reply_text(msg)
+            prestige_markup = None
+            if any(x in t_upgrade for x in ("herramient", "senal", "señal", "beneficio", "incluye", "que tengo", "qué tengo")):
+                label = "🏆 VIEW MY PRESTIGE LEVEL" if lang == "en" else "🏆 VER MI NIVEL PRESTIGE"
+                prestige_markup = InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"level_detail:{VIP_LEVEL_PRESTIGE}")]])
+            await update.message.reply_text(msg, reply_markup=prestige_markup)
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_PRESTIGE", msg)
             return
 
@@ -10960,7 +11234,13 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += "\n\nEl cálculo usa únicamente depósitos ya validados de la misma cuenta/broker; Binomo y Stockity no se suman entre sí. 👇"
             else:
                 msg += "\n\nThis calculation uses only validated deposits from the same account/broker; Binomo and Stockity are never added together. 👇"
-            await update.message.reply_text(msg, reply_markup=upgrade_info_keyboard(lang))
+            if any(x in t_upgrade for x in ("beneficio", "incluye", "herramient", "que recibo", "qué recibo", "what do i get", "benefit")):
+                msg += (
+                    f"\n\nPuedes revisar todo lo que incluye {_vip_level_label(target_level, lang)} en el botón de abajo."
+                    if lang == "es" else
+                    f"\n\nYou can review everything included in {_vip_level_label(target_level, lang)} in the button below."
+                )
+            await update.message.reply_text(msg, reply_markup=upgrade_info_keyboard(lang, target_level))
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_CALCULATED", msg)
             return
         else:
@@ -10974,7 +11254,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"You are currently {_vip_level_label(level_for_upgrade, lang)}. I have a validated total of USD {_usd(saved_total)} saved, which as a reference leaves USD {_usd(reference_missing)} to {_vip_level_label(target_level, lang)}. "
                 "This legacy account does not yet have the upgrade history separated by broker in the current record, so I will not invent the window or ask you to validate your ID again. If you make an additional deposit, I only need to identify once whether it belongs to Binomo or Stockity."
             )
-            await update.message.reply_text(msg, reply_markup=upgrade_info_keyboard(lang))
+            await update.message.reply_text(msg, reply_markup=upgrade_info_keyboard(lang, target_level))
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_LEGACY", msg)
             return
 
