@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.69-20260922-ADMIN-VALIDATED-ID-LIST-FIX"
+BOT_VERSION = "v7.10.70-20260922-VALIDATED-ID-DIRECT-QUERY-PAGINATION-FIX"
+# v7.10.70: ID VALIDADO consulta directamente TODOS los usuarios POST con ID guardado, sin depender de la cola de 50; paginación de 20 por página.
 # v7.10.69: añade ID VALIDADO directamente dentro de Gestionar Usuario; muestra nombre + ID de usuarios POST pendientes de depósito.
 # v7.10.67: restaura el ÚNICO reporte automático diario a las 6:58 p. m. Colombia, elimina cualquier job heredado de las 11:00 p. m. y conserva la claridad de métricas de v7.10.66.
 # v7.10.66: aclaró visualmente métricas Canal→Bot, pendientes del bot y Affiliate sin cambiar su cálculo.
@@ -5018,18 +5019,52 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             await _show_admin_user_list(context)
         return
 
-    if data == "admin_user_validated_ids":
-        # Vista rápida solicitada por Johanna: usuarios con ID YA VALIDADO y
-        # todavía pendientes de depósito/activación (POST). Solo muestra nombre + ID.
-        # No cambia estados, no valida nada y no toca campañas ni depósitos.
-        rows = _admin_recent_users(ADMIN_USER_MAX_PENDING)
+    validated_page_match = re.fullmatch(r"admin_user_validated_ids(?::(\d+))?", data)
+    if validated_page_match:
+        # Vista rápida solicitada por Johanna: consulta DIRECTAMENTE la base de
+        # usuarios POST (ID validado / pendiente de depósito). No depende de la
+        # cola general de 50 PRE/POST, así un ID validado no desaparece porque
+        # entren usuarios nuevos. No cambia estados ni toca campañas/depósitos.
+        page = int(validated_page_match.group(1) or 0)
+        page_size = 20
+        try:
+            with Session() as session:
+                base_q = (
+                    session.query(Usuario.telegram_id, Usuario.nombre, Usuario.binomo_id)
+                    .filter(
+                        Usuario.telegram_id != str(ADMIN_ID),
+                        Usuario.stage == STAGE_POST,
+                        Usuario.binomo_id != None,
+                        Usuario.binomo_id != "",
+                    )
+                )
+                total = base_q.count()
+                max_page = max(0, (total - 1) // page_size) if total else 0
+                page = max(0, min(page, max_page))
+                rows = (
+                    base_q.order_by(Usuario.fecha_registro.desc())
+                    .offset(page * page_size)
+                    .limit(page_size)
+                    .all()
+                )
+        except Exception as e:
+            logging.warning("No pude listar IDs validados pendientes: %s", e)
+            rows = []
+            total = 0
+            max_page = 0
+            page = 0
+
         blocks = []
-        for uid, name, stage, legacy_id, _last_activity in rows:
-            if stage != STAGE_POST:
+        for uid, name, legacy_id in rows:
+            try:
+                uid_int = int(uid)
+            except Exception:
+                continue
+            if not _is_private_user_id(uid_int):
                 continue
             clean_name = re.sub(r"\s+", " ", str(name or f"Usuario {uid}")).strip()[:40]
             validated_rows = [
-                r for r in _broker_rows(int(uid), validated_only=True)
+                r for r in _broker_rows(uid_int, validated_only=True)
                 if str(r.get("trading_id") or "").strip()
             ]
             if len(validated_rows) == 1:
@@ -5049,16 +5084,28 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     blocks.append(f"👤 {clean_name}\n🆔 {legacy_id}")
 
         if blocks:
-            text_value = "🆔 ID VALIDADO\n\n" + "\n\n".join(blocks)
+            text_value = (
+                f"🆔 ID VALIDADO · PENDIENTES DE DEPÓSITO\n"
+                f"Total: {total} · Página {page + 1}/{max_page + 1}\n\n"
+                + "\n\n".join(blocks)
+            )
         else:
             text_value = "🆔 ID VALIDADO\n\nNo hay usuarios con ID validado pendientes de depósito en este momento."
+
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ ANTERIOR", callback_data=f"admin_user_validated_ids:{page - 1}"))
+        if (page + 1) * page_size < total:
+            nav.append(InlineKeyboardButton("SIGUIENTE ➡️", callback_data=f"admin_user_validated_ids:{page + 1}"))
+        keyboard_rows = []
+        if nav:
+            keyboard_rows.append(nav)
+        keyboard_rows.append([InlineKeyboardButton("↩️ VOLVER A GESTIONAR USUARIO", callback_data="admin_user_list")])
 
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=text_value,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("↩️ VOLVER A GESTIONAR USUARIO", callback_data="admin_user_list")
-            ]]),
+            reply_markup=InlineKeyboardMarkup(keyboard_rows),
         )
         return
 
@@ -12544,3 +12591,4 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
