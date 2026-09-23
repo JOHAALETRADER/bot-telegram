@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.84-20260922-VIP-ACCESS-RESUME-ALREADY-MEMBER-REDEPLOY"
+BOT_VERSION = "v7.10.85-20260922-RISK-MANAGEMENT-SEQUENCE-CLARITY"
+# v7.10.85: corrige y blinda la metodología de gestión de riesgo de Johanna en IA: 2% para toda la secuencia, hasta 3% solo ocasionalmente con cuentas > USD 1,000, división en 6–7 partes (1 / 2 / 3–4), límite diario 5–7% y meta orientativa 10–12%. Añade respuesta determinística ES/EN para dudas de cuánto operar por entrada/MG1/MG2 sin confundirlo con gestión de cuentas.
 # v7.10.82: aclara que Básico/Premium/Prestige son niveles dentro de JT TRADERS TEAMS y añade instrucciones de upgrade por broker con ID validado, monto de referencia y envío del comprobante en este mismo chat. ES/EN.
 # v7.10.83: compacta el panel de upgrade sin perder reglas, refuerza que Básico/Premium/Prestige son niveles de la comunidad JT TRADERS TEAMS y muestra esa pertenencia también dentro del detalle de cada nivel. ES/EN.
 # v7.10.84: blinda continuidad de accesos VIP: reintenta verificación de membresía tras cada enlace, añade VERIFICAR Y CONTINUAR como respaldo para canales ya existentes, recupera cualquier flujo VIP pendiente después de redeploy y usa también el chat_id persistido en VIPInviteOverride. ES/EN.
@@ -8399,14 +8400,16 @@ PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE
 - Cuando sí lo pregunten, incluye brevemente el motivo práctico completo: descarga/instalación/activación-configuración/actualizaciones en computador + dependencia principal de un solo equipo; Telegram permite recibir las MISMAS señales desde cualquier dispositivo y lugar, por lo que resulta más práctico.
 
 GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
-- MG1 y MG2 son opcionales. Se pueden utilizar con una gestión de riesgo bien calculada y capital suficiente, pero no garantizan recuperación.
-- La referencia habitual de Johanna es trabajar normalmente con un máximo cercano al 2% del capital para TODA la secuencia, no 2% en cada entrada.
-- Con capital alto, por ejemplo por encima de 1,000 USD, puede usarse incluso 1% si cubre cómodamente la secuencia. Un 3% es una gestión más agresiva y no es la recomendación normal.
-- Método porcentual orientativo: calcular 1–2% del capital y dividir ese presupuesto total en 6 o 7 unidades. La entrada inicial usa 1 unidad, MG1 usa 2 unidades y MG2 puede usar 3–4 unidades según el objetivo de la secuencia. No conviertas esto en una receta rígida; explica el cálculo solo si el usuario pregunta cómo distribuir la gestión.
-- Ejemplo educativo: 400 USD × 2% = 8 USD de riesgo total para la secuencia; 8/7 ≈ 1.14 USD por unidad. No prometas que esta distribución garantiza recuperar o quedar en profit.
-- Como referencia de plan, Johanna prioriza limitar pérdidas y buscar una relación favorable entre riesgo y objetivo; nunca presentes objetivos de ganancia como garantizados.
-- Si preguntan específicamente por una meta/ganancia diaria orientativa, mi referencia habitual es buscar alrededor de 10–12% EN EL DÍA, distribuido en hasta 3 sesiones de unos 40 minutos, sin presentarlo como obligación ni garantía. No confundas esa meta orientativa con la gestión de riesgo de 1–2%: ese 1–2% corresponde al RIESGO de una secuencia/operación planificada, NO a una meta de ganancia diaria.
-- Si preguntan simplemente "¿puedo usar martingala?", responde breve: sí, MG1/MG2 son opcionales y deben quedar dentro de la gestión total de riesgo.
+- MG1 y MG2 son opcionales. Se usan únicamente cuando la persona decide aplicar la secuencia y siempre dentro de una gestión de riesgo previamente calculada; no garantizan recuperación.
+- Mi enseñanza habitual es usar hasta el 2% del CAPITAL TOTAL para TODA la secuencia completa (entrada inicial + MG1 + MG2), NO 2% en cada entrada.
+- Si la cuenta es alta, por encima de USD 1,000, en algunas ocasiones se puede utilizar hasta 3% para TODA la secuencia. No presentes 3% como automático ni obligatorio: es un máximo ocasional para capital alto.
+- El presupuesto total de riesgo (2% o, cuando corresponda, hasta 3%) se divide en 6 o 7 partes/unidades para cubrir la secuencia: entrada inicial = 1 unidad; MG1 = 2 unidades; MG2 = 3 o 4 unidades.
+- Si MG2 usa 3 unidades, la intención es quedar cerca del equilibrio/recuperación según el payout; si usa 4 unidades, la intención es dejar margen de profit. El resultado exacto depende del payout de la operación, así que NO lo presentes como garantía matemática fija.
+- Ejemplo educativo con 400 USD: 2% = 8 USD de riesgo máximo para TODA la secuencia. Si se divide entre 7, cada unidad es aproximadamente 1.14 USD; la estructura sería aprox. 1.14 / 2.28 / 3.42–4.56 USD según se use 3 o 4 unidades en MG2.
+- Como control diario, dos secuencias completas perdidas equivalen aproximadamente a 4% del capital si cada secuencia usa 2%, o 6% si se está usando el máximo ocasional de 3%. Mi referencia de pérdida diaria es alrededor de 5% y como máximo aproximadamente 7%; al acercarse a ese límite se detiene la operativa para evitar sobreoperar.
+- Si preguntan específicamente por una meta/ganancia diaria orientativa, mi referencia es buscar alrededor de 10–12% EN EL DÍA, distribuido en hasta 3 sesiones de unos 40 minutos, sin presentarlo como obligación ni garantía. No confundas la meta de 10–12% con el riesgo: 2%/3% corresponde al presupuesto máximo de UNA secuencia completa.
+- Si preguntan simplemente "¿cuánto opero por entrada?", responde breve con la regla 2% total de la secuencia + división 1/2/3–4; no descargues toda la metodología salvo que pidan detalle.
+- Si preguntan simplemente "¿puedo usar martingala?", responde breve: sí, MG1/MG2 son opcionales y deben quedar dentro del presupuesto total de riesgo de la secuencia.
 
 TIEMPO / HORARIOS / PERSONAS QUE TRABAJAN TODO EL DÍA
 - Si alguien pregunta cómo organizar sus horarios para operar, dice que trabaja todo el día o que tiene poco tiempo, responde BREVE y práctico; no conviertas la respuesta en una receta fija.
@@ -10595,6 +10598,72 @@ def _profit_target_query(text_value: str) -> bool:
     ))
 
 
+def _risk_management_query(text_value: str) -> bool:
+    """Detecta dudas educativas de riesgo/tamaño de entrada sin confundirlas con gestión de cuenta."""
+    t = _norm(text_value or "")
+    if not t:
+        return False
+    phrases = (
+        "gestion de riesgo", "gestion del riesgo", "manejo de riesgo", "manejar el riesgo",
+        "cuanto me recomiendas operar", "cuanto recomiendas operar", "cuanto debo operar",
+        "cuanto operar por entrada", "cuanto por entrada", "monto por entrada", "valor por entrada",
+        "porcentaje por entrada", "porcentaje por operacion", "riesgo por entrada", "riesgo por operacion",
+        "cuanto arriesgar", "cuanto debo arriesgar", "que porcentaje arriesgar", "qué porcentaje arriesgar",
+        "cuanto puedo perder al dia", "perdida diaria", "perdida maxima diaria", "limite de perdida", "stop diario",
+        "martingala", "mg1", "mg2", "dividir en 6", "dividir en 7", "6 o 7 partes",
+        "risk management", "risk per trade", "risk per entry", "how much per trade", "how much should i trade",
+        "how much should i risk", "martingale",
+    )
+    return any(x in t for x in phrases)
+
+
+def _risk_management_reply(text_value: str, lang: str = "es") -> str:
+    """Respuesta determinística proporcional: explica solo lo que la pregunta necesita."""
+    t = _norm(text_value or "")
+    simple_mg = (
+        any(x in t for x in ("puedo usar martingala", "usar martingala", "puedo usar mg1", "puedo usar mg2", "can i use martingale"))
+        and not any(x in t for x in ("cuanto", "porcentaje", "divide", "dividir", "how much", "percent"))
+    )
+    wants_daily_control = any(x in t for x in (
+        "perdida diaria", "perdida maxima diaria", "maxima perdida diaria", "cuanto puedo perder al dia",
+        "perder al dia", "limite diario", "stop diario", "cuantas veces puedo perder",
+        "cuantas secuencias", "dos secuencias", "daily loss", "maximum daily loss", "daily stop", "how many losses",
+    )) or _profit_target_query(text_value)
+
+    if lang == "en":
+        if simple_mg:
+            return (
+                "Yes. MG1 and MG2 are optional, but the full sequence must stay inside the total risk budget. "
+                "I normally teach up to 2% of the account for the whole sequence—not 2% per entry."
+            )
+        answer = (
+            "I normally teach using up to 2% of the total account for the FULL sequence (entry + MG1 + MG2), not 2% on each entry. "
+            "For accounts above USD 1,000, up to 3% may occasionally be used. Divide that budget into 6–7 units: 1 for the entry, 2 for MG1 and 3–4 for MG2; 3 units aims near recovery/breakeven and 4 aims to leave profit, depending on payout."
+        )
+        if wants_daily_control:
+            answer += (
+                " Two fully lost sequences equal about 4% at 2% risk or 6% at 3%; my daily loss reference is around 5% and roughly 7% maximum. "
+                "A 10–12% daily profit target is only an indicative reference, never guaranteed."
+            )
+        return answer
+
+    if simple_mg:
+        return (
+            "Sí. MG1 y MG2 son opcionales, pero toda la secuencia debe quedar dentro del presupuesto total de riesgo. "
+            "Normalmente enseño a usar hasta el 2% de la cuenta para la secuencia completa, no 2% en cada entrada."
+        )
+    answer = (
+        "Normalmente enseño a usar hasta el 2% del capital para TODA la secuencia completa (entrada + MG1 + MG2), no 2% por entrada. "
+        "Si la cuenta supera USD 1.000, en algunas ocasiones puede usarse hasta 3%. Ese presupuesto se divide en 6–7 partes: 1 para la entrada, 2 para MG1 y 3–4 para MG2; con 3 se busca quedar cerca de recuperación/equilibrio y con 4 dejar margen de profit, según el payout."
+    )
+    if wants_daily_control:
+        answer += (
+            " Dos secuencias completas perdidas representan aprox. 4% usando 2% o 6% usando 3%; mi referencia de pérdida diaria es alrededor de 5% y máximo cercano a 7%. "
+            "La meta de 10–12% diaria es solo orientativa, nunca garantizada."
+        )
+    return answer
+
+
 def _live_schedule_query(text_value: str) -> bool:
     t = _norm(text_value or "")
     return any(x in t for x in ("haces live", "haces lives", "live todos los dias", "live todos los días", "cuando haces live", "horario del live"))
@@ -10696,6 +10765,7 @@ def _should_offer_personal_chat(chat_id: int, question: str, personal_review: bo
         or _looks_like_existing_account_query(q)
         or _signals_channel_request(q)
         or _profit_target_query(q)
+        or _risk_management_query(q)
         or _live_schedule_query(q)
         or _is_live_info_query(q)
         or _is_short_acknowledgement(q)
@@ -10744,9 +10814,9 @@ def _balance_progress_reply(lang: str = "es") -> str:
 
 def _profit_target_reply(lang: str = "es") -> str:
     return (
-        "Como referencia, suelo buscar alrededor de 10–12% en el día, distribuido en hasta 3 sesiones de unos 40 minutos, sin tomarlo como una meta obligatoria ni garantizada. Lo más importante es mantener la gestión de riesgo; normalmente trabajo con un máximo cercano al 2% para toda la secuencia."
+        "Como referencia, suelo buscar alrededor de 10–12% en el día, distribuido en hasta 3 sesiones de unos 40 minutos, sin tomarlo como una meta obligatoria ni garantizada. Lo más importante es la gestión de riesgo: normalmente uso hasta 2% para toda la secuencia; en cuentas superiores a USD 1.000, ocasionalmente puede utilizarse hasta 3%."
         if lang == "es" else
-        "As a reference, I normally look for around 10–12% across the day, spread over up to three sessions of about 40 minutes, without treating it as a required or guaranteed target. Risk management comes first; I normally keep the full sequence near a 2% maximum risk."
+        "As a reference, I normally look for around 10–12% across the day, spread over up to three sessions of about 40 minutes, without treating it as a required or guaranteed target. Risk management comes first: I normally use up to 2% for the full sequence; on accounts above USD 1,000, up to 3% may occasionally be used."
     )
 
 
@@ -11331,7 +11401,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "organizarme", "organizar", "poco tiempo", "solo tengo un rato", "trabajo todo el dia", "cuanto tiempo", "rutina para operar", "2 horas", "dos horas",
         ))
         profit_target_topic = _profit_target_query(question)
-        risk_topic = profit_target_topic or "risk" in planner_intents or any(x in scope_norm for x in ("gestion de riesgo", "martingala", "mg1", "mg2", "sobreoper", "cuantas operaciones"))
+        risk_topic = profit_target_topic or _risk_management_query(question) or "risk" in planner_intents or any(x in scope_norm for x in ("gestion de riesgo", "martingala", "mg1", "mg2", "sobreoper", "cuantas operaciones"))
         account_topic = "existing_account" in planner_intents or any(x in scope_norm for x in ("cuenta antigua", "cuenta vieja", "ya tengo cuenta", "cuenta existente", "vinculada", "registrada contigo"))
         registration_topic = "registration" in planner_intents or account_topic or next_step_topic or any(x in scope_norm for x in ("registrarme", "registro", "enlace", "validar id", "id de binomo", "id de stockity"))
         broker_topic = "broker_upgrade" in planner_intents or any(x in scope_norm for x in ("upgrade", "subir de nivel", "otro deposito", "depositos acumul", "mismo broker", "dos brokers"))
@@ -11533,9 +11603,9 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             )
         if profit_target_topic:
             decision_lines.append(
-                "DAILY PROFIT TARGET: answer briefly with my reference of around 10–12% across the day, up to three ~40-minute sessions, explicitly as a non-guaranteed reference. Do NOT confuse 1–2% risk management with a daily profit target."
+                "DAILY PROFIT TARGET: answer briefly with my reference of around 10–12% across the day, up to three ~40-minute sessions, explicitly as a non-guaranteed reference. Do NOT confuse the risk budget with the profit target: I normally use up to 2% for one full sequence and, only occasionally on accounts above USD 1,000, up to 3%."
                 if lang == "en" else
-                "META DIARIA: responde breve con mi referencia de alrededor de 10–12% en el día, distribuida en hasta 3 sesiones de ~40 minutos, dejando claro que es una referencia no garantizada. NO confundas el 1–2% de gestión de riesgo con una meta de ganancia diaria."
+                "META DIARIA: responde breve con mi referencia de alrededor de 10–12% en el día, distribuida en hasta 3 sesiones de ~40 minutos, dejando claro que es una referencia no garantizada. NO confundas el riesgo con la meta: normalmente uso hasta 2% para una secuencia completa y, solo ocasionalmente en cuentas superiores a USD 1.000, hasta 3%."
             )
         if current_level_query:
             decision_lines.append(
@@ -12690,6 +12760,13 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = _multiple_accounts_reply(texto, lang)
         await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
         await send_admin_auto_log(context, update, "MULTIPLE_PERSONAL_ACCOUNTS", msg)
+        return
+
+    if _risk_management_query(texto) and not any(x in _norm(texto) for x in ("gestion de capital", "gestionar capital", "gestion de cuenta", "gestionar mi cuenta", "manage my capital", "account management")):
+        msg = _risk_management_reply(texto, lang)
+        kb = support_keyboard(lang, chat_id) if _active_member_level(chat_id) != VIP_LEVEL_NONE else None
+        await update.message.reply_text(msg, reply_markup=kb)
+        await send_admin_auto_log(context, update, "RISK_MANAGEMENT_METHOD", msg)
         return
 
     if _profit_target_query(texto) and not any(x in _norm(texto) for x in ("deposito", "depósito", "registro", "registr", "nivel", "premium", "prestige")):
