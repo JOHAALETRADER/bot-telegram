@@ -55,7 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.86-20260923-FIRST-DEPOSIT-BELOW-50-FIX"
+BOT_VERSION = "v7.10.87-20260923-FIRST-DEPOSIT-ATTRIBUTION-FIX"
+# v7.10.87: aplica sobre la base desplegada FIRST-DEPOSIT-BELOW-50-FIX la atribución conservadora del canal: si Telegram no entrega invite_link/invite_name, clasifica SIN ATRIBUIR en vez de asumir ORGÁNICO. Conserva la corrección de primer depósito < USD 50, ADS canal-primero, VIP, IA, depósitos, campañas y compatibilidad trk_.
+# v7.10.86-ADS: activa ADS canal-primero sin romper compatibilidad: /ads -> enlace exclusivo source-ADS del canal -> bienvenida -> bot. Añade métrica CHANNEL_TO_BOT, adapta reporte diario a Visitas ADS / Canal / Canal→Bot y conserva la puerta trk_ histórica solo como respaldo.
 # v7.10.85: corrige y blinda la metodología de gestión de riesgo de Johanna en IA: 2% para toda la secuencia, hasta 3% solo ocasionalmente con cuentas > USD 1,000, división en 6–7 partes (1 / 2 / 3–4), límite diario 5–7% y meta orientativa 10–12%. Añade respuesta determinística ES/EN para dudas de cuánto operar por entrada/MG1/MG2 sin confundirlo con gestión de cuentas.
 # v7.10.86: corrige primer depósito validado menor a USD 50 en flujo multi-broker: mantiene al usuario sin accesos, informa monto validado y faltante exacto para Básico dentro de JT TRADERS TEAMS, y evita mostrar UPGRADE antes de activar un nivel. ES/EN.
 # v7.10.82: aclara que Básico/Premium/Prestige son niveles dentro de JT TRADERS TEAMS y añade instrucciones de upgrade por broker con ID validado, monto de referencia y envío del comprobante en este mismo chat. ES/EN.
@@ -285,11 +287,11 @@ class ChannelSourceAttribution(Base):
 
     Se mantiene en tabla independiente para no alterar `usuarios` ni ninguna
     consulta histórica del bot. ADS es la única fuente especial; todo lo que
-    no tenga marca ADS queda como ORGANIC_OTHER.
+    no tenga evidencia suficiente queda como UNATTRIBUTED; ORGÁNICO solo se usa cuando existe una señal explícita no-ADS.
     """
     __tablename__ = "channel_source_attribution"
     telegram_id   = Column(String, primary_key=True)
-    source        = Column(String, default="ORGANIC_OTHER", index=True)
+    source        = Column(String, default="UNATTRIBUTED", index=True)
     first_seen_at = Column(DateTime, default=utcnow_naive, index=True)
     last_seen_at  = Column(DateTime, default=utcnow_naive, index=True)
 
@@ -299,7 +301,7 @@ class ChannelJoinEvent(Base):
     __tablename__ = "channel_join_events"
     id          = Column(Integer, primary_key=True)
     telegram_id = Column(String, index=True)
-    source      = Column(String, default="ORGANIC_OTHER", index=True)
+    source      = Column(String, default="UNATTRIBUTED", index=True)
     invite_name = Column(String)
     created_at  = Column(DateTime, default=utcnow_naive, index=True)
 
@@ -2565,22 +2567,39 @@ def _is_tracking_info_channel(chat) -> bool:
 
 
 def _normalize_channel_source(value: str | None) -> str:
+    """Normaliza la fuente sin convertir ausencia de evidencia en orgánico."""
     raw = (value or "").strip().upper().replace("-", "_").replace(" ", "_")
-    return "ADS" if raw in {"ADS", "AD", "PAID", "PUBLICIDAD"} else "ORGANIC_OTHER"
+    if raw in {"ADS", "AD", "PAID", "PUBLICIDAD", "META", "FACEBOOK_ADS", "TIKTOK_ADS"}:
+        return "ADS"
+    if raw in {"ORGANIC_OTHER", "ORGANIC", "ORGÁNICO", "ORGANICO", "OTHER", "OTROS"}:
+        return "ORGANIC_OTHER"
+    return "UNATTRIBUTED"
 
 
 def _get_channel_source(chat_id: int) -> str:
-    """Devuelve la atribución first-touch; sin marca ADS se considera Orgánico/Otros."""
+    """Devuelve ADS / ORGÁNICO-OTROS / SIN ATRIBUIR según evidencia guardada."""
     if not _is_private_user_id(chat_id):
-        return "ORGANIC_OTHER"
+        return "UNATTRIBUTED"
     try:
         with Session() as session:
             row = session.get(ChannelSourceAttribution, str(chat_id))
-            if row and row.source == "ADS":
-                return "ADS"
+            if row:
+                return _normalize_channel_source(row.source)
     except Exception as e:
         logging.warning("No pude leer origen de canal para %s: %s", chat_id, e)
-    return "ORGANIC_OTHER"
+    return "UNATTRIBUTED"
+
+
+def _has_channel_source_attribution(chat_id: int) -> bool:
+    """True si Telegram ya confirmó alguna entrada del usuario al canal informativo ES."""
+    if not _is_private_user_id(chat_id):
+        return False
+    try:
+        with Session() as session:
+            return session.get(ChannelSourceAttribution, str(chat_id)) is not None
+    except Exception as e:
+        logging.warning("No pude comprobar atribución de canal para %s: %s", chat_id, e)
+        return False
 
 
 def _save_ads_click_token(chat_id: int, click_id: str) -> None:
@@ -2687,28 +2706,26 @@ def _personalize_referral_links(text_value: str, chat_id: int) -> str:
 
 
 def _record_source_attribution_only(chat_id: int, detected_source: str, authoritative: bool = False) -> str:
-    """Guarda la fuente first-touch/paid-touch SIN contar todavía un ingreso al canal.
-
-    Se usa en la puerta ADS: el usuario ya quedó identificado por el deep-link del anuncio,
-    pero ChannelJoinEvent solo se crea cuando Telegram confirma posteriormente que entró
-    al canal. Una atribución ADS confirmada puede elevar un registro orgánico previo y
-    nunca se degrada después.
-    """
+    """Guarda fuente sin contar ingreso; ADS confirmado nunca se degrada."""
     if not _is_private_user_id(chat_id):
-        return "ORGANIC_OTHER"
+        return "UNATTRIBUTED"
     detected_source = _normalize_channel_source(detected_source)
     now = utcnow_naive()
     try:
         with Session() as session:
             row = session.get(ChannelSourceAttribution, str(chat_id))
             if row:
-                if row.source == "ADS":
+                current = _normalize_channel_source(row.source)
+                if current == "ADS":
                     final_source = "ADS"
                 elif authoritative and detected_source == "ADS":
                     row.source = "ADS"
                     final_source = "ADS"
+                elif detected_source in {"ORGANIC_OTHER", "UNATTRIBUTED"}:
+                    row.source = detected_source
+                    final_source = detected_source
                 else:
-                    final_source = "ORGANIC_OTHER"
+                    final_source = current
                 row.last_seen_at = now
             else:
                 final_source = detected_source
@@ -2726,29 +2743,29 @@ def _record_source_attribution_only(chat_id: int, detected_source: str, authorit
 
 
 def _record_channel_join_source(chat_id: int, detected_source: str, invite_name: str = "", authoritative: bool = False) -> str:
-    """Guarda origen del canal sin tocar `usuarios`.
+    """Guarda origen del ingreso; ausencia de metadata queda SIN ATRIBUIR.
 
-    La respuesta del servicio JOHAALE-TRACKING es la autoridad para ADS porque puede
-    reconocer el invite_link exacto aunque Telegram omita el nombre del enlace en
-    ``chat_member``. Una atribución ADS nunca se degrada a orgánico.
+    ADS confirmado nunca se degrada. Para fuentes no-ADS, el ingreso actual manda:
+    una entrada sin invite metadata puede corregir el antiguo supuesto automático
+    ORGANIC_OTHER y quedar como UNATTRIBUTED.
     """
     if not _is_private_user_id(chat_id):
-        return "ORGANIC_OTHER"
+        return "UNATTRIBUTED"
     detected_source = _normalize_channel_source(detected_source)
     now = utcnow_naive()
     try:
         with Session() as session:
             row = session.get(ChannelSourceAttribution, str(chat_id))
             if row:
-                if row.source == "ADS":
+                current = _normalize_channel_source(row.source)
+                if current == "ADS":
                     final_source = "ADS"
                 elif authoritative and detected_source == "ADS":
-                    # Reconciliación: el tracking externo confirmó que el enlace usado
-                    # corresponde a ADS aunque Telegram no haya enviado invite_name.
                     row.source = "ADS"
                     final_source = "ADS"
                 else:
-                    final_source = "ORGANIC_OTHER"
+                    row.source = detected_source
+                    final_source = detected_source
                 row.last_seen_at = now
             else:
                 final_source = detected_source
@@ -2772,32 +2789,31 @@ def _record_channel_join_source(chat_id: int, detected_source: str, invite_name:
         return detected_source
 
 
-def _source_breakdown(user_ids) -> tuple[int, int]:
-    """Cuenta ADS vs Orgánico/Otros para un conjunto de Telegram IDs."""
+def _source_breakdown(user_ids) -> tuple[int, int, int]:
+    """Cuenta ADS / Orgánico-Otros / Sin atribuir para Telegram IDs únicos."""
     ids = {str(x) for x in (user_ids or set()) if x and _is_private_user_id(x)}
     if not ids:
-        return 0, 0
-    ads_ids = set()
+        return 0, 0, 0
+    source_map = {}
     try:
         with Session() as session:
             rows = (
-                session.query(ChannelSourceAttribution.telegram_id)
-                .filter(
-                    ChannelSourceAttribution.telegram_id.in_(list(ids)),
-                    ChannelSourceAttribution.source == "ADS",
-                )
+                session.query(ChannelSourceAttribution.telegram_id, ChannelSourceAttribution.source)
+                .filter(ChannelSourceAttribution.telegram_id.in_(list(ids)))
                 .all()
             )
-            ads_ids = {str(r[0]) for r in rows if r and r[0]}
+            source_map = {str(tid): _normalize_channel_source(src) for tid, src in rows if tid}
     except Exception as e:
         logging.warning("No pude calcular desglose de origen: %s", e)
-    return len(ads_ids), len(ids - ads_ids)
+    ads = sum(1 for uid in ids if source_map.get(uid) == "ADS")
+    organic = sum(1 for uid in ids if source_map.get(uid) == "ORGANIC_OTHER")
+    unattributed = len(ids) - ads - organic
+    return ads, organic, unattributed
 
 
 def _channel_join_source_metrics(start_utc: datetime, end_utc: datetime):
-    """Personas únicas que ingresaron al canal durante el día, por origen."""
-    all_ids = set()
-    ads_ids = set()
+    """Personas únicas que ingresaron al canal durante el día, por origen real."""
+    all_ids, ads_ids, organic_ids, unattributed_ids = set(), set(), set(), set()
     try:
         with Session() as session:
             rows = (
@@ -2806,17 +2822,32 @@ def _channel_join_source_metrics(start_utc: datetime, end_utc: datetime):
                     ChannelJoinEvent.created_at >= start_utc,
                     ChannelJoinEvent.created_at < end_utc,
                 )
+                .order_by(ChannelJoinEvent.created_at.asc())
                 .all()
             )
+        # Si una misma persona tiene más de un evento en el rango, ADS tiene prioridad;
+        # luego orgánico explícito; sin evidencia queda sin atribuir.
+        per_user = {}
         for telegram_id, source in rows:
             if telegram_id and _is_private_user_id(telegram_id):
                 uid = str(telegram_id)
-                all_ids.add(uid)
-                if source == "ADS":
-                    ads_ids.add(uid)
+                src = _normalize_channel_source(source)
+                prev = per_user.get(uid)
+                if prev == "ADS":
+                    continue
+                # ADS confirmado es sticky; para no-ADS, el evento más reciente manda.
+                per_user[uid] = "ADS" if src == "ADS" else src
+        for uid, src in per_user.items():
+            all_ids.add(uid)
+            if src == "ADS":
+                ads_ids.add(uid)
+            elif src == "ORGANIC_OTHER":
+                organic_ids.add(uid)
+            else:
+                unattributed_ids.add(uid)
     except Exception as e:
         logging.warning("No pude calcular ingresos al canal por origen: %s", e)
-    return all_ids, ads_ids, all_ids - ads_ids
+    return all_ids, ads_ids, organic_ids, unattributed_ids
 
 
 def _vip_mapped_chat_id(access_key: str):
@@ -3498,10 +3529,12 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
     invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
     invite_name = (getattr(invite_obj, "name", None) or "").strip()
 
-    detected_source = "ADS" if (
-        invite_name.upper().startswith("SOURCE-ADS")
-        or invite_name.startswith("track-JT-")
-    ) else "ORGANIC_OTHER"
+    if invite_name.upper().startswith("SOURCE-ADS") or invite_name.startswith("track-JT-"):
+        detected_source = "ADS"
+    elif invite_name or invite_link:
+        detected_source = "ORGANIC_OTHER"
+    else:
+        detected_source = "UNATTRIBUTED"
 
     result = await _tracking_post(
         "/internal/channel-join",
@@ -3672,10 +3705,12 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
     invite_obj = getattr(req, "invite_link", None)
     invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
     invite_name = (getattr(invite_obj, "name", None) or "").strip()
-    detected_source = "ADS" if (
-        invite_name.upper().startswith("SOURCE-ADS")
-        or invite_name.startswith("track-JT-")
-    ) else "ORGANIC_OTHER"
+    if invite_name.upper().startswith("SOURCE-ADS") or invite_name.startswith("track-JT-"):
+        detected_source = "ADS"
+    elif invite_name or invite_link:
+        detected_source = "ORGANIC_OTHER"
+    else:
+        detected_source = "UNATTRIBUTED"
 
     try:
         await context.bot.approve_chat_join_request(chat_id=req.chat.id, user_id=member.id)
@@ -3757,8 +3792,8 @@ def _event_user_ids_with_detail(event_type: str, detail_value: str, start_utc: d
         return set()
 
 
-def _message_source_metrics(start_utc: datetime, end_utc: datetime) -> tuple[int, int]:
-    """Cuenta mensajes (no solo personas) separados por ADS vs Orgánico/Otros."""
+def _message_source_metrics(start_utc: datetime, end_utc: datetime) -> tuple[int, int, int]:
+    """Cuenta mensajes separados por ADS / Orgánico-Otros / Sin atribuir."""
     try:
         with Session() as session:
             rows = (
@@ -3768,23 +3803,31 @@ def _message_source_metrics(start_utc: datetime, end_utc: datetime) -> tuple[int
                 .all()
             )
             ids = {str(r[0]) for r in rows if r and r[0] and _is_private_user_id(r[0])}
-            ads_ids = set()
+            source_map = {}
             if ids:
-                ads_rows = (
-                    session.query(ChannelSourceAttribution.telegram_id)
-                    .filter(
-                        ChannelSourceAttribution.telegram_id.in_(list(ids)),
-                        ChannelSourceAttribution.source == "ADS",
-                    )
+                source_rows = (
+                    session.query(ChannelSourceAttribution.telegram_id, ChannelSourceAttribution.source)
+                    .filter(ChannelSourceAttribution.telegram_id.in_(list(ids)))
                     .all()
                 )
-                ads_ids = {str(r[0]) for r in ads_rows if r and r[0]}
-        ads_messages = sum(1 for r in rows if r and r[0] and str(r[0]) in ads_ids)
-        organic_messages = sum(1 for r in rows if r and r[0] and str(r[0]) not in ads_ids and _is_private_user_id(r[0]))
-        return ads_messages, organic_messages
+                source_map = {str(tid): _normalize_channel_source(src) for tid, src in source_rows if tid}
+        ads_messages = 0
+        organic_messages = 0
+        unattributed_messages = 0
+        for r in rows:
+            if not (r and r[0] and _is_private_user_id(r[0])):
+                continue
+            src = source_map.get(str(r[0]), "UNATTRIBUTED")
+            if src == "ADS":
+                ads_messages += 1
+            elif src == "ORGANIC_OTHER":
+                organic_messages += 1
+            else:
+                unattributed_messages += 1
+        return ads_messages, organic_messages, unattributed_messages
     except Exception as e:
         logging.warning("No pude calcular mensajes por origen: %s", e)
-        return 0, 0
+        return 0, 0, 0
 
 
 def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
@@ -3803,22 +3846,30 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
     ids_validated = _event_user_ids("ID_VALIDATED", start_utc, end_utc)
     deposits_reported = _event_user_ids("DEPOSIT_REPORTED", start_utc, end_utc)
     activated = _event_user_ids("ACCOUNT_ACTIVATED", start_utc, end_utc)
-    ads_gate_starts = _event_user_ids("ADS_GATE_START", start_utc, end_utc)
+    # ADS_GATE_START se conserva en histórico por compatibilidad, pero desde v7.10.86
+    # la métrica principal es CHANNEL_TO_BOT porque el flujo vigente entra primero al canal.
+    channel_to_bot_starts = _event_user_ids("CHANNEL_TO_BOT", start_utc, end_utc)
     registration_entry_starts = _event_user_ids("REGISTRATION_ENTRY_START", start_utc, end_utc)
 
-    channel_join_ids, channel_join_ads_ids, channel_join_organic_ids = _channel_join_source_metrics(start_utc, end_utc)
-    welcome_ads, welcome_organic = _source_breakdown(channel_welcome_starts)
-    writers_ads, writers_organic = _source_breakdown(writers)
-    ids_sent_ads, ids_sent_organic = _source_breakdown(ids_sent)
-    ids_validated_ads, ids_validated_organic = _source_breakdown(ids_validated)
-    deposits_reported_ads, deposits_reported_organic = _source_breakdown(deposits_reported)
-    activated_ads, activated_organic = _source_breakdown(activated)
-    registration_entry_ads, registration_entry_organic = _source_breakdown(registration_entry_starts)
-    messages_ads, messages_organic = _message_source_metrics(start_utc, end_utc)
+    channel_join_ids, channel_join_ads_ids, channel_join_organic_ids, channel_join_unattributed_ids = _channel_join_source_metrics(start_utc, end_utc)
+    channel_to_bot_ads, channel_to_bot_organic, channel_to_bot_unattributed = _source_breakdown(channel_to_bot_starts)
+    welcome_ads, welcome_organic, welcome_unattributed = _source_breakdown(channel_welcome_starts)
+    writers_ads, writers_organic, writers_unattributed = _source_breakdown(writers)
+    ids_sent_ads, ids_sent_organic, ids_sent_unattributed = _source_breakdown(ids_sent)
+    ids_validated_ads, ids_validated_organic, ids_validated_unattributed = _source_breakdown(ids_validated)
+    deposits_reported_ads, deposits_reported_organic, deposits_reported_unattributed = _source_breakdown(deposits_reported)
+    activated_ads, activated_organic, activated_unattributed = _source_breakdown(activated)
+    registration_entry_ads, registration_entry_organic, registration_entry_unattributed = _source_breakdown(registration_entry_starts)
+    messages_ads, messages_organic, messages_unattributed = _message_source_metrics(start_utc, end_utc)
 
     # Affiliate Top: datos reales recibidos por el servicio de tracking.
     affiliate_ok = isinstance(affiliate_summary, dict) and bool(affiliate_summary.get("ok"))
     by_source = affiliate_summary.get("by_source", {}) if affiliate_ok else {}
+    traffic = affiliate_summary.get("traffic", {}) if affiliate_ok else {}
+    try:
+        ads_visits = int(((traffic.get("ADS") or {}).get("visits") or 0)) if affiliate_ok else None
+    except Exception:
+        ads_visits = None
 
     def _aff_counts(bucket: str):
         data = by_source.get(bucket, {}) if isinstance(by_source, dict) else {}
@@ -3845,18 +3896,16 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
             f"💰 Primer depósito partner: {aff_organic[1]}\n"
             f"♻️ Redepósitos partner: {aff_organic[2]}\n"
         )
-        affiliate_unattributed_line = ""
-        if any(aff_unattributed):
-            affiliate_unattributed_line = (
-                f"🔎 AFFILIATE SIN ATRIBUIR\n"
-                f"📝 Registros partner: {aff_unattributed[0]}\n"
-                f"💰 Primer depósito partner: {aff_unattributed[1]}\n"
-                f"♻️ Redepósitos partner: {aff_unattributed[2]}\n"
-            )
+        affiliate_unattributed_line = (
+            f"📈 AFFILIATE · SIN ATRIBUIR\n"
+            f"📝 Registros partner: {aff_unattributed[0]}\n"
+            f"💰 Primer depósito partner: {aff_unattributed[1]}\n"
+            f"♻️ Redepósitos partner: {aff_unattributed[2]}\n"
+        )
     else:
         affiliate_ads_line = "📈 AFFILIATE · ADS\n⚠️ Datos partner no disponibles\n"
         affiliate_organic_line = "📈 AFFILIATE · ORGÁNICO / OTROS\n⚠️ Datos partner no disponibles\n"
-        affiliate_unattributed_line = ""
+        affiliate_unattributed_line = "📈 AFFILIATE · SIN ATRIBUIR\n⚠️ Datos partner no disponibles\n"
 
     no_id_users = set()
     try:
@@ -3877,16 +3926,16 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
 
     # Validado durante el día y todavía sin aviso/confirmación de depósito.
     waiting_users = ids_validated - deposits_reported - activated
-    no_id_ads, no_id_organic = _source_breakdown(no_id_users)
-    waiting_ads, waiting_organic = _source_breakdown(waiting_users)
+    no_id_ads, no_id_organic, no_id_unattributed = _source_breakdown(no_id_users)
+    waiting_ads, waiting_organic, waiting_unattributed = _source_breakdown(waiting_users)
 
     fecha = now_local.strftime("%d/%m/%Y")
     return (
         f"📊 REPORTE DEL DÍA — {fecha}\n\n"
         f"📣 ADS\n"
-        f"🎯 Bot-puerta ADS: {len(ads_gate_starts)}\n"
-        f"📥 Nuevos en canal: {len(channel_join_ads_ids)}\n"
-        f"🤖 Canal → bot (enlace de bienvenida): {welcome_ads}\n"
+        f"🌐 Visitas ADS: {ads_visits if ads_visits is not None else 'N/D'}\n"
+        f"📥 Entraron al canal desde ADS: {len(channel_join_ads_ids)}\n"
+        f"🤖 Canal → bot: {channel_to_bot_ads}\n"
         f"🚀 Iniciaron registro: {registration_entry_ads}\n"
         f"👤 Usuarios que escribieron: {writers_ads}\n"
         f"💬 Mensajes recibidos: {messages_ads}\n"
@@ -3900,7 +3949,7 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
         f"{affiliate_ads_line}\n"
         f"🌱 ORGÁNICO / OTROS\n"
         f"📥 Nuevos en canal: {len(channel_join_organic_ids)}\n"
-        f"🤖 Canal → bot (enlace de bienvenida): {welcome_organic}\n"
+        f"🤖 Canal → bot: {channel_to_bot_organic}\n"
         f"🚀 Iniciaron registro: {registration_entry_organic}\n"
         f"👤 Usuarios que escribieron: {writers_organic}\n"
         f"💬 Mensajes recibidos: {messages_organic}\n"
@@ -3911,12 +3960,26 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
         f"⏳ PENDIENTES DEL BOT · ORGÁNICO / OTROS\n"
         f"🕓 Escribieron y siguen sin ID: {no_id_organic}\n"
         f"⌛ ID validado hoy y aún sin depósito reportado: {waiting_organic}\n\n"
-        f"{affiliate_organic_line}"
+        f"{affiliate_organic_line}\n"
+        f"🔎 SIN ATRIBUIR\n"
+        f"📥 Nuevos en canal: {len(channel_join_unattributed_ids)}\n"
+        f"🤖 Canal → bot: {channel_to_bot_unattributed}\n"
+        f"🚀 Iniciaron registro: {registration_entry_unattributed}\n"
+        f"👤 Usuarios que escribieron: {writers_unattributed}\n"
+        f"💬 Mensajes recibidos: {messages_unattributed}\n"
+        f"🆔 ID enviados: {ids_sent_unattributed}\n"
+        f"✅ ID validados: {ids_validated_unattributed}\n"
+        f"💳 Avisaron depósito: {deposits_reported_unattributed}\n"
+        f"🟢 Depósitos confirmados: {activated_unattributed}\n\n"
+        f"⏳ PENDIENTES DEL BOT · SIN ATRIBUIR\n"
+        f"🕓 Escribieron y siguen sin ID: {no_id_unattributed}\n"
+        f"⌛ ID validado hoy y aún sin depósito reportado: {waiting_unattributed}\n\n"
         f"{affiliate_unattributed_line}"
-        "\nℹ️ 'Nuevos en canal' y 'Canal → bot' son pasos distintos del recorrido.\n"
-        "ℹ️ Orgánico/Otros = toda persona sin atribución ADS confirmada.\n"
+        "\nℹ️ SIN ATRIBUIR = Telegram no entregó evidencia suficiente para afirmar ADS u orgánico.\n"
+        "ℹ️ No se convierte automáticamente una entrada desconocida en Orgánico/Otros.\n"
         "🕒 Datos acumulados del día hasta el momento de generar el reporte."
     )
+
 
 
 async def _daily_report_with_affiliate(now_local=None) -> str:
@@ -7123,10 +7186,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_param_raw = (context.args[0].strip() if context.args else "")
     start_param = start_param_raw.lower()
 
-    # === PUERTA ADS: publicidad -> bot mínimo -> canal informativo ===
-    # No muestra idioma, menú VIP ni activa campañas. La atribución ocurre ANTES
-    # de que el usuario entre al canal, lo que permite reconocer después su alta
-    # aunque Telegram no entregue invite_link/invite_name en chat_member.
+    # === PUERTA ADS LEGACY: compatibilidad con enlaces trk_ ya publicados ===
+    # El flujo vigente desde v7.10.86 es /ads -> enlace source-ADS del canal -> bienvenida -> bot.
+    # Este bloque NO se elimina para no romper enlaces antiguos que todavía puedan circular.
     if start_param.startswith("trk_") and re.fullmatch(r"trk_[a-z0-9_-]{6,60}", start_param):
         set_user_lang(chat_id, nombre, "es")
         lang = "es"
@@ -7187,6 +7249,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_user_quick_keyboard(user.id),
         )
         return
+
+    # Métrica limpia del nuevo embudo: solo cuenta deep-links del canal cuando
+    # Telegram ya confirmó que ese usuario pasó por el canal informativo ES.
+    # Evita confundir /start normales o CTAs externos directos con Canal -> Bot.
+    if start_param in ("registro_canal", "canal_bienvenida", "canal_bienvenida_en") and _has_channel_source_attribution(chat_id):
+        channel_source = _get_channel_source(chat_id)
+        _log_event(chat_id, "CHANNEL_TO_BOT", start_param)
+        _tracking_fire_event(chat_id, "CHANNEL_TO_BOT", start_param)
+        logging.info("➡️ Canal -> bot: Telegram %s | origen=%s | start=%s", chat_id, channel_source, start_param)
 
     _tracking_fire_event(chat_id, "BOT_START", start_param or "normal")
 
