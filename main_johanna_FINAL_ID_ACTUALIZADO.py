@@ -55,7 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.79-20260922-CONTEXTUAL-INLINE-NAV-FINAL-POLISH"
+BOT_VERSION = "v7.10.81-20260922-INLINE-PANEL-AUTOCLOSE-ACCESS-AUDIT"
+# v7.10.81: paneles inline de miembros activos se autocierra/restauran tras 90 s (configurable), CERRAR usa ❌ rojo y aparece como primera fila pegada al contenido; MI ESPACIO JT abierto desde botón usa el mismo comportamiento. Auditoría estructural de accesos por nivel reforzada sin alterar la secuencia VIP. ES/EN.
+# v7.10.80: corrige la secuencia de accesos al hacer upgrade: la pausa anti-flood cuenta solo incorporaciones de la activación/upgrade actual, no canales heredados; restaura cualquier acceso nuevo perdido del pending antes de cerrar el flujo; si un acceso ya existía, lo informa en vez de saltarlo en silencio. Refuerza verificación real de membresía restricted/is_member. ES/EN.
 # v7.10.79: navegación inline editable para miembros activos, CTA de upgrade por nivel objetivo explícito, respuestas de nivel más compactas y chat personal reservado a casos realmente complejos. ES/EN.
 # v7.10.78: separa la navegación de miembros activos en MI ESPACIO JT; elimina el menú general como salida frecuente para DEPOSITED, conserva CTAs de nivel/UPGRADE y ofrece solo el broker faltante como segunda opción cuando puede determinarse con certeza. ES/EN.
 # v7.10.74: cualquier aviso de depósito respeta la secuencia ID validado → comprobante; PRE nunca pide comprobante antes de confirmar/validar el ID.
@@ -786,6 +788,26 @@ VIP_LEVEL_CHANNEL_KEYS = {
     VIP_LEVEL_PRESTIGE: ["vip_main", "module3", "module4", "madness", "signals_premium", "ai_crypto", "fx_auto"],
 }
 
+
+def _vip_access_config_errors():
+    """Auditoría estructural: cada acceso listado por nivel debe existir, tener URL y permitir ese nivel."""
+    errors = []
+    for level, keys in VIP_LEVEL_CHANNEL_KEYS.items():
+        if level == VIP_LEVEL_NONE:
+            continue
+        for key in keys:
+            info = VIP_ACCESS_CHANNELS.get(key)
+            if not info:
+                errors.append(f"{level}:{key}:NO_CONFIG")
+                continue
+            url = str(info.get("url") or "").strip()
+            if not url.startswith("https://t.me/"):
+                errors.append(f"{level}:{key}:BAD_URL")
+            if level not in tuple(info.get("levels") or ()):
+                errors.append(f"{level}:{key}:LEVEL_NOT_ALLOWED")
+    return errors
+
+
 # Para evitar el mensaje de Telegram "demasiados intentos", el flujo hace una
 # pausa automática tras 4 accesos confirmados consecutivos y luego continúa.
 try:
@@ -796,6 +818,13 @@ try:
     VIP_ACCESS_PAUSE_MINUTES = max(1, int(os.getenv("VIP_ACCESS_PAUSE_MINUTES", "5")))
 except Exception:
     VIP_ACCESS_PAUSE_MINUTES = 5
+
+# Los paneles informativos abiertos desde botones se restauran solos para no dejar
+# botoneras desplegadas ocupando espacio. Puede ajustarse por variable de entorno.
+try:
+    JT_INLINE_PANEL_AUTO_CLOSE_SECONDS = max(30, int(os.getenv("JT_INLINE_PANEL_AUTO_CLOSE_SECONDS", "90")))
+except Exception:
+    JT_INLINE_PANEL_AUTO_CLOSE_SECONDS = 90
 
 
 # Chat personal / validación (URL del botón de soporte)
@@ -1482,13 +1511,13 @@ def _vip_final_welcome_text(level: str, lang: str) -> str:
     if lang == "en":
         return (
             f"🎉 Welcome to JT TRADERS TEAMS — {label} level!\n\n"
-            "Your requested accesses have been enabled. Here is a quick guide to what you now have and how to use it:\n\n"
+            "All access included in your current level is now confirmed. Here is a quick guide to what you have and how to use it:\n\n"
             f"{summary}\n\n"
             "📌 Check the pinned instructions inside each channel before using the signals. Martingale is optional and increases risk."
         )
     return (
         f"🎉 ¡Bienvenida/o a JT TRADERS TEAMS — nivel {label}!\n\n"
-        "Tus accesos solicitados ya fueron habilitados. Aquí tienes una guía rápida de lo que incluye tu nivel y cómo utilizarlo:\n\n"
+        "Todos los accesos correspondientes a tu nivel ya están confirmados. Aquí tienes una guía rápida de lo que incluye tu nivel y cómo utilizarlo:\n\n"
         f"{summary}\n\n"
         "📌 Revisa las indicaciones fijadas dentro de cada canal antes de utilizar las señales. La Martingala es opcional y aumenta el riesgo."
     )
@@ -2722,6 +2751,128 @@ def _vip_is_active_member_status(status: str) -> bool:
     return str(status or "").lower() in {"member", "administrator", "creator", "restricted"}
 
 
+def _vip_member_state_is_active(member_state) -> bool:
+    """Valida membresía real; restricted solo cuenta si Telegram confirma is_member."""
+    if member_state is None:
+        return False
+    status = str(getattr(member_state, "status", "") or "").lower()
+    if status in {"member", "administrator", "creator"}:
+        return True
+    if status == "restricted":
+        return bool(getattr(member_state, "is_member", True))
+    return False
+
+
+def _vip_current_access_batch_confirmed_count(chat_id: int) -> int:
+    """Cuenta incorporaciones VIP reales desde la activación/upgrade más reciente.
+
+    Evita que una subida Básico→Premium cuente como "nuevos" los canales heredados
+    del nivel anterior. Los accesos que el usuario ya tenía no cuentan para la pausa,
+    porque no generan una nueva incorporación ni aumentan el riesgo de rate-limit.
+    """
+    try:
+        with Session() as session:
+            anchor = (
+                session.query(BotEvent.created_at)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type.in_(["ACCOUNT_ACTIVATED", "VIP_LEVEL_UPGRADED"]),
+                )
+                .order_by(BotEvent.created_at.desc(), BotEvent.id.desc())
+                .first()
+            )
+            if not anchor or not anchor[0]:
+                return 0
+            return int((
+                session.query(BotEvent.id)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type.in_([
+                        "VIP_ACCESS_APPROVED",
+                        "VIP_ACCESS_DIRECT_JOIN",
+                    ]),
+                    BotEvent.created_at >= anchor[0],
+                )
+                .count()
+            ) or 0)
+    except Exception as e:
+        logging.warning("No pude contar confirmaciones del lote VIP para %s: %s", chat_id, e)
+        return 0
+
+
+def _vip_repair_current_batch_pending(chat_id: int, level: str) -> list:
+    """Restaura accesos nuevos que falten del pending sin confirmación real.
+
+    Es un cinturón de seguridad para que nunca se envíe la bienvenida final de un
+    upgrade si, por cualquier inconsistencia previa, un canal nuevo desapareció de
+    pending_access_keys sin un evento de acceso confirmado/reconciliado.
+    """
+    if level not in VIP_LEVEL_RANK or level == VIP_LEVEL_NONE:
+        return []
+    try:
+        with Session() as session:
+            anchor = (
+                session.query(BotEvent.event_type, BotEvent.detail, BotEvent.created_at, BotEvent.id)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type.in_(["ACCOUNT_ACTIVATED", "VIP_LEVEL_UPGRADED"]),
+                )
+                .order_by(BotEvent.created_at.desc(), BotEvent.id.desc())
+                .first()
+            )
+            if not anchor:
+                return []
+            event_type, detail, anchor_at, _anchor_id = anchor
+            old_level = VIP_LEVEL_NONE
+            if event_type == "VIP_LEVEL_UPGRADED":
+                m = re.search(r"\b(NONE|BASIC|PREMIUM|PRESTIGE)->(BASIC|PREMIUM|PRESTIGE)\b", str(detail or ""), re.I)
+                if not m:
+                    return []
+                old_level = m.group(1).upper()
+                event_new_level = m.group(2).upper()
+                if event_new_level != level:
+                    return []
+            expected = _vip_new_channel_keys(old_level, level)
+            if not expected:
+                return []
+            confirmed_rows = (
+                session.query(BotEvent.detail)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type.in_([
+                        "VIP_ACCESS_APPROVED",
+                        "VIP_ACCESS_DIRECT_JOIN",
+                        "VIP_ACCESS_ALREADY_MEMBER",
+                    ]),
+                    BotEvent.created_at >= anchor_at,
+                    BotEvent.detail.in_(expected),
+                )
+                .all()
+            )
+            confirmed = {str(row[0] or "").strip() for row in confirmed_rows}
+
+        state = _vip_get_state(chat_id, create=False) or {}
+        current_pending = list(state.get("pending_keys") or [])
+        missing = [k for k in expected if k not in confirmed and k not in current_pending]
+        if not missing:
+            return []
+        repaired = list(dict.fromkeys(current_pending + missing))
+        if _vip_set_state(
+            chat_id,
+            int(state.get("total_cents") or 0),
+            level,
+            pending_keys=repaired,
+        ):
+            logging.warning(
+                "🛠️ Accesos VIP restaurados al pending para %s / nivel=%s: %s",
+                chat_id, level, ",".join(missing),
+            )
+            return missing
+    except Exception as e:
+        logging.warning("No pude auditar/restaurar pending VIP de %s: %s", chat_id, e)
+    return []
+
+
 async def _vip_reconcile_known_memberships(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     """Quita de pendientes accesos en los que el usuario ya es miembro.
 
@@ -2740,18 +2891,32 @@ async def _vip_reconcile_known_memberships(context: ContextTypes.DEFAULT_TYPE, c
             return welcomed
         try:
             member_state = await context.bot.get_chat_member(chat_id=channel_id, user_id=chat_id)
-            status = getattr(member_state, "status", "")
         except Exception as e:
             logging.info("No pude verificar membresía existente %s/%s: %s", chat_id, access_key, e)
             return welcomed
 
-        if not _vip_is_active_member_status(status):
+        if not _vip_member_state_is_active(member_state):
             return welcomed
 
         _log_event(chat_id, "VIP_ACCESS_ALREADY_MEMBER", access_key)
         _tracking_fire_event(chat_id, "VIP_ACCESS_ALREADY_MEMBER", access_key)
         level, should_welcome = _vip_mark_access_approved(chat_id, access_key)
         welcomed = welcomed or should_welcome
+        info = VIP_ACCESS_CHANNELS.get(access_key) or {}
+        access_name = (info.get("name_es") if get_user_lang(chat_id) == "es" else info.get("name_en")) or access_key
+        try:
+            lang_now = get_user_lang(chat_id)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"✅ Ya tienes acceso a {access_name}. No necesito enviarte otra solicitud para ese canal; continúo con los accesos que falten."
+                    if lang_now == "es" else
+                    f"✅ You already have access to {access_name}. I don't need to send another request for that channel; I'll continue with any remaining access."
+                ),
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logging.info("No pude informar acceso VIP ya existente %s/%s: %s", chat_id, access_key, e)
         logging.info(
             "♻️ Acceso VIP ya existente reconciliado: %s / %s / nivel=%s",
             chat_id, access_key, level
@@ -2799,29 +2964,32 @@ async def _vip_send_next_or_welcome(
     """Continúa el flujo VIP con UN solo botón, pausa anti-flood o bienvenida."""
     reconciled_welcome = await _vip_reconcile_known_memberships(context, chat_id)
     should_welcome = should_welcome or reconciled_welcome
+    # Cinturón de seguridad: si un acceso NUEVO desapareció del pending sin una
+    # confirmación real, se restaura antes de decidir que el nivel quedó completo.
+    _vip_repair_current_batch_pending(chat_id, level)
     remaining = _vip_pending_keys(chat_id)
 
     if remaining:
-        # Tras una tanda de accesos consecutivos hacemos una pausa persistente.
-        # Esto reduce el riesgo de que Telegram responda "demasiados intentos".
-        all_keys = _vip_channel_keys_for_level(level)
-        completed_count = max(0, len(all_keys) - len(remaining))
+        # Tras una tanda de accesos NUEVOS consecutivos hacemos una pausa persistente.
+        # IMPORTANTE: en un upgrade no contamos canales heredados del nivel anterior;
+        # solo confirmaciones ocurridas desde la activación/upgrade actual.
+        completed_count = _vip_current_access_batch_confirmed_count(chat_id)
         should_pause_now = (
             not bypass_pause
             and bool(just_completed)
-            and len(all_keys) > VIP_ACCESS_BATCH_SIZE
-            and completed_count == VIP_ACCESS_BATCH_SIZE
+            and completed_count > 0
+            and completed_count % VIP_ACCESS_BATCH_SIZE == 0
         )
         if should_pause_now:
             due_at = utcnow_naive() + timedelta(minutes=VIP_ACCESS_PAUSE_MINUTES)
             _vip_set_pause(chat_id, level, due_at)
             _vip_schedule_resume(context, chat_id, due_at)
             wait_text = (
-                f"✅ Ya tienes {completed_count} accesos confirmados.\n\n"
+                f"✅ Ya tienes {completed_count} accesos nuevos confirmados en esta activación/upgrade.\n\n"
                 f"⏳ Telegram puede limitar varias incorporaciones consecutivas. Para evitar que te aparezca «demasiados intentos», haré una pausa de {VIP_ACCESS_PAUSE_MINUTES} minutos y luego te enviaré automáticamente el siguiente acceso.\n\n"
                 "Si vuelves más tarde, puedes usar el botón CONTINUAR MIS ACCESOS y retomarás exactamente desde donde quedaste."
                 if lang == "es" else
-                f"✅ You already have {completed_count} confirmed accesses.\n\n"
+                f"✅ You already have {completed_count} new accesses confirmed in this activation/upgrade.\n\n"
                 f"⏳ Telegram may temporarily limit several consecutive joins. To reduce the chance of a “too many attempts” message, I’ll pause for {VIP_ACCESS_PAUSE_MINUTES} minutes and then automatically send your next access.\n\n"
                 "If you come back later, use CONTINUE MY ACCESS and you’ll resume exactly where you left off."
             )
@@ -3247,7 +3415,7 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
         active_now = False
         try:
             member_state = await context.bot.get_chat_member(chat_id=req.chat.id, user_id=chat_id)
-            active_now = _vip_is_active_member_status(getattr(member_state, "status", ""))
+            active_now = _vip_member_state_is_active(member_state)
         except Exception as e:
             logging.info(
                 "Solicitud VIP aprobada %s/%s; no pude verificar membresía inmediata: %s",
@@ -3858,7 +4026,7 @@ def _member_space_text(chat_id: int, lang: str = "es") -> str:
 
 
 def _inline_markup_snapshot(markup):
-    """Serializa los botones simples usados por los paneles para poder restaurarlos al cerrar."""
+    """Serializa botones simples de panel para poder restaurarlos sin crear otro mensaje."""
     if not markup:
         return []
     rows = []
@@ -3902,21 +4070,70 @@ def _inline_markup_from_snapshot(snapshot):
     return InlineKeyboardMarkup(rows) if rows else None
 
 
+# Raíz temporal de cada panel abierto. Se mantiene fuera de user_data para que el
+# job de autocierre pueda restaurar el mensaje aun cuando no tenga el CallbackQuery.
+_JT_INLINE_PANEL_ROOTS = {}
+
+
+def _inline_panel_key(q):
+    try:
+        message = q.message
+        chat_id = getattr(message, "chat_id", None) or getattr(getattr(message, "chat", None), "id", None)
+        return (int(chat_id), int(message.message_id))
+    except Exception:
+        return None
+
+
+def _inline_panel_close_label(lang: str = "es", panel_kind: str = "info") -> str:
+    if lang == "en":
+        return "❌ CLOSE THIS MENU" if panel_kind == "menu" else "❌ CLOSE THIS INFO"
+    return "❌ CERRAR ESTE MENÚ" if panel_kind == "menu" else "❌ CERRAR ESTA INFORMACIÓN"
+
+
+def _inline_panel_markup(reply_markup, lang: str = "es", panel_kind: str = "info"):
+    """Coloca CERRAR como PRIMER botón, pegado visualmente al contenido desplegado."""
+    rows = []
+    try:
+        for row in (reply_markup.inline_keyboard if reply_markup else []):
+            clean_row = [btn for btn in row if getattr(btn, "callback_data", None) != "panel_close"]
+            if clean_row:
+                rows.append(clean_row)
+    except Exception:
+        rows = []
+    close_row = [InlineKeyboardButton(_inline_panel_close_label(lang, panel_kind), callback_data="panel_close")]
+    return InlineKeyboardMarkup([close_row] + rows)
+
+
+def _cancel_inline_panel_autoclose(context, chat_id: int, message_id: int):
+    if not getattr(context, "job_queue", None):
+        return
+    name = f"JT_INLINE_PANEL_CLOSE_{int(chat_id)}_{int(message_id)}"
+    try:
+        for job in context.job_queue.get_jobs_by_name(name):
+            job.schedule_removal()
+    except Exception:
+        pass
+
+
 def _push_inline_panel_return(context, q):
-    """Guarda el texto/teclado del MISMO mensaje antes de abrir un panel; separado por message_id."""
+    """Guarda el estado del MISMO mensaje antes de abrir un panel; separado por message_id."""
     try:
         message = q.message
         message_id = str(getattr(message, "message_id", "") or "")
-        if not message_id:
+        key = _inline_panel_key(q)
+        if not message_id or not key:
             return
         text_value = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
-        panels = context.user_data.setdefault("_jt_inline_panel_returns", {})
-        stack = panels.setdefault(message_id, [])
         snapshot = {
             "text": text_value,
             "markup": _inline_markup_snapshot(getattr(message, "reply_markup", None)),
         }
-        # Evita duplicar exactamente el mismo estado al navegar entre botones.
+        panels = context.user_data.setdefault("_jt_inline_panel_returns", {})
+        # Si el panel anterior ya se autocerró, elimina una pila temporal obsoleta.
+        if key not in _JT_INLINE_PANEL_ROOTS:
+            panels[message_id] = []
+            _JT_INLINE_PANEL_ROOTS[key] = snapshot
+        stack = panels.setdefault(message_id, [])
         if not stack or stack[-1] != snapshot:
             stack.append(snapshot)
         if len(stack) > 6:
@@ -3926,7 +4143,7 @@ def _push_inline_panel_return(context, q):
 
 
 async def _edit_callback_panel(q, text: str, reply_markup=None):
-    """Abre información en el mismo mensaje cuando Telegram lo permite; si no, usa fallback seguro."""
+    """Abre información en el mismo mensaje cuando Telegram lo permite; fallback seguro si no."""
     try:
         await q.edit_message_text(text=text, reply_markup=reply_markup, disable_web_page_preview=True)
         return True
@@ -3941,31 +4158,116 @@ async def _edit_callback_panel(q, text: str, reply_markup=None):
         return False
 
 
-async def _open_callback_panel(context, q, text: str, reply_markup=None):
-    """Abre un panel en el mismo mensaje y deja listo CERRAR para restaurar lo anterior."""
+async def _inline_panel_autoclose_job(context):
+    """Restaura el mensaje raíz y quita la botonera desplegada tras el tiempo configurado."""
+    data = context.job.data or {}
+    chat_id = int(data.get("chat_id") or 0)
+    message_id = int(data.get("message_id") or 0)
+    if not chat_id or not message_id:
+        return
+    key = (chat_id, message_id)
+    root = _JT_INLINE_PANEL_ROOTS.pop(key, None) or data.get("root") or {}
+    text_value = str(root.get("text") or "").strip()
+    if not text_value:
+        return
+    markup = _inline_markup_from_snapshot(root.get("markup"))
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text_value,
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        if "message is not modified" not in str(e).lower():
+            logging.info("No pude autocerrar panel inline %s/%s: %s", chat_id, message_id, e)
+
+
+def _schedule_inline_panel_autoclose(context, q):
+    if not getattr(context, "job_queue", None):
+        return
+    key = _inline_panel_key(q)
+    if not key:
+        return
+    chat_id, message_id = key
+    root = _JT_INLINE_PANEL_ROOTS.get(key)
+    if not root:
+        return
+    _cancel_inline_panel_autoclose(context, chat_id, message_id)
+    try:
+        context.job_queue.run_once(
+            _inline_panel_autoclose_job,
+            when=JT_INLINE_PANEL_AUTO_CLOSE_SECONDS,
+            data={"chat_id": chat_id, "message_id": message_id, "root": root},
+            name=f"JT_INLINE_PANEL_CLOSE_{chat_id}_{message_id}",
+        )
+    except Exception as e:
+        logging.info("No pude programar autocierre de panel inline: %s", e)
+
+
+async def _open_callback_panel(context, q, text: str, reply_markup=None, panel_kind: str = "info"):
+    """Abre en el mismo mensaje, pone CERRAR arriba y programa restauración automática."""
     _push_inline_panel_return(context, q)
-    return await _edit_callback_panel(q, text, reply_markup)
+    key = _inline_panel_key(q)
+    lang = get_user_lang(key[0]) if key else "es"
+    panel_markup = _inline_panel_markup(reply_markup, lang, panel_kind)
+    edited_same_message = await _edit_callback_panel(q, text, panel_markup)
+    if edited_same_message:
+        _schedule_inline_panel_autoclose(context, q)
+    else:
+        # El fallback creó otro mensaje; limpia el retorno del mensaje original para
+        # no dejar una pila temporal obsoleta que afecte una apertura posterior.
+        key = _inline_panel_key(q)
+        if key:
+            _JT_INLINE_PANEL_ROOTS.pop(key, None)
+            try:
+                panels = context.user_data.get("_jt_inline_panel_returns", {})
+                panels.pop(str(key[1]), None)
+            except Exception:
+                pass
+    return edited_same_message
 
 
 async def _close_callback_panel(context, q, chat_id: int, lang: str):
-    """Cierra el panel restaurando exactamente el texto/teclado anterior cuando existe."""
+    """Cierra/restaura manualmente; si queda un panel padre, reinicia su autocierre."""
+    key = _inline_panel_key(q)
+    message_id_int = int(getattr(q.message, "message_id", 0) or 0)
+    if message_id_int:
+        _cancel_inline_panel_autoclose(context, chat_id, message_id_int)
     try:
-        message_id = str(getattr(q.message, "message_id", "") or "")
+        message_id = str(message_id_int or "")
         panels = context.user_data.get("_jt_inline_panel_returns", {})
         stack = panels.get(message_id, []) if message_id else []
         if stack:
             previous = stack.pop()
             if not stack:
                 panels.pop(message_id, None)
+                if key:
+                    _JT_INLINE_PANEL_ROOTS.pop(key, None)
             markup = _inline_markup_from_snapshot(previous.get("markup"))
-            return await _edit_callback_panel(q, previous.get("text") or _member_space_text(chat_id, lang), markup)
+            result = await _edit_callback_panel(q, previous.get("text") or _member_space_text(chat_id, lang), markup)
+            if stack and key:
+                _schedule_inline_panel_autoclose(context, q)
+            return result
     except Exception as e:
         logging.info("No pude restaurar retorno de panel inline: %s", e)
 
-    # Fallback tras redeploy o pérdida del estado temporal: miembro activo vuelve a su espacio;
-    # quien aún no tiene nivel vuelve al menú general, sin inventar otro flujo.
+    if key:
+        _JT_INLINE_PANEL_ROOTS.pop(key, None)
+    # Fallback tras redeploy/pérdida del estado: cerrar de verdad, dejando solo una salida compacta.
     if _active_member_level(chat_id) != VIP_LEVEL_NONE:
-        return await _edit_callback_panel(q, _member_space_text(chat_id, lang), member_space_keyboard(chat_id, lang))
+        compact = (
+            "✅ Information closed. You can reopen your JT space whenever you need it."
+            if lang == "en" else
+            "✅ Información cerrada. Puedes volver a abrir MI ESPACIO JT cuando lo necesites."
+        )
+        label = "👤 MY JT SPACE" if lang == "en" else "👤 MI ESPACIO JT"
+        return await _edit_callback_panel(
+            q,
+            compact,
+            InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="member_space")]]),
+        )
     return await _edit_callback_panel(
         q,
         "👇 Choose an option to continue:" if lang == "en" else "👇 Elige una opción para continuar:",
@@ -6893,7 +7195,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_user_lang(chat_id)
         active_level = _active_member_level(chat_id)
         if active_level != VIP_LEVEL_NONE:
-            await _edit_callback_panel(q, _member_space_text(chat_id, lang), member_space_keyboard(chat_id, lang))
+            await _open_callback_panel(context, q, _member_space_text(chat_id, lang), member_space_keyboard(chat_id, lang), panel_kind="menu")
         else:
             await q.message.reply_text(
                 "👇 Elige una opción para continuar:" if lang == "es" else "👇 Choose an option to continue:",
@@ -6915,7 +7217,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=build_main_menu(lang),
             )
             return
-        await _edit_callback_panel(q, _member_space_text(chat_id, lang), member_space_keyboard(chat_id, lang))
+        await _open_callback_panel(context, q, _member_space_text(chat_id, lang), member_space_keyboard(chat_id, lang), panel_kind="menu")
         return
     if q.data and q.data.startswith("member_add_broker:"):
         lang = get_user_lang(chat_id)
