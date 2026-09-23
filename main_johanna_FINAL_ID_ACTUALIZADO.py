@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.85-20260922-RISK-MANAGEMENT-SEQUENCE-CLARITY"
+BOT_VERSION = "v7.10.86-20260923-ADS-CHANNEL-FIRST"
+# v7.10.86: activa ADS canal-primero sin romper compatibilidad: /ads -> enlace exclusivo source-ADS del canal -> bienvenida -> bot. Añade métrica CHANNEL_TO_BOT, adapta reporte diario a Visitas ADS / Canal / Canal→Bot y conserva la puerta trk_ histórica solo como respaldo.
 # v7.10.85: corrige y blinda la metodología de gestión de riesgo de Johanna en IA: 2% para toda la secuencia, hasta 3% solo ocasionalmente con cuentas > USD 1,000, división en 6–7 partes (1 / 2 / 3–4), límite diario 5–7% y meta orientativa 10–12%. Añade respuesta determinística ES/EN para dudas de cuánto operar por entrada/MG1/MG2 sin confundirlo con gestión de cuentas.
 # v7.10.82: aclara que Básico/Premium/Prestige son niveles dentro de JT TRADERS TEAMS y añade instrucciones de upgrade por broker con ID validado, monto de referencia y envío del comprobante en este mismo chat. ES/EN.
 # v7.10.83: compacta el panel de upgrade sin perder reglas, refuerza que Básico/Premium/Prestige son niveles de la comunidad JT TRADERS TEAMS y muestra esa pertenencia también dentro del detalle de cada nivel. ES/EN.
@@ -2582,6 +2583,18 @@ def _get_channel_source(chat_id: int) -> str:
     return "ORGANIC_OTHER"
 
 
+def _has_channel_source_attribution(chat_id: int) -> bool:
+    """True si Telegram ya confirmó alguna entrada del usuario al canal informativo ES."""
+    if not _is_private_user_id(chat_id):
+        return False
+    try:
+        with Session() as session:
+            return session.get(ChannelSourceAttribution, str(chat_id)) is not None
+    except Exception as e:
+        logging.warning("No pude comprobar atribución de canal para %s: %s", chat_id, e)
+        return False
+
+
 def _save_ads_click_token(chat_id: int, click_id: str) -> None:
     """Guarda el click_id confirmado del último acceso ADS del usuario."""
     if not _is_private_user_id(chat_id):
@@ -3802,10 +3815,13 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
     ids_validated = _event_user_ids("ID_VALIDATED", start_utc, end_utc)
     deposits_reported = _event_user_ids("DEPOSIT_REPORTED", start_utc, end_utc)
     activated = _event_user_ids("ACCOUNT_ACTIVATED", start_utc, end_utc)
-    ads_gate_starts = _event_user_ids("ADS_GATE_START", start_utc, end_utc)
+    # ADS_GATE_START se conserva en histórico por compatibilidad, pero desde v7.10.86
+    # la métrica principal es CHANNEL_TO_BOT porque el flujo vigente entra primero al canal.
+    channel_to_bot_starts = _event_user_ids("CHANNEL_TO_BOT", start_utc, end_utc)
     registration_entry_starts = _event_user_ids("REGISTRATION_ENTRY_START", start_utc, end_utc)
 
     channel_join_ids, channel_join_ads_ids, channel_join_organic_ids = _channel_join_source_metrics(start_utc, end_utc)
+    channel_to_bot_ads, channel_to_bot_organic = _source_breakdown(channel_to_bot_starts)
     welcome_ads, welcome_organic = _source_breakdown(channel_welcome_starts)
     writers_ads, writers_organic = _source_breakdown(writers)
     ids_sent_ads, ids_sent_organic = _source_breakdown(ids_sent)
@@ -3818,6 +3834,11 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
     # Affiliate Top: datos reales recibidos por el servicio de tracking.
     affiliate_ok = isinstance(affiliate_summary, dict) and bool(affiliate_summary.get("ok"))
     by_source = affiliate_summary.get("by_source", {}) if affiliate_ok else {}
+    traffic = affiliate_summary.get("traffic", {}) if affiliate_ok else {}
+    try:
+        ads_visits = int(((traffic.get("ADS") or {}).get("visits") or 0)) if affiliate_ok else None
+    except Exception:
+        ads_visits = None
 
     def _aff_counts(bucket: str):
         data = by_source.get(bucket, {}) if isinstance(by_source, dict) else {}
@@ -3883,9 +3904,9 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
     return (
         f"📊 REPORTE DEL DÍA — {fecha}\n\n"
         f"📣 ADS\n"
-        f"🎯 Bot-puerta ADS: {len(ads_gate_starts)}\n"
-        f"📥 Nuevos en canal: {len(channel_join_ads_ids)}\n"
-        f"🤖 Canal → bot (enlace de bienvenida): {welcome_ads}\n"
+        f"🌐 Visitas ADS: {ads_visits if ads_visits is not None else 'N/D'}\n"
+        f"📥 Entraron al canal desde ADS: {len(channel_join_ads_ids)}\n"
+        f"🤖 Canal → bot: {channel_to_bot_ads}\n"
         f"🚀 Iniciaron registro: {registration_entry_ads}\n"
         f"👤 Usuarios que escribieron: {writers_ads}\n"
         f"💬 Mensajes recibidos: {messages_ads}\n"
@@ -3899,7 +3920,7 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
         f"{affiliate_ads_line}\n"
         f"🌱 ORGÁNICO / OTROS\n"
         f"📥 Nuevos en canal: {len(channel_join_organic_ids)}\n"
-        f"🤖 Canal → bot (enlace de bienvenida): {welcome_organic}\n"
+        f"🤖 Canal → bot: {channel_to_bot_organic}\n"
         f"🚀 Iniciaron registro: {registration_entry_organic}\n"
         f"👤 Usuarios que escribieron: {writers_organic}\n"
         f"💬 Mensajes recibidos: {messages_organic}\n"
@@ -3912,7 +3933,7 @@ def _daily_report_text(now_local=None, affiliate_summary=None) -> str:
         f"⌛ ID validado hoy y aún sin depósito reportado: {waiting_organic}\n\n"
         f"{affiliate_organic_line}"
         f"{affiliate_unattributed_line}"
-        "\nℹ️ 'Nuevos en canal' y 'Canal → bot' son pasos distintos del recorrido.\n"
+        "\nℹ️ 'Visitas ADS', 'Entraron al canal' y 'Canal → bot' son pasos distintos del recorrido.\n"
         "ℹ️ Orgánico/Otros = toda persona sin atribución ADS confirmada.\n"
         "🕒 Datos acumulados del día hasta el momento de generar el reporte."
     )
@@ -7097,10 +7118,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_param_raw = (context.args[0].strip() if context.args else "")
     start_param = start_param_raw.lower()
 
-    # === PUERTA ADS: publicidad -> bot mínimo -> canal informativo ===
-    # No muestra idioma, menú VIP ni activa campañas. La atribución ocurre ANTES
-    # de que el usuario entre al canal, lo que permite reconocer después su alta
-    # aunque Telegram no entregue invite_link/invite_name en chat_member.
+    # === PUERTA ADS LEGACY: compatibilidad con enlaces trk_ ya publicados ===
+    # El flujo vigente desde v7.10.86 es /ads -> enlace source-ADS del canal -> bienvenida -> bot.
+    # Este bloque NO se elimina para no romper enlaces antiguos que todavía puedan circular.
     if start_param.startswith("trk_") and re.fullmatch(r"trk_[a-z0-9_-]{6,60}", start_param):
         set_user_lang(chat_id, nombre, "es")
         lang = "es"
@@ -7161,6 +7181,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_user_quick_keyboard(user.id),
         )
         return
+
+    # Métrica limpia del nuevo embudo: solo cuenta deep-links del canal cuando
+    # Telegram ya confirmó que ese usuario pasó por el canal informativo ES.
+    # Evita confundir /start normales o CTAs externos directos con Canal -> Bot.
+    if start_param in ("registro_canal", "canal_bienvenida", "canal_bienvenida_en") and _has_channel_source_attribution(chat_id):
+        channel_source = _get_channel_source(chat_id)
+        _log_event(chat_id, "CHANNEL_TO_BOT", start_param)
+        _tracking_fire_event(chat_id, "CHANNEL_TO_BOT", start_param)
+        logging.info("➡️ Canal -> bot: Telegram %s | origen=%s | start=%s", chat_id, channel_source, start_param)
 
     _tracking_fire_event(chat_id, "BOT_START", start_param or "normal")
 
