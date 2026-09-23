@@ -55,9 +55,10 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.83-20260922-LEVEL-COMMUNITY-COPY-UPGRADE-COMPACT"
+BOT_VERSION = "v7.10.84-20260922-VIP-ACCESS-RESUME-ALREADY-MEMBER-REDEPLOY"
 # v7.10.82: aclara que Básico/Premium/Prestige son niveles dentro de JT TRADERS TEAMS y añade instrucciones de upgrade por broker con ID validado, monto de referencia y envío del comprobante en este mismo chat. ES/EN.
 # v7.10.83: compacta el panel de upgrade sin perder reglas, refuerza que Básico/Premium/Prestige son niveles de la comunidad JT TRADERS TEAMS y muestra esa pertenencia también dentro del detalle de cada nivel. ES/EN.
+# v7.10.84: blinda continuidad de accesos VIP: reintenta verificación de membresía tras cada enlace, añade VERIFICAR Y CONTINUAR como respaldo para canales ya existentes, recupera cualquier flujo VIP pendiente después de redeploy y usa también el chat_id persistido en VIPInviteOverride. ES/EN.
 # v7.10.81: paneles inline de miembros activos se autocierra/restauran tras 90 s (configurable), CERRAR usa ❌ rojo y aparece como primera fila pegada al contenido; MI ESPACIO JT abierto desde botón usa el mismo comportamiento. Auditoría estructural de accesos por nivel reforzada sin alterar la secuencia VIP. ES/EN.
 # v7.10.80: corrige la secuencia de accesos al hacer upgrade: la pausa anti-flood cuenta solo incorporaciones de la activación/upgrade actual, no canales heredados; restaura cualquier acceso nuevo perdido del pending antes de cerrar el flujo; si un acceso ya existía, lo informa en vez de saltarlo en silencio. Refuerza verificación real de membresía restricted/is_member. ES/EN.
 # v7.10.79: navegación inline editable para miembros activos, CTA de upgrade por nivel objetivo explícito, respuestas de nivel más compactas y chat personal reservado a casos realmente complejos. ES/EN.
@@ -821,6 +822,10 @@ try:
 except Exception:
     VIP_ACCESS_PAUSE_MINUTES = 5
 
+# Revisión silenciosa después de entregar un enlace VIP. Cubre ingreso directo y
+# usuarios que ya pertenecían al canal, sin depender únicamente de join_request.
+VIP_ACCESS_RECHECK_DELAYS = (5, 15, 30, 60)
+
 # Los paneles informativos abiertos desde botones se restauran solos para no dejar
 # botoneras desplegadas ocupando espacio. Puede ajustarse por variable de entorno.
 try:
@@ -1517,7 +1522,7 @@ def _vip_channel_allowed(level: str, access_key: str) -> bool:
 
 
 def _vip_access_keyboard(level: str, lang: str, keys=None) -> InlineKeyboardMarkup:
-    """Entrega un solo acceso por vez para reducir ráfagas/rate limits de Telegram."""
+    """Entrega un solo acceso por vez y deja un respaldo para continuar si ya era miembro."""
     keys = list(keys if keys is not None else _vip_channel_keys_for_level(level))
     rows = []
     if keys:
@@ -1526,6 +1531,12 @@ def _vip_access_keyboard(level: str, lang: str, keys=None) -> InlineKeyboardMark
         if info:
             label = info["name_es"] if lang == "es" else info["name_en"]
             rows.append([InlineKeyboardButton(f"🔐 {label}", url=_vip_effective_invite_url(key))])
+            verify_label = (
+                "✅ I ALREADY HAVE ACCESS · VERIFY & CONTINUE"
+                if lang == "en" else
+                "✅ YA TENGO ACCESO · VERIFICAR Y CONTINUAR"
+            )
+            rows.append([InlineKeyboardButton(verify_label, callback_data=f"vip_access_verify:{key}")])
     return InlineKeyboardMarkup(rows)
 
 def _vip_access_intro(level: str, lang: str, upgrade: bool = False) -> str:
@@ -1534,24 +1545,24 @@ def _vip_access_intro(level: str, lang: str, upgrade: bool = False) -> str:
         if upgrade:
             return (
                 f"🔐 🎉 Congratulations! Your {level_label} level is now active.\n\n"
-                "I’ll unlock your NEW channels one by one. Request access to the channel shown below; "
-                "as soon as it is approved, I’ll send you the next one automatically."
+                "I’ll unlock your NEW channels one by one. Open the access shown below. If you were already inside that channel, "
+                "I’ll verify it and continue automatically; if it doesn’t advance, use I ALREADY HAVE ACCESS · VERIFY & CONTINUE."
             )
         return (
             f"🔐 🎉 Congratulations! Your {level_label} level access is ready.\n\n"
-            "I’ll unlock your channels one by one. Request access to the channel shown below; "
-            "as soon as it is approved, I’ll send you the next one automatically."
+            "I’ll unlock your channels one by one. Open the access shown below. If you were already inside that channel, "
+            "I’ll verify it and continue automatically; if it doesn’t advance, use I ALREADY HAVE ACCESS · VERIFY & CONTINUE."
         )
     if upgrade:
         return (
             f"🔐 🎉 ¡Felicidades! Tu nivel {level_label} ya está activo.\n\n"
-            "Voy a habilitarte los NUEVOS canales uno por uno. Solicita acceso al canal que aparece abajo; "
-            "apenas quede aprobado, te enviaré automáticamente el siguiente."
+            "Voy a habilitarte los NUEVOS canales uno por uno. Abre el acceso que aparece abajo. Si ya estabas dentro de ese canal, "
+            "lo verificaré y continuaré automáticamente; si no avanza, usa YA TENGO ACCESO · VERIFICAR Y CONTINUAR."
         )
     return (
         f"🔐 🎉 ¡Felicidades! Ya están listos tus accesos del nivel {level_label}.\n\n"
-        "Voy a habilitarte los canales uno por uno. Solicita acceso al canal que aparece abajo; "
-        "apenas quede aprobado, te enviaré automáticamente el siguiente."
+        "Voy a habilitarte los canales uno por uno. Abre el acceso que aparece abajo. Si ya estabas dentro de ese canal, "
+        "lo verificaré y continuaré automáticamente; si no avanza, usa YA TENGO ACCESO · VERIFICAR Y CONTINUAR."
     )
 
 def _vip_level_summary(level: str, lang: str) -> str:
@@ -1574,9 +1585,9 @@ def _vip_level_summary(level: str, lang: str) -> str:
         blocks.append(("📊 SEÑALES Y AUTOMATIZACIÓN" if lang == "es" else "📊 SIGNALS & AUTOMATION") + "\n" + "\n".join(item(k) for k in signal_keys))
     if level == VIP_LEVEL_PRESTIGE:
         extra = (
-            "⭐ BENEFICIOS PRESTIGE ADICIONALES\n• Mentorías privadas\n• Acompañamiento cercano\n• Preparación para cuentas de fondeo\n• Forex automático: en construcción."
+            "⭐ BENEFICIOS PRESTIGE ADICIONALES\n• Mentorías privadas\n• Acompañamiento cercano\n• Preparación para cuentas de fondeo\n• Divisas Automáticas 24/7 Premium."
             if lang == "es" else
-            "⭐ ADDITIONAL PRESTIGE BENEFITS\n• Private mentoring\n• Closer guidance\n• Funded-account preparation\n• Automatic Forex: under development."
+            "⭐ ADDITIONAL PRESTIGE BENEFITS\n• Private mentoring\n• Closer guidance\n• Funded-account preparation\n• Premium Automatic FX 24/7."
         )
         blocks.append(extra)
     return "\n\n".join(blocks)
@@ -2807,7 +2818,7 @@ def _channel_join_source_metrics(start_utc: datetime, end_utc: datetime):
 
 
 def _vip_mapped_chat_id(access_key: str):
-    """Devuelve el chat_id conocido de un acceso VIP (estático o aprendido)."""
+    """Devuelve el chat_id conocido de un acceso VIP (estático o persistido)."""
     info = VIP_ACCESS_CHANNELS.get(access_key) or {}
     if info.get("chat_id"):
         try:
@@ -2819,8 +2830,13 @@ def _vip_mapped_chat_id(access_key: str):
             row = session.get(VIPChannelMap, access_key)
             if row and row.chat_id:
                 return int(row.chat_id)
+            # Un enlace seguro creado previamente por el bot también conserva el
+            # chat_id real. Esto evita perder el mapa después de un redeploy.
+            override = session.get(VIPInviteOverride, access_key)
+            if override and override.chat_id:
+                return int(override.chat_id)
     except Exception as e:
-        logging.warning("No pude leer chat_id VIP aprendido para %s: %s", access_key, e)
+        logging.warning("No pude leer chat_id VIP persistido para %s: %s", access_key, e)
     return None
 
 
@@ -2920,6 +2936,7 @@ def _vip_repair_current_batch_pending(chat_id: int, level: str) -> list:
                         "VIP_ACCESS_APPROVED",
                         "VIP_ACCESS_DIRECT_JOIN",
                         "VIP_ACCESS_ALREADY_MEMBER",
+                        "VIP_ACCESS_USER_CONFIRMED_NO_MAP",
                     ]),
                     BotEvent.created_at >= anchor_at,
                     BotEvent.detail.in_(expected),
@@ -2948,6 +2965,114 @@ def _vip_repair_current_batch_pending(chat_id: int, level: str) -> list:
     except Exception as e:
         logging.warning("No pude auditar/restaurar pending VIP de %s: %s", chat_id, e)
     return []
+
+
+def _vip_schedule_access_recheck(context, chat_id: int, access_key: str, attempt: int = 0):
+    """Revisa en segundo plano si el usuario ya pertenece al canal recién mostrado."""
+    if not getattr(context, "job_queue", None):
+        return
+    if attempt < 0 or attempt >= len(VIP_ACCESS_RECHECK_DELAYS):
+        return
+    try:
+        delay = int(VIP_ACCESS_RECHECK_DELAYS[attempt])
+        context.job_queue.run_once(
+            _vip_access_recheck_job,
+            when=delay,
+            data={"chat_id": int(chat_id), "access_key": str(access_key), "attempt": int(attempt)},
+            name=f"VIP_ACCESS_RECHECK_{chat_id}_{access_key}_{attempt}",
+        )
+    except Exception as e:
+        logging.info("No pude programar recheck VIP %s/%s: %s", chat_id, access_key, e)
+
+
+async def _vip_access_recheck_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = int(data.get("chat_id") or 0)
+    access_key = str(data.get("access_key") or "").strip()
+    attempt = int(data.get("attempt") or 0)
+    if not _is_private_user_id(chat_id) or access_key not in VIP_ACCESS_CHANNELS:
+        return
+    if access_key not in _vip_pending_keys(chat_id):
+        return
+
+    before = list(_vip_pending_keys(chat_id))
+    should_welcome = await _vip_reconcile_known_memberships(context, chat_id)
+    after = list(_vip_pending_keys(chat_id))
+    if after != before:
+        state = _vip_get_state(chat_id, create=False) or {}
+        level = state.get("level") or VIP_LEVEL_NONE
+        if level != VIP_LEVEL_NONE:
+            await _vip_send_next_or_welcome(
+                context, chat_id, level, get_user_lang(chat_id),
+                just_completed="", should_welcome=should_welcome, bypass_pause=False,
+            )
+        return
+
+    if attempt + 1 < len(VIP_ACCESS_RECHECK_DELAYS):
+        _vip_schedule_access_recheck(context, chat_id, access_key, attempt + 1)
+
+
+async def _vip_recover_pending_access_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = int(data.get("chat_id") or 0)
+    if not _is_private_user_id(chat_id) or get_user_stage(chat_id) != STAGE_DEPOSITED:
+        return
+    state = _vip_get_state(chat_id, create=False) or {}
+    level = state.get("level") or VIP_LEVEL_NONE
+    if level == VIP_LEVEL_NONE or not _vip_pending_keys(chat_id):
+        return
+    pause = _vip_get_pause(chat_id)
+    if pause and pause.get("due_at"):
+        # Las pausas persistentes tienen su propio recuperador; no duplicamos jobs.
+        return
+    await _vip_send_next_or_welcome(
+        context, chat_id, level, get_user_lang(chat_id),
+        just_completed="", should_welcome=False, bypass_pause=True,
+    )
+
+
+async def recover_pending_vip_access_flows(application):
+    """Retoma tras redeploy cualquier entrega VIP pendiente, incluso sin pausa activa."""
+    try:
+        with Session() as session:
+            rows = (
+                session.query(VIPAccessState.telegram_id)
+                .filter(
+                    VIPAccessState.pending_access_keys.isnot(None),
+                    VIPAccessState.pending_access_keys != "",
+                    VIPAccessState.level != VIP_LEVEL_NONE,
+                )
+                .all()
+            )
+        chat_ids = []
+        seen = set()
+        for row in rows:
+            try:
+                cid = int(row[0])
+            except Exception:
+                continue
+            if cid in seen or not _is_private_user_id(cid) or get_user_stage(cid) != STAGE_DEPOSITED:
+                continue
+            seen.add(cid)
+            if _vip_get_pause(cid):
+                continue
+            chat_ids.append(cid)
+    except Exception as e:
+        logging.warning("No pude recuperar flujos VIP pendientes: %s", e)
+        return
+
+    for idx, chat_id in enumerate(chat_ids):
+        try:
+            application.job_queue.run_once(
+                _vip_recover_pending_access_job,
+                when=5 + (idx * 2),
+                data={"chat_id": chat_id},
+                name=f"VIP_ACCESS_RECOVER_{chat_id}",
+            )
+        except Exception as e:
+            logging.info("No pude programar recuperación VIP de %s: %s", chat_id, e)
+    if chat_ids:
+        logging.info("♻️ Flujos VIP pendientes programados tras redeploy: %s", len(chat_ids))
 
 
 async def _vip_reconcile_known_memberships(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
@@ -3107,6 +3232,7 @@ async def _vip_send_next_or_welcome(
                 reply_markup=_vip_access_keyboard(level, lang, keys=[next_key]),
                 disable_web_page_preview=True,
             )
+            _vip_schedule_access_recheck(context, chat_id, next_key, 0)
         except Exception as e:
             logging.warning(
                 "No pude enviar el siguiente acceso VIP a %s tras %s: %s",
@@ -7228,6 +7354,67 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _open_callback_panel(context, q, text_value, InlineKeyboardMarkup(rows))
         else:
             await q.message.reply_text(upgrade_conditions_text(lang), reply_markup=support_keyboard(lang, chat_id))
+        return
+
+    if q.data and q.data.startswith("vip_access_verify:"):
+        lang = get_user_lang(chat_id)
+        access_key = (q.data.split(":", 1)[1] or "").strip()
+        if access_key not in VIP_ACCESS_CHANNELS:
+            return
+        state = _vip_get_state(chat_id, create=False) or {}
+        level = state.get("level") or VIP_LEVEL_NONE
+        if get_user_stage(chat_id) != STAGE_DEPOSITED or not _vip_channel_allowed(level, access_key):
+            msg = (
+                "🔒 Este acceso no corresponde a tu nivel activo."
+                if lang == "es" else
+                "🔒 This access is not included in your active level."
+            )
+            await q.message.reply_text(msg, reply_markup=support_keyboard(lang, chat_id))
+            return
+        if access_key not in _vip_pending_keys(chat_id):
+            await _vip_send_next_or_welcome(
+                context, chat_id, level, lang, just_completed="", should_welcome=False, bypass_pause=False
+            )
+            return
+
+        before = list(_vip_pending_keys(chat_id))
+        should_welcome = await _vip_reconcile_known_memberships(context, chat_id)
+        after = list(_vip_pending_keys(chat_id))
+        if after != before:
+            await _vip_send_next_or_welcome(
+                context, chat_id, level, lang, just_completed="", should_welcome=should_welcome, bypass_pause=False
+            )
+            return
+
+        mapped_chat_id = _vip_mapped_chat_id(access_key)
+        if mapped_chat_id:
+            msg = (
+                "⏳ Aún no puedo confirmar que este Telegram ya esté dentro de ese canal. Entra al canal y luego vuelve a tocar VERIFICAR Y CONTINUAR."
+                if lang == "es" else
+                "⏳ I still can't confirm that this Telegram account is inside that channel. Open the channel, then come back and tap VERIFY & CONTINUE again."
+            )
+            await q.message.reply_text(msg)
+            _vip_schedule_access_recheck(context, chat_id, access_key, 0)
+            return
+
+        # Respaldo para canales cuyo chat_id todavía no fue aprendido. El usuario ya
+        # está autorizado por nivel; esta confirmación solo evita congelar la secuencia.
+        _log_event(chat_id, "VIP_ACCESS_USER_CONFIRMED_NO_MAP", access_key)
+        _tracking_fire_event(chat_id, "VIP_ACCESS_USER_CONFIRMED_NO_MAP", access_key)
+        level_now, should_welcome = _vip_mark_access_approved(chat_id, access_key)
+        info = VIP_ACCESS_CHANNELS.get(access_key) or {}
+        access_name = (info.get("name_es") if lang == "es" else info.get("name_en")) or access_key
+        await q.message.reply_text(
+            (
+                f"✅ Confirmado. Continúo con los accesos que falten después de {access_name}."
+                if lang == "es" else
+                f"✅ Confirmed. I'll continue with the remaining access after {access_name}."
+            )
+        )
+        await _vip_send_next_or_welcome(
+            context, chat_id, level_now or level, lang,
+            just_completed=access_key, should_welcome=should_welcome, bypass_pause=False,
+        )
         return
 
     if q.data == "vip_continue_access":
@@ -13913,6 +14100,7 @@ async def post_init_app(application):
     await recover_pending_ai_jobs(application)
     await recover_pending_campaign_jobs(application)
     await recover_pending_vip_access_pauses(application)
+    await recover_pending_vip_access_flows(application)
     # Si el Chat ID de Señales Premium +300 ya fue aprendido en pruebas anteriores,
     # reemplazamos para el BOT el enlace histórico por uno propio con solicitud.
     await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
