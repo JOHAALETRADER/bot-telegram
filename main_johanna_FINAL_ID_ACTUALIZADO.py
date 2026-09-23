@@ -13507,7 +13507,7 @@ def _recent_live_recipients(days: int = LIVE_BROADCAST_DAYS):
 
 
 def _recent_marketing_recipients(days: int = MARKETING_BROADCAST_DAYS):
-    # General: usuarios sin ID enviado, sin validación y sin acceso activo.
+    # Conserva la ventana original de actividad del marketing manual.
     recipients = []
     for cid, lang, stage in _active_recipients(days, include_deposited=False):
         if stage != STAGE_PRE or _active_member_level(cid) != VIP_LEVEL_NONE:
@@ -13679,7 +13679,7 @@ async def marketing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.effective_message.reply_text(
             "📣 MARKETING MANUAL\n\n"
-            f"Se enviará únicamente a usuarios PRE sin ID ni proceso de registro activos en los últimos {MARKETING_BROADCAST_DAYS} días.\n"
+            f"Se enviará a usuarios PRE sin ID ni proceso de registro activos en los últimos {MARKETING_BROADCAST_DAYS} días.\n"
             f"👥 Destinatarios actuales: {len(recipients)}\n"
             "🚫 Los usuarios con cuenta ya activa (DEPOSITED) quedan excluidos.\n\n"
             "Envíame ahora un texto o una foto con texto en el caption. "
@@ -14145,7 +14145,7 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     audience_line = (
         "🎯 Audiencia: ID validado · pendiente de depósito (POST).\n🛡 PRE/DEPOSITED excluidos automáticamente."
         if audience == "validated_ids" else
-        f"📅 Ventana: últimos {MARKETING_BROADCAST_DAYS} días\n🛡 DEPOSITED excluidos automáticamente."
+        f"📅 Ventana: últimos {MARKETING_BROADCAST_DAYS} días\n🎯 Audiencia: PRE sin ID ni proceso.\n🛡 POST/DEPOSITED excluidos automáticamente."
     )
     await context.bot.send_message(
         chat_id=ADMIN_ID,
