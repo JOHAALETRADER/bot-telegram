@@ -55,8 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.82-20260922-UPGRADE-COMMUNITY-ID-INSTRUCTIONS"
+BOT_VERSION = "v7.10.83-20260922-LEVEL-COMMUNITY-COPY-UPGRADE-COMPACT"
 # v7.10.82: aclara que Básico/Premium/Prestige son niveles dentro de JT TRADERS TEAMS y añade instrucciones de upgrade por broker con ID validado, monto de referencia y envío del comprobante en este mismo chat. ES/EN.
+# v7.10.83: compacta el panel de upgrade sin perder reglas, refuerza que Básico/Premium/Prestige son niveles de la comunidad JT TRADERS TEAMS y muestra esa pertenencia también dentro del detalle de cada nivel. ES/EN.
 # v7.10.81: paneles inline de miembros activos se autocierra/restauran tras 90 s (configurable), CERRAR usa ❌ rojo y aparece como primera fila pegada al contenido; MI ESPACIO JT abierto desde botón usa el mismo comportamiento. Auditoría estructural de accesos por nivel reforzada sin alterar la secuencia VIP. ES/EN.
 # v7.10.80: corrige la secuencia de accesos al hacer upgrade: la pausa anti-flood cuenta solo incorporaciones de la activación/upgrade actual, no canales heredados; restaura cualquier acceso nuevo perdido del pending antes de cerrar el flujo; si un acceso ya existía, lo informa en vez de saltarlo en silencio. Refuerza verificación real de membresía restricted/is_member. ES/EN.
 # v7.10.79: navegación inline editable para miembros activos, CTA de upgrade por nivel objetivo explícito, respuestas de nivel más compactas y chat personal reservado a casos realmente complejos. ES/EN.
@@ -1105,13 +1106,11 @@ def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
         )
         return (
             f"{title}\n\n"
-            "These conditions apply to your level inside my JT TRADERS TEAMS community; they are not broker account tiers.\n\n"
-            "• The first 3 validated deposits on the SAME broker/account may accumulate toward a JT TRADERS TEAMS level upgrade.\n"
-            "• The accumulation window lasts 30 days from the first validated deposit.\n"
-            "• To be included in that accumulation, proof must be sent within 72 hours of the deposit.\n"
-            "• After the 3rd validated deposit or once the 30-day window ends, an upgrade requires ONE new deposit that by itself reaches the full minimum of the new JT TRADERS TEAMS level.\n"
-            "• Binomo and Stockity are managed separately and their deposits are never added together.\n"
-            "• Only deposits reported and validated through this chat are considered."
+            "These conditions apply to your level inside my JT TRADERS TEAMS community, not to a broker account tier.\n\n"
+            "• Up to the first 3 validated deposits on the SAME broker/account may accumulate during 30 days from the first validated deposit.\n"
+            "• Send each deposit proof within 72 hours of the deposit.\n"
+            "• After the 3rd deposit or when the 30-day window ends, the next upgrade requires ONE deposit that by itself reaches the full minimum of the target level.\n"
+            "• Binomo and Stockity are calculated separately. Only deposits reported and validated in this chat count."
         )
     title = (
         f"📈 UPGRADE JT TRADERS TEAMS · HACIA {_vip_level_label(target, lang).upper()}"
@@ -1120,18 +1119,16 @@ def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
     )
     return (
         f"{title}\n\n"
-        "Estas condiciones corresponden a tu nivel dentro de mi comunidad JT TRADERS TEAMS; no son niveles de Binomo ni de Stockity.\n\n"
-        "• Los primeros 3 depósitos validados de una MISMA cuenta/broker pueden acumularse para subir de nivel dentro de JT TRADERS TEAMS.\n"
-        "• La ventana de acumulación dura 30 días desde el primer depósito validado.\n"
-        "• Para entrar en esa acumulación, el comprobante debe enviarse dentro de las 72 horas posteriores al depósito.\n"
-        "• Después del tercer depósito validado o una vez vencidos los 30 días, el upgrade requiere UN nuevo depósito que por sí solo alcance el monto mínimo completo del nuevo nivel dentro de JT TRADERS TEAMS.\n"
-        "• Binomo y Stockity se gestionan por separado y sus depósitos nunca se suman entre sí.\n"
-        "• Solo se contabilizan depósitos reportados y validados por este chat."
+        "Estas condiciones aplican a tu nivel dentro de mi comunidad JT TRADERS TEAMS, no a un nivel del broker.\n\n"
+        "• Puedes acumular hasta los primeros 3 depósitos validados de una MISMA cuenta/broker durante 30 días desde el primero.\n"
+        "• Envía cada comprobante dentro de las 72 horas posteriores al depósito.\n"
+        "• Después del tercer depósito o al vencer los 30 días, el siguiente upgrade requiere UN depósito que por sí solo alcance el mínimo completo del nivel objetivo.\n"
+        "• Binomo y Stockity se calculan por separado. Solo cuentan depósitos reportados y validados en este chat."
     )
 
 
 def _upgrade_account_instructions_text(chat_id: int, target_level: str, lang: str = "es") -> str:
-    """Instrucciones concretas de depósito para upgrade usando solo IDs ya validados."""
+    """Instrucciones concretas y compactas de depósito usando solo IDs ya validados."""
     if target_level not in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE):
         return ""
     target_cents = int(VIP_LEVEL_THRESHOLDS_CENTS.get(target_level, 0) or 0)
@@ -1145,16 +1142,14 @@ def _upgrade_account_instructions_text(chat_id: int, target_level: str, lang: st
             return ""
         if lang == "en":
             return (
-                "\n\n✅ HOW TO COMPLETE YOUR JT TRADERS TEAMS UPGRADE\n"
-                f"🔐 Validated trading-account ID on file: {legacy_id}\n"
-                "Before making an additional deposit, confirm in this chat whether that ID belongs to Binomo or Stockity so I do not assign the deposit to the wrong broker. "
-                "After depositing, send the proof here in this same chat for validation."
+                "\n\n✅ TO COMPLETE YOUR UPGRADE\n"
+                f"🔐 Validated trading ID: {legacy_id}\n"
+                "Before depositing, confirm here whether this ID belongs to Binomo or Stockity. Then deposit into that same account and send the proof in this chat."
             )
         return (
-            "\n\n✅ CÓMO REALIZAR TU UPGRADE EN JT TRADERS TEAMS\n"
-            f"🔐 ID validado de tu cuenta de trading: {legacy_id}\n"
-            "Antes de hacer un depósito adicional, confirma en este chat si ese ID corresponde a Binomo o Stockity para no asignar el depósito al broker equivocado. "
-            "Después de depositar, envía el comprobante aquí mismo para validarlo."
+            "\n\n✅ PARA COMPLETAR TU UPGRADE\n"
+            f"🔐 ID validado: {legacy_id}\n"
+            "Antes de depositar, confirma aquí si este ID corresponde a Binomo o Stockity. Luego deposita en esa misma cuenta y envía el comprobante en este chat."
         )
 
     blocks = []
@@ -1169,30 +1164,31 @@ def _upgrade_account_instructions_text(chat_id: int, target_level: str, lang: st
             needed_cents = target_cents
         if lang == "en":
             blocks.append(
-                f"• {broker_label}: validated ID {trading_id} · reference amount to reach {_vip_level_label(target_level, lang)}: USD {_usd(needed_cents)}"
+                f"• {broker_label} · ID {trading_id} · approx. USD {_usd(needed_cents)} remaining to {_vip_level_label(target_level, lang)}"
             )
         else:
             blocks.append(
-                f"• {broker_label}: ID validado {trading_id} · monto de referencia para llegar a {_vip_level_label(target_level, lang)}: USD {_usd(needed_cents)}"
+                f"• {broker_label} · ID {trading_id} · faltan aprox. USD {_usd(needed_cents)} para {_vip_level_label(target_level, lang)}"
             )
 
+    multiple = len(states) > 1
     if lang == "en":
         intro = (
-            "\n\n✅ HOW TO COMPLETE YOUR JT TRADERS TEAMS UPGRADE\n"
-            "Make the additional deposit directly into one of your validated trading accounts listed below. Before depositing, verify that the account ID matches exactly:\n"
+            "\n\n✅ TO COMPLETE YOUR UPGRADE\n"
+            + ("Deposit into one of your validated accounts and verify the ID first:\n" if multiple else "Deposit directly into your validated account and verify the ID first:\n")
         )
         outro = (
-            "\n\nUse one broker/account for the upgrade calculation; do not split or combine Binomo and Stockity deposits. "
-            "After depositing, send the proof here in this same chat so I can validate it and update your JT TRADERS TEAMS level."
+            ("\nUse only one broker/account; Binomo and Stockity are not combined. " if multiple else "\n")
+            + "After depositing, send the proof here in this chat."
         )
     else:
         intro = (
-            "\n\n✅ CÓMO REALIZAR TU UPGRADE EN JT TRADERS TEAMS\n"
-            "Realiza el depósito adicional directamente en una de tus cuentas de trading validadas que aparecen abajo. Antes de depositar, verifica que el ID de la cuenta coincida exactamente:\n"
+            "\n\n✅ PARA COMPLETAR TU UPGRADE\n"
+            + ("Deposita en una de tus cuentas validadas y verifica primero el ID:\n" if multiple else "Deposita directamente en tu cuenta validada y verifica primero el ID:\n")
         )
         outro = (
-            "\n\nUsa una sola cuenta/broker para el cálculo del upgrade; no dividas ni combines depósitos entre Binomo y Stockity. "
-            "Después de depositar, envía el comprobante aquí mismo en este chat para validarlo y actualizar tu nivel dentro de JT TRADERS TEAMS."
+            ("\nUsa solo un broker/cuenta; Binomo y Stockity no se combinan. " if multiple else "\n")
+            + "Después de depositar, envía el comprobante aquí mismo en este chat."
         )
     return intro + "\n".join(blocks) + outro
 
@@ -4048,49 +4044,55 @@ def _level_button_label(level: str, lang: str = "es", own: bool = False) -> str:
 def _level_detail_text(level: str, lang: str = "es") -> str:
     if lang == "en":
         texts = {
-            VIP_LEVEL_BASIC: """🟢 BASIC LEVEL — from USD 50
+            VIP_LEVEL_BASIC: """🟢 BASIC LEVEL · JT TRADERS TEAMS
+From USD 50 to activate this level inside my community.
 
 🎓 Binary Teams Modules 1–3, from fundamentals through introduction and market analysis.
-📚 Study and support material to accompany your training.
+📚 Study and support material.
 📈 30–50 CRYPTO IDX signals per day, Monday to Friday.
 💬 Main VIP access, live sessions and community guidance.""",
-            VIP_LEVEL_PREMIUM: """🔵 PREMIUM LEVEL — from USD 200
+            VIP_LEVEL_PREMIUM: """🔵 PREMIUM LEVEL · JT TRADERS TEAMS
+From USD 200 to activate this level inside my community.
 
-🎓 Binary Teams Modules 1–4, a progressive path from fundamentals to advanced content; Module 4 is Smart Money Concept.
-📚 Study/support material: PDFs/guides, audiobooks, trading-plan and risk-management tables.
+🎓 Binary Teams Modules 1–4; Module 4 is Smart Money Concept.
+📚 Study/support material, audiobooks and trading/risk-management resources.
 🚀 Premium Anticipated Software with 300+ signals per day, Monday to Saturday.
 🤖 CRYPTO IDX AI 24/7.
 🎥 Live sessions and community guidance.""",
-            VIP_LEVEL_PRESTIGE: """🏆 PRESTIGE LEVEL — from USD 500 · HIGHEST LEVEL
+            VIP_LEVEL_PRESTIGE: """🏆 PRESTIGE LEVEL · JT TRADERS TEAMS
+From USD 500 · highest level inside my community.
 
 🎓 Binary Teams Modules 1–4 + Madness Advanced Trading — ALGO & LIT method.
-📚 Study/support material: PDFs/guides, audiobooks, trading-plan and risk-management tables.
+📚 Study/support material and advanced trading resources.
 🚀 Premium Anticipated Software with 300+ signals per day, Monday to Saturday.
 🤖 CRYPTO IDX AI 24/7 + 24/7 currency-pair AI bot.
-🎥 Live sessions and guidance, private mentoring, closer support and funded-account preparation.""",
+🎥 Live guidance, private mentoring and funded-account preparation.""",
         }
     else:
         texts = {
-            VIP_LEVEL_BASIC: """🟢 NIVEL BÁSICO — desde USD 50
+            VIP_LEVEL_BASIC: """🟢 NIVEL BÁSICO · JT TRADERS TEAMS
+Desde USD 50 para activar este nivel dentro de mi comunidad.
 
 🎓 Formación Binary Teams Módulos 1 al 3, desde fundamentos hasta introducción y análisis bursátil.
-📚 Material de estudio y apoyo para acompañar tu formación.
+📚 Material de estudio y apoyo.
 📈 30–50 señales CRYPTO IDX al día, de lunes a viernes.
 💬 Acceso al VIP principal, sesiones y acompañamiento de la comunidad.""",
-            VIP_LEVEL_PREMIUM: """🔵 NIVEL PREMIUM — desde USD 200
+            VIP_LEVEL_PREMIUM: """🔵 NIVEL PREMIUM · JT TRADERS TEAMS
+Desde USD 200 para activar este nivel dentro de mi comunidad.
 
-🎓 Binary Teams Módulos 1 al 4, una ruta progresiva desde fundamentos hasta contenido avanzado; el Módulo 4 es Smart Money Concept.
-📚 Material de estudio y apoyo: PDFs/guías, audiolibros, tablas de plan de trading y gestión de riesgo.
+🎓 Binary Teams Módulos 1 al 4; el Módulo 4 es Smart Money Concept.
+📚 Material de estudio, audiolibros y recursos de trading/gestión de riesgo.
 🚀 Software Premium Anticipado con +300 señales al día, de lunes a sábado.
 🤖 IA CRYPTO IDX 24/7.
 🎥 Sesiones en vivo y acompañamiento de la comunidad.""",
-            VIP_LEVEL_PRESTIGE: """🏆 NIVEL PRESTIGE — desde USD 500 · NIVEL MÁXIMO
+            VIP_LEVEL_PRESTIGE: """🏆 NIVEL PRESTIGE · JT TRADERS TEAMS
+Desde USD 500 · nivel máximo dentro de mi comunidad.
 
 🎓 Binary Teams Módulos 1 al 4 + Madness Trading Avanzado — método ALGO & LIT.
-📚 Material de estudio y apoyo: PDFs/guías, audiolibros, tablas de plan de trading y gestión de riesgo.
+📚 Material de estudio y recursos avanzados de trading.
 🚀 Software Premium Anticipado con +300 señales al día, de lunes a sábado.
 🤖 IA CRYPTO IDX 24/7 + bot IA de pares de divisas 24/7.
-🎥 Sesiones y acompañamiento, mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.""",
+🎥 Acompañamiento, mentorías privadas y preparación para cuentas de fondeo.""",
         }
     return texts.get(level, "")
 
