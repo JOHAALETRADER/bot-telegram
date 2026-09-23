@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.78-20260922-MEMBER-SPACE-CONTEXTUAL-NAVIGATION"
+BOT_VERSION = "v7.10.79-20260922-CONTEXTUAL-INLINE-NAV-FINAL-POLISH"
+# v7.10.79: navegación inline editable para miembros activos, CTA de upgrade por nivel objetivo explícito, respuestas de nivel más compactas y chat personal reservado a casos realmente complejos. ES/EN.
 # v7.10.78: separa la navegación de miembros activos en MI ESPACIO JT; elimina el menú general como salida frecuente para DEPOSITED, conserva CTAs de nivel/UPGRADE y ofrece solo el broker faltante como segunda opción cuando puede determinarse con certeza. ES/EN.
 # v7.10.74: cualquier aviso de depósito respeta la secuencia ID validado → comprobante; PRE nunca pide comprobante antes de confirmar/validar el ID.
 # v7.10.76: las consultas de nivel/upgrade de miembros activos muestran primero su nivel actual y luego UPGRADE; reconoce “siguiente nivel” y conserva el chat personal solo como CTA adicional cuando corresponde.
@@ -3701,34 +3702,291 @@ def _member_missing_broker(chat_id: int) -> str:
     return ""
 
 
+def _next_member_level(level: str) -> str:
+    if level == VIP_LEVEL_BASIC:
+        return VIP_LEVEL_PREMIUM
+    if level == VIP_LEVEL_PREMIUM:
+        return VIP_LEVEL_PRESTIGE
+    return VIP_LEVEL_NONE
+
+
+def _explicit_target_level(text_value: str) -> str:
+    """Nivel objetivo nombrado expresamente por la persona, sin inferirlo por montos."""
+    t = _norm(text_value or "")
+    if not t:
+        return VIP_LEVEL_NONE
+    if "prestige" in t:
+        return VIP_LEVEL_PRESTIGE
+    if "premium" in t:
+        return VIP_LEVEL_PREMIUM
+    if "basico" in t or "basic" in t:
+        return VIP_LEVEL_BASIC
+    return VIP_LEVEL_NONE
+
+
+def _is_upgrade_query_text(text_value: str) -> bool:
+    """Reconoce intención real de subir/cambiar de nivel, incluso con nivel objetivo explícito."""
+    t = _norm(text_value or "")
+    if not t:
+        return False
+    direct = (
+        "subir de nivel", "subir mi nivel", "upgrade", "cuanto me falta", "cuanta plata me falta",
+        "cuanto dinero me falta", "cuanto tendria que depositar", "cuanto tengo que depositar",
+        "cuanto debo depositar para subir", "para llegar a premium", "para llegar a prestige",
+        "me falta para premium", "me falta para prestige", "siguiente nivel", "proximo nivel",
+        "ir al siguiente nivel", "pasar al siguiente nivel", "que necesito para subir",
+        "que necesito para el siguiente nivel", "todavia puedo subir", "aun puedo subir",
+        "puedo subir de nivel", "puedo subir", "deposito mas", "depositar mas",
+        "hasta que dia puedo depositar", "hasta cuando puedo depositar", "hasta que fecha puedo depositar",
+        "fecha limite para depositar", "cuantos dias tengo", "cuanto tiempo tengo para depositar",
+        "plazo para depositar", "ventana de 30 dias", "how much do i need to upgrade",
+        "how much am i missing", "upgrade my level", "can i still upgrade", "upgrade deadline",
+        "how long do i have to deposit", "next level", "what do i need for the next level",
+        "what do i need to reach the next level",
+    )
+    if any(x in t for x in direct):
+        return True
+    if any(x in t for x in ("mas herramientas", "herramientas adicionales", "mas senales", "more tools", "more signals", "more resources")):
+        return True
+    if any(x in t for x in ("deposit", "recarg", "redeposit")) and any(x in t for x in ("fecha", "plazo", "hasta", "ventana", "beneficio", "herramient", "nivel", "subir", "upgrade")):
+        return True
+    target = _explicit_target_level(text_value)
+    if target != VIP_LEVEL_NONE and any(x in t for x in (
+        "quiero ir", "quiero llegar", "quiero pasar", "quiero cambiar", "quiero premium", "quiero prestige",
+        "pasar a", "subir a", "subir hasta", "llegar a", "ir a", "cambiar a", "cambiarme a",
+        "alcanzar", "quiero ser", "si quiero ir", "si quiero llegar", "want to go", "want to reach",
+        "want to move", "i want premium", "i want prestige", "move to", "move up to", "reach", "upgrade to",
+    )):
+        return True
+    return False
+
+
+def _upgrade_target_for_question(text_value: str, current_level: str) -> str:
+    explicit = _explicit_target_level(text_value)
+    if explicit != VIP_LEVEL_NONE and VIP_LEVEL_RANK.get(explicit, 0) > VIP_LEVEL_RANK.get(current_level, 0):
+        return explicit
+    return _next_member_level(current_level)
+
+
+def _is_own_level_details_query(text_value: str) -> bool:
+    t = _norm(text_value or "")
+    return any(x in t for x in (
+        "que incluye mi nivel", "que tiene mi nivel", "beneficios de mi nivel", "beneficios en mi nivel",
+        "que beneficios tengo", "que recibo en mi nivel", "que recibo con mi nivel", "que tengo en mi nivel",
+        "que mas incluye mi nivel", "que mas tengo", "solo tengo senales", "solo son senales",
+        "eso es todo", "nada mas", "what does my level include", "what is included in my level",
+        "what benefits do i have", "benefits of my level", "what do i get in my level", "what else do i have",
+        "do i only have signals", "is that all",
+    ))
+
+
+def _level_button_label(level: str, lang: str = "es", own: bool = False) -> str:
+    if lang == "en":
+        labels = {
+            VIP_LEVEL_BASIC: "🟢 MY BASIC LEVEL" if own else "🟢 VIEW BASIC LEVEL",
+            VIP_LEVEL_PREMIUM: "🔵 MY PREMIUM LEVEL" if own else "🔵 VIEW PREMIUM LEVEL",
+            VIP_LEVEL_PRESTIGE: "🏆 MY PRESTIGE LEVEL" if own else "🏆 VIEW PRESTIGE LEVEL",
+        }
+    else:
+        labels = {
+            VIP_LEVEL_BASIC: "🟢 MI NIVEL BÁSICO" if own else "🟢 VER NIVEL BÁSICO",
+            VIP_LEVEL_PREMIUM: "🔵 MI NIVEL PREMIUM" if own else "🔵 VER NIVEL PREMIUM",
+            VIP_LEVEL_PRESTIGE: "🏆 MI NIVEL PRESTIGE" if own else "🏆 VER NIVEL PRESTIGE",
+        }
+    return labels.get(level, "")
+
+
+def _level_detail_text(level: str, lang: str = "es") -> str:
+    if lang == "en":
+        texts = {
+            VIP_LEVEL_BASIC: """🟢 BASIC LEVEL — from USD 50
+
+🎓 Binary Teams Modules 1–3, from fundamentals through introduction and market analysis.
+📚 Study and support material to accompany your training.
+📈 30–50 CRYPTO IDX signals per day, Monday to Friday.
+💬 Main VIP access, live sessions and community guidance.""",
+            VIP_LEVEL_PREMIUM: """🔵 PREMIUM LEVEL — from USD 200
+
+🎓 Binary Teams Modules 1–4, a progressive path from fundamentals to advanced content; Module 4 is Smart Money Concept.
+📚 Study/support material: PDFs/guides, audiobooks, trading-plan and risk-management tables.
+🚀 Premium Anticipated Software with 300+ signals per day, Monday to Saturday.
+🤖 CRYPTO IDX AI 24/7.
+🎥 Live sessions and community guidance.""",
+            VIP_LEVEL_PRESTIGE: """🏆 PRESTIGE LEVEL — from USD 500 · HIGHEST LEVEL
+
+🎓 Binary Teams Modules 1–4 + Madness Advanced Trading — ALGO & LIT method.
+📚 Study/support material: PDFs/guides, audiobooks, trading-plan and risk-management tables.
+🚀 Premium Anticipated Software with 300+ signals per day, Monday to Saturday.
+🤖 CRYPTO IDX AI 24/7 + 24/7 currency-pair AI bot.
+🎥 Live sessions and guidance, private mentoring, closer support and funded-account preparation.""",
+        }
+    else:
+        texts = {
+            VIP_LEVEL_BASIC: """🟢 NIVEL BÁSICO — desde USD 50
+
+🎓 Formación Binary Teams Módulos 1 al 3, desde fundamentos hasta introducción y análisis bursátil.
+📚 Material de estudio y apoyo para acompañar tu formación.
+📈 30–50 señales CRYPTO IDX al día, de lunes a viernes.
+💬 Acceso al VIP principal, sesiones y acompañamiento de la comunidad.""",
+            VIP_LEVEL_PREMIUM: """🔵 NIVEL PREMIUM — desde USD 200
+
+🎓 Binary Teams Módulos 1 al 4, una ruta progresiva desde fundamentos hasta contenido avanzado; el Módulo 4 es Smart Money Concept.
+📚 Material de estudio y apoyo: PDFs/guías, audiolibros, tablas de plan de trading y gestión de riesgo.
+🚀 Software Premium Anticipado con +300 señales al día, de lunes a sábado.
+🤖 IA CRYPTO IDX 24/7.
+🎥 Sesiones en vivo y acompañamiento de la comunidad.""",
+            VIP_LEVEL_PRESTIGE: """🏆 NIVEL PRESTIGE — desde USD 500 · NIVEL MÁXIMO
+
+🎓 Binary Teams Módulos 1 al 4 + Madness Trading Avanzado — método ALGO & LIT.
+📚 Material de estudio y apoyo: PDFs/guías, audiolibros, tablas de plan de trading y gestión de riesgo.
+🚀 Software Premium Anticipado con +300 señales al día, de lunes a sábado.
+🤖 IA CRYPTO IDX 24/7 + bot IA de pares de divisas 24/7.
+🎥 Sesiones y acompañamiento, mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.""",
+        }
+    return texts.get(level, "")
+
+
+def _member_space_text(chat_id: int, lang: str = "es") -> str:
+    level = _active_member_level(chat_id)
+    if level == VIP_LEVEL_NONE:
+        return "👇 Choose an option to continue:" if lang == "en" else "👇 Elige una opción para continuar:"
+    return (
+        f"👤 MY JT SPACE\nYour current level is {_vip_level_label(level, lang)}. Choose what you need:"
+        if lang == "en" else
+        f"👤 MI ESPACIO JT\nTu nivel actual es {_vip_level_label(level, lang)}. Elige lo que necesitas:"
+    )
+
+
+def _inline_markup_snapshot(markup):
+    """Serializa los botones simples usados por los paneles para poder restaurarlos al cerrar."""
+    if not markup:
+        return []
+    rows = []
+    try:
+        for row in markup.inline_keyboard:
+            saved_row = []
+            for btn in row:
+                item = {"text": str(getattr(btn, "text", "") or "")}
+                callback_data = getattr(btn, "callback_data", None)
+                url = getattr(btn, "url", None)
+                if callback_data:
+                    item["callback_data"] = str(callback_data)
+                elif url:
+                    item["url"] = str(url)
+                else:
+                    continue
+                saved_row.append(item)
+            if saved_row:
+                rows.append(saved_row)
+    except Exception:
+        return []
+    return rows
+
+
+def _inline_markup_from_snapshot(snapshot):
+    rows = []
+    for row in snapshot or []:
+        buttons = []
+        for item in row or []:
+            text_value = str((item or {}).get("text") or "").strip()
+            if not text_value:
+                continue
+            callback_data = (item or {}).get("callback_data")
+            url = (item or {}).get("url")
+            if callback_data:
+                buttons.append(InlineKeyboardButton(text_value, callback_data=str(callback_data)))
+            elif url:
+                buttons.append(InlineKeyboardButton(text_value, url=str(url)))
+        if buttons:
+            rows.append(buttons)
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def _push_inline_panel_return(context, q):
+    """Guarda el texto/teclado del MISMO mensaje antes de abrir un panel; separado por message_id."""
+    try:
+        message = q.message
+        message_id = str(getattr(message, "message_id", "") or "")
+        if not message_id:
+            return
+        text_value = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+        panels = context.user_data.setdefault("_jt_inline_panel_returns", {})
+        stack = panels.setdefault(message_id, [])
+        snapshot = {
+            "text": text_value,
+            "markup": _inline_markup_snapshot(getattr(message, "reply_markup", None)),
+        }
+        # Evita duplicar exactamente el mismo estado al navegar entre botones.
+        if not stack or stack[-1] != snapshot:
+            stack.append(snapshot)
+        if len(stack) > 6:
+            del stack[:-6]
+    except Exception as e:
+        logging.info("No pude guardar retorno de panel inline: %s", e)
+
+
+async def _edit_callback_panel(q, text: str, reply_markup=None):
+    """Abre información en el mismo mensaje cuando Telegram lo permite; si no, usa fallback seguro."""
+    try:
+        await q.edit_message_text(text=text, reply_markup=reply_markup, disable_web_page_preview=True)
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        logging.info("No pude editar panel inline; uso fallback: %s", e)
+    try:
+        await q.message.reply_text(text, reply_markup=reply_markup, disable_web_page_preview=True)
+        return False
+    except Exception:
+        return False
+
+
+async def _open_callback_panel(context, q, text: str, reply_markup=None):
+    """Abre un panel en el mismo mensaje y deja listo CERRAR para restaurar lo anterior."""
+    _push_inline_panel_return(context, q)
+    return await _edit_callback_panel(q, text, reply_markup)
+
+
+async def _close_callback_panel(context, q, chat_id: int, lang: str):
+    """Cierra el panel restaurando exactamente el texto/teclado anterior cuando existe."""
+    try:
+        message_id = str(getattr(q.message, "message_id", "") or "")
+        panels = context.user_data.get("_jt_inline_panel_returns", {})
+        stack = panels.get(message_id, []) if message_id else []
+        if stack:
+            previous = stack.pop()
+            if not stack:
+                panels.pop(message_id, None)
+            markup = _inline_markup_from_snapshot(previous.get("markup"))
+            return await _edit_callback_panel(q, previous.get("text") or _member_space_text(chat_id, lang), markup)
+    except Exception as e:
+        logging.info("No pude restaurar retorno de panel inline: %s", e)
+
+    # Fallback tras redeploy o pérdida del estado temporal: miembro activo vuelve a su espacio;
+    # quien aún no tiene nivel vuelve al menú general, sin inventar otro flujo.
+    if _active_member_level(chat_id) != VIP_LEVEL_NONE:
+        return await _edit_callback_panel(q, _member_space_text(chat_id, lang), member_space_keyboard(chat_id, lang))
+    return await _edit_callback_panel(
+        q,
+        "👇 Choose an option to continue:" if lang == "en" else "👇 Elige una opción para continuar:",
+        build_main_menu(lang),
+    )
+
+
 def member_space_keyboard(chat_id: int, lang: str = "es") -> InlineKeyboardMarkup:
     """Menú reducido y dinámico para miembros con nivel activo."""
     level = _active_member_level(chat_id)
     if level == VIP_LEVEL_NONE:
         return build_main_menu(lang)
 
-    if lang == "en":
-        level_labels = {
-            VIP_LEVEL_BASIC: "🟢 MY BASIC LEVEL",
-            VIP_LEVEL_PREMIUM: "🔵 MY PREMIUM LEVEL",
-            VIP_LEVEL_PRESTIGE: "🏆 MY PRESTIGE LEVEL",
-        }
-        capital_label = "📊 CAPITAL MANAGEMENT"
-        socials_label = "🌐 SOCIAL MEDIA"
-        question_label = "💬 I HAVE A QUESTION"
-    else:
-        level_labels = {
-            VIP_LEVEL_BASIC: "🟢 MI NIVEL BÁSICO",
-            VIP_LEVEL_PREMIUM: "🔵 MI NIVEL PREMIUM",
-            VIP_LEVEL_PRESTIGE: "🏆 MI NIVEL PRESTIGE",
-        }
-        capital_label = "📊 GESTIÓN DE CAPITAL"
-        socials_label = "🌐 REDES SOCIALES"
-        question_label = "💬 TENGO UNA PREGUNTA"
+    capital_label = "📊 CAPITAL MANAGEMENT" if lang == "en" else "📊 GESTIÓN DE CAPITAL"
+    socials_label = "🌐 SOCIAL MEDIA" if lang == "en" else "🌐 REDES SOCIALES"
+    question_label = "💬 I HAVE A QUESTION" if lang == "en" else "💬 TENGO UNA PREGUNTA"
 
-    rows = [[InlineKeyboardButton(level_labels[level], callback_data=f"level_detail:{level}")]]
-    if level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
-        rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data="upgrade_conditions")])
+    rows = [[InlineKeyboardButton(_level_button_label(level, lang, own=True), callback_data=f"level_detail:{level}")]]
+    next_level = _next_member_level(level)
+    if next_level != VIP_LEVEL_NONE:
+        rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{next_level}")])
 
     missing_broker = _member_missing_broker(chat_id)
     if missing_broker:
@@ -3741,8 +3999,8 @@ def member_space_keyboard(chat_id: int, lang: str = "es") -> InlineKeyboardMarku
         rows.append([InlineKeyboardButton(second_label, callback_data=f"member_add_broker:{missing_broker}")])
 
     rows.extend([
-        [InlineKeyboardButton(capital_label, callback_data="gestion_capital_en" if lang == "en" else "gestion_capital")],
-        [InlineKeyboardButton(socials_label, callback_data="redes_sociales")],
+        [InlineKeyboardButton(capital_label, callback_data="member_capital")],
+        [InlineKeyboardButton(socials_label, callback_data="member_socials")],
         [InlineKeyboardButton(question_label, callback_data="ask_here")],
     ])
     return InlineKeyboardMarkup(rows)
@@ -3859,7 +4117,7 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE, 
 
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
-    """CTA contextual: nivel propio/específico cuando aporta; general solo para comparar niveles."""
+    """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
     current_level = VIP_LEVEL_NONE
     current_stage = None
     if chat_id is not None:
@@ -3872,134 +4130,73 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
 
     t = _norm(question or "")
     active_member = current_stage == STAGE_DEPOSITED and current_level != VIP_LEVEL_NONE
+    question_label = "💬 I HAVE A QUESTION" if lang == "en" else "💬 TENGO UNA PREGUNTA"
 
-    upgrade_query = any(x in t for x in (
-        "subir de nivel", "subir mi nivel", "upgrade", "cuanto me falta", "cuánto me falta",
-        "cuanta plata me falta", "cuánta plata me falta", "cuanto dinero me falta", "cuánto dinero me falta",
-        "cuanto tendria que depositar", "cuánto tendría que depositar", "cuanto tengo que depositar",
-        "cuánto tengo que depositar", "cuanto debo depositar para subir", "cuánto debo depositar para subir",
-        "para llegar a premium", "para llegar a prestige", "me falta para premium", "me falta para prestige",
-        "siguiente nivel", "proximo nivel", "próximo nivel", "ir al siguiente nivel", "pasar al siguiente nivel",
-        "que necesito para subir", "qué necesito para subir", "que necesito para el siguiente nivel", "qué necesito para el siguiente nivel",
-        "next level", "what do i need for the next level", "what do i need to reach the next level",
-        "todavia puedo subir", "todavía puedo subir", "aun puedo subir", "aún puedo subir",
-        "puedo subir de nivel", "puedo subir", "deposito mas", "depósito más", "depositar mas", "depositar más",
-        "hasta que dia puedo depositar", "hasta qué día puedo depositar", "hasta cuando puedo depositar", "hasta cuándo puedo depositar",
-        "hasta que fecha puedo depositar", "hasta qué fecha puedo depositar", "fecha limite para depositar", "fecha límite para depositar",
-        "cuantos dias tengo", "cuántos días tengo", "cuanto tiempo tengo para depositar", "cuánto tiempo tengo para depositar",
-        "plazo para depositar", "ventana de 30 dias", "ventana de 30 días",
-        "how much do i need to upgrade", "how much am i missing", "upgrade my level", "can i still upgrade",
-        "upgrade deadline", "how long do i have to deposit",
-    )) or any(x in t for x in (
-        "mas herramientas", "más herramientas", "herramientas adicionales", "more tools",
-        "mas señales", "más señales", "more signals", "more resources",
-    )) or (
-        any(x in t for x in ("deposit", "depósit", "recarg", "redeposit"))
-        and any(x in t for x in ("fecha", "plazo", "hasta", "ventana", "beneficio", "herramient", "nivel", "subir", "upgrade"))
-    )
-    if active_member and upgrade_query:
-        if lang == "en":
-            labels = {
-                VIP_LEVEL_BASIC: "🟢 VIEW MY BASIC LEVEL",
-                VIP_LEVEL_PREMIUM: "🔵 VIEW MY PREMIUM LEVEL",
-                VIP_LEVEL_PRESTIGE: "🏆 VIEW MY PRESTIGE LEVEL",
-            }
+    if active_member and _is_upgrade_query_text(question):
+        if current_level == VIP_LEVEL_PRESTIGE:
+            return InlineKeyboardMarkup([
+                [InlineKeyboardButton(_level_button_label(current_level, lang, own=True), callback_data=f"level_detail:{current_level}")],
+                [InlineKeyboardButton(question_label, callback_data="ask_here")],
+            ])
+        target_level = _upgrade_target_for_question(question, current_level)
+        explicit_target = _explicit_target_level(question)
+        rows = []
+        if explicit_target != VIP_LEVEL_NONE and VIP_LEVEL_RANK.get(explicit_target, 0) > VIP_LEVEL_RANK.get(current_level, 0):
+            rows.append([InlineKeyboardButton(_level_button_label(target_level, lang, own=False), callback_data=f"level_detail:{target_level}")])
         else:
-            labels = {
-                VIP_LEVEL_BASIC: "🟢 VER MI NIVEL BÁSICO",
-                VIP_LEVEL_PREMIUM: "🔵 VER MI NIVEL PREMIUM",
-                VIP_LEVEL_PRESTIGE: "🏆 VER MI NIVEL PRESTIGE",
-            }
-        label = labels.get(current_level)
-        rows = [[InlineKeyboardButton(label, callback_data=f"level_detail:{current_level}")]] if label else []
-        if current_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
-            rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data="upgrade_conditions")])
-        return InlineKeyboardMarkup(rows) if rows else None
+            rows.append([InlineKeyboardButton(_level_button_label(current_level, lang, own=True), callback_data=f"level_detail:{current_level}")])
+        if target_level != VIP_LEVEL_NONE:
+            rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{target_level}")])
+        rows.append([InlineKeyboardButton(question_label, callback_data="ask_here")])
+        return InlineKeyboardMarkup(rows)
 
-    # Las consultas sobre con cuánto ingresar/empezar SIEMPRE deben acercar la
-    # estructura de niveles al usuario; no obligarlo a volver al menú anterior.
-    # Esto es un CTA informativo, no recalcula el nivel de un miembro activo.
     if _is_min_50_intent(question):
         label = "📊 VIEW ALL COMMUNITY LEVELS" if lang == "en" else "📊 VER TODOS LOS NIVELES"
         callback = "levels_plans_en" if lang == "en" else "niveles_planes"
         return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=callback)]])
+
     current_level_query = any(x in t for x in (
-        "que nivel tengo", "qué nivel tengo", "cual es mi nivel", "cuál es mi nivel",
-        "mi nivel actual", "actualmente que nivel", "actualmente qué nivel", "en que nivel estoy", "en qué nivel estoy",
-        "soy premium", "soy prestige", "soy basico", "soy básico",
-        "soy nivel premium", "soy nivel prestige", "soy nivel basico", "soy nivel básico",
-        "estoy en premium", "estoy en prestige", "estoy en basico", "estoy en básico",
-        "estoy en nivel premium", "estoy en nivel prestige", "estoy en nivel basico", "estoy en nivel básico",
-        "mi nivel es premium", "mi nivel es prestige", "mi nivel es basico", "mi nivel es básico",
+        "que nivel tengo", "cual es mi nivel", "mi nivel actual", "actualmente que nivel", "en que nivel estoy",
+        "soy premium", "soy prestige", "soy basico", "soy nivel premium", "soy nivel prestige", "soy nivel basico",
+        "estoy en premium", "estoy en prestige", "estoy en basico", "estoy en nivel premium", "estoy en nivel prestige",
+        "estoy en nivel basico", "mi nivel es premium", "mi nivel es prestige", "mi nivel es basico",
         "sigo en premium", "sigo en prestige", "sigo siendo premium", "sigo siendo prestige",
         "am i premium", "am i prestige", "am i basic", "i am premium", "i am prestige",
         "what level am i", "what is my level", "my current level",
     ))
-    own_level_benefits = any(x in t for x in (
-        "solo tengo senales", "solo tengo señales", "solo son senales", "solo son señales",
-        "eso es todo", "nada mas", "nada más", "que mas tengo", "qué más tengo",
-        "que mas incluye mi nivel", "qué más incluye mi nivel", "que incluye mi nivel", "qué incluye mi nivel",
-        "que tengo en mi nivel", "qué tengo en mi nivel", "beneficios de mi nivel", "beneficios en mi nivel",
-        "que beneficios tengo", "qué beneficios tengo", "what does my level include", "benefits of my level",
-        "is that all", "do i only have signals", "what else do i have", "what else is included in my level",
-    ))
+    own_level_details = _is_own_level_details_query(question)
 
-    if active_member and (current_level_query or own_level_benefits):
-        if lang == "en":
-            labels = {
-                VIP_LEVEL_BASIC: "🟢 VIEW MY BASIC LEVEL",
-                VIP_LEVEL_PREMIUM: "🔵 VIEW MY PREMIUM LEVEL",
-                VIP_LEVEL_PRESTIGE: "🏆 VIEW MY PRESTIGE LEVEL",
-            }
-        else:
-            labels = {
-                VIP_LEVEL_BASIC: "🟢 VER MI NIVEL BÁSICO",
-                VIP_LEVEL_PREMIUM: "🔵 VER MI NIVEL PREMIUM",
-                VIP_LEVEL_PRESTIGE: "🏆 VER MI NIVEL PRESTIGE",
-            }
-        label = labels.get(current_level)
-        if label:
-            rows = [[InlineKeyboardButton(label, callback_data=f"level_detail:{current_level}")]]
-            # Al consultar el nivel propio, Básico/Premium deben tener UPGRADE como
-            # segundo CTA. Si la conversación ya es larga, el botón de chat personal
-            # se añadirá DESPUÉS por _append_personal_chat_button(), sin desplazar UPGRADE.
-            if current_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
-                upgrade_label = "⬆️ UPGRADE"
-                rows.append([InlineKeyboardButton(upgrade_label, callback_data="upgrade_conditions")])
-            return InlineKeyboardMarkup(rows)
+    if active_member and (current_level_query or own_level_details):
+        rows = [[InlineKeyboardButton(_level_button_label(current_level, lang, own=True), callback_data=f"level_detail:{current_level}")]]
+        next_level = _next_member_level(current_level)
+        if next_level != VIP_LEVEL_NONE:
+            rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{next_level}")])
+        rows.append([InlineKeyboardButton(question_label, callback_data="ask_here")])
+        return InlineKeyboardMarkup(rows)
 
-    # Si preguntan por UN nivel concreto, muestra solo ese nivel, no toda la estructura.
-    specific_level = VIP_LEVEL_NONE
-    if "prestige" in t:
-        specific_level = VIP_LEVEL_PRESTIGE
-    elif "premium" in t:
-        specific_level = VIP_LEVEL_PREMIUM
-    elif "basico" in t or "básico" in t or "basic" in t:
-        specific_level = VIP_LEVEL_BASIC
+    specific_level = _explicit_target_level(question)
     specific_detail = any(x in t for x in (
-        "que incluye", "qué incluye", "que tiene", "qué tiene", "beneficios", "que recibo", "qué recibo",
-        "ver nivel", "detalle", "contenido", "what is included", "what does", "benefits", "what do i get",
+        "que incluye", "que tiene", "beneficios", "que recibo", "ver nivel", "detalle", "contenido",
+        "what is included", "what does", "benefits", "what do i get", "view level", "details",
     ))
     if specific_level != VIP_LEVEL_NONE and specific_detail:
         own = active_member and specific_level == current_level
-        if lang == "en":
-            labels = {
-                VIP_LEVEL_BASIC: "🟢 VIEW MY BASIC LEVEL" if own else "🟢 VIEW BASIC LEVEL",
-                VIP_LEVEL_PREMIUM: "🔵 VIEW MY PREMIUM LEVEL" if own else "🔵 VIEW PREMIUM LEVEL",
-                VIP_LEVEL_PRESTIGE: "🏆 VIEW MY PRESTIGE LEVEL" if own else "🏆 VIEW PRESTIGE LEVEL",
-            }
-        else:
-            labels = {
-                VIP_LEVEL_BASIC: "🟢 VER MI NIVEL BÁSICO" if own else "🟢 VER NIVEL BÁSICO",
-                VIP_LEVEL_PREMIUM: "🔵 VER MI NIVEL PREMIUM" if own else "🔵 VER NIVEL PREMIUM",
-                VIP_LEVEL_PRESTIGE: "🏆 VER MI NIVEL PRESTIGE" if own else "🏆 VER NIVEL PRESTIGE",
-            }
-        return InlineKeyboardMarkup([[InlineKeyboardButton(labels[specific_level], callback_data=f"level_detail:{specific_level}")]])
+        rows = [[InlineKeyboardButton(_level_button_label(specific_level, lang, own=own), callback_data=f"level_detail:{specific_level}")]]
+        if active_member and VIP_LEVEL_RANK.get(specific_level, 0) > VIP_LEVEL_RANK.get(current_level, 0):
+            rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{specific_level}")])
+        rows.append([InlineKeyboardButton(question_label, callback_data="ask_here")])
+        return InlineKeyboardMarkup(rows)
 
     if _ai_needs_levels_button(question, current_level=current_level, current_stage=current_stage):
         label = "📊 VIEW ALL COMMUNITY LEVELS" if lang == "en" else "📊 VER TODOS LOS NIVELES"
         callback = "levels_plans_en" if lang == "en" else "niveles_planes"
-        return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=callback)]])
+        rows = [[InlineKeyboardButton(label, callback_data=callback)]]
+        if active_member:
+            next_level = _next_member_level(current_level)
+            if next_level != VIP_LEVEL_NONE:
+                rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{next_level}")])
+            rows.append([InlineKeyboardButton(question_label, callback_data="ask_here")])
+        return InlineKeyboardMarkup(rows)
     return None
 
 
@@ -6611,9 +6808,45 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     _touch_user_activity(chat_id)
 
-    if q.data == "upgrade_conditions":
+    if q.data == "upgrade_conditions" or (q.data and q.data.startswith("upgrade_conditions:")):
         lang = get_user_lang(chat_id)
-        await q.message.reply_text(upgrade_conditions_text(lang), reply_markup=support_keyboard(lang, chat_id))
+        active_level = _active_member_level(chat_id)
+        requested_target = VIP_LEVEL_NONE
+        if q.data and ":" in q.data:
+            requested_target = (q.data.split(":", 1)[1] or "").strip().upper()
+            if requested_target not in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE):
+                requested_target = VIP_LEVEL_NONE
+        if active_level != VIP_LEVEL_NONE:
+            if active_level == VIP_LEVEL_PRESTIGE:
+                text_value = (
+                    "🏆 You are already Prestige, the highest level in my community. There is no higher level to upgrade to."
+                    if lang == "en" else
+                    "🏆 Ya estás en Prestige, el nivel más alto de mi comunidad. No existe un nivel superior al cual subir."
+                )
+                rows = [
+                    [InlineKeyboardButton(_level_button_label(active_level, lang, own=True), callback_data=f"level_detail:{active_level}")],
+                    [InlineKeyboardButton("💬 I HAVE A QUESTION" if lang == "en" else "💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
+                    [InlineKeyboardButton("✖️ CLOSE" if lang == "en" else "✖️ CERRAR", callback_data="panel_close")],
+                ]
+                await _open_callback_panel(context, q, text_value, InlineKeyboardMarkup(rows))
+                return
+            target_level = requested_target
+            if target_level == VIP_LEVEL_NONE or VIP_LEVEL_RANK.get(target_level, 0) <= VIP_LEVEL_RANK.get(active_level, 0):
+                target_level = _next_member_level(active_level)
+            text_value = upgrade_conditions_text(lang)
+            if target_level != VIP_LEVEL_NONE:
+                if lang == "en":
+                    text_value = text_value.replace("📈 UPGRADE CONDITIONS", f"📈 UPGRADE CONDITIONS · {_vip_level_label(target_level, lang).upper()}", 1)
+                else:
+                    text_value = text_value.replace("📈 CONDICIONES PARA SUBIR DE NIVEL", f"📈 CONDICIONES PARA SUBIR A {_vip_level_label(target_level, lang).upper()}", 1)
+            rows = []
+            if target_level != VIP_LEVEL_NONE:
+                rows.append([InlineKeyboardButton(_level_button_label(target_level, lang, own=False), callback_data=f"level_detail:{target_level}")])
+            rows.append([InlineKeyboardButton("💬 I HAVE A QUESTION" if lang == "en" else "💬 TENGO UNA PREGUNTA", callback_data="ask_here")])
+            rows.append([InlineKeyboardButton("✖️ CLOSE" if lang == "en" else "✖️ CERRAR", callback_data="panel_close")])
+            await _open_callback_panel(context, q, text_value, InlineKeyboardMarkup(rows))
+        else:
+            await q.message.reply_text(upgrade_conditions_text(lang), reply_markup=support_keyboard(lang, chat_id))
         return
 
     if q.data == "vip_continue_access":
@@ -6660,17 +6893,17 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_user_lang(chat_id)
         active_level = _active_member_level(chat_id)
         if active_level != VIP_LEVEL_NONE:
-            await q.message.reply_text(
-                (f"👤 MI ESPACIO JT\nTu nivel actual es {_vip_level_label(active_level, lang)}. Elige lo que necesitas:"
-                 if lang == "es" else
-                 f"👤 MY JT SPACE\nYour current level is {_vip_level_label(active_level, lang)}. Choose what you need:"),
-                reply_markup=member_space_keyboard(chat_id, lang),
-            )
+            await _edit_callback_panel(q, _member_space_text(chat_id, lang), member_space_keyboard(chat_id, lang))
         else:
             await q.message.reply_text(
                 "👇 Elige una opción para continuar:" if lang == "es" else "👇 Choose an option to continue:",
                 reply_markup=build_main_menu(lang),
             )
+        return
+
+    if q.data == "panel_close":
+        lang = get_user_lang(chat_id)
+        await _close_callback_panel(context, q, chat_id, lang)
         return
 
     if q.data == "member_space":
@@ -6682,14 +6915,8 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=build_main_menu(lang),
             )
             return
-        await q.message.reply_text(
-            (f"👤 MI ESPACIO JT\nTu nivel actual es {_vip_level_label(active_level, lang)}. Aquí tienes solo las opciones útiles para tu estado actual:"
-             if lang == "es" else
-             f"👤 MY JT SPACE\nYour current level is {_vip_level_label(active_level, lang)}. Here are the options relevant to your current status:"),
-            reply_markup=member_space_keyboard(chat_id, lang),
-        )
+        await _edit_callback_panel(q, _member_space_text(chat_id, lang), member_space_keyboard(chat_id, lang))
         return
-
     if q.data and q.data.startswith("member_add_broker:"):
         lang = get_user_lang(chat_id)
         active_level = _active_member_level(chat_id)
@@ -6703,11 +6930,12 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         missing = _member_missing_broker(chat_id)
         if missing != target:
-            await q.message.reply_text(
-                "Esa segunda opción ya no está disponible porque tu estado de brokers cambió. Actualicé tu espacio JT." if lang == "es" else
-                "That second option is no longer available because your broker status changed. I refreshed your JT space.",
-                reply_markup=member_space_keyboard(chat_id, lang),
+            msg = (
+                "Esa segunda opción ya no está disponible porque tu estado de brokers cambió. Actualicé tu espacio JT."
+                if lang == "es" else
+                "That second option is no longer available because your broker status changed. I refreshed your JT space."
             )
+            await _open_callback_panel(context, q, msg, member_space_keyboard(chat_id, lang))
             return
         stockity_url, binomo_url = _referral_links_for_user(chat_id)
         target_url = stockity_url if target == BROKER_STOCKITY else binomo_url
@@ -6726,14 +6954,15 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Binomo and Stockity are managed separately: their deposits are never combined and any upgrade is validated per account/broker."
             )
             button_label = f"🔗 CREATE MY {broker_label.upper()} ACCOUNT"
-        await q.message.reply_text(
+        await _open_callback_panel(
+            context,
+            q,
             msg,
-            reply_markup=InlineKeyboardMarkup([
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton(button_label, url=target_url)],
-                [InlineKeyboardButton("👤 MY JT SPACE" if lang == "en" else "👤 MI ESPACIO JT", callback_data="member_space")],
                 [InlineKeyboardButton("💬 I HAVE A QUESTION" if lang == "en" else "💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
+                [InlineKeyboardButton("✖️ CLOSE" if lang == "en" else "✖️ CERRAR", callback_data="panel_close")],
             ]),
-            disable_web_page_preview=True,
         )
         return
 
@@ -6752,90 +6981,61 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_user_lang(chat_id)
         requested_level = (q.data.split(":", 1)[1] or "").strip().upper()
         if requested_level not in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE):
-            await q.message.reply_text(
-                "No pude identificar ese nivel. Puedes ver la estructura completa aquí abajo."
+            msg = (
+                "No pude identificar ese nivel. Puedes revisar la estructura completa."
                 if lang == "es" else
-                "I couldn't identify that level. You can view the full structure below.",
-                reply_markup=levels_keyboard(lang, chat_id),
+                "I couldn't identify that level. You can review the full structure."
             )
+            await _open_callback_panel(context, q, msg, levels_keyboard(lang, chat_id))
             return
 
-        if lang == "es":
-            level_texts = {
-                VIP_LEVEL_BASIC: """🟢 NIVEL BÁSICO — desde USD 50
-
-🎓 Formación Binary Teams Módulos 1 al 3, desde fundamentos hasta introducción y análisis bursátil.
-📚 Material de estudio y apoyo para acompañar tu formación.
-📈 30–50 señales CRYPTO IDX al día, de lunes a viernes.
-💬 Acceso al VIP principal, sesiones y acompañamiento de la comunidad.""",
-                VIP_LEVEL_PREMIUM: """🔵 NIVEL PREMIUM — desde USD 200
-
-🎓 Binary Teams Módulos 1 al 4, una ruta progresiva desde fundamentos hasta contenido avanzado; el Módulo 4 es Smart Money Concept.
-📚 Material de estudio y apoyo: PDFs/guías, audiolibros, tablas de plan de trading y gestión de riesgo.
-🚀 Software Premium Anticipado con +300 señales al día, de lunes a sábado.
-🤖 IA CRYPTO IDX 24/7.
-🎥 Sesiones en vivo y acompañamiento de la comunidad.""",
-                VIP_LEVEL_PRESTIGE: """🏆 NIVEL PRESTIGE — desde USD 500 · NIVEL MÁXIMO
-
-🎓 Binary Teams Módulos 1 al 4 + Madness Trading Avanzado — método ALGO & LIT.
-📚 Material de estudio y apoyo: PDFs/guías, audiolibros, tablas de plan de trading y gestión de riesgo.
-🚀 Software Premium Anticipado con +300 señales al día, de lunes a sábado.
-🤖 IA CRYPTO IDX 24/7 + bot IA de pares de divisas 24/7.
-🎥 Sesiones y acompañamiento, mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.""",
-            }
-            all_levels_label = "📊 VER TODOS LOS NIVELES"
-            all_levels_callback = "niveles_planes"
-        else:
-            level_texts = {
-                VIP_LEVEL_BASIC: """🟢 BASIC LEVEL — from USD 50
-
-🎓 Binary Teams Modules 1–3, from fundamentals through introduction and market analysis.
-📚 Study and support material to accompany your training.
-📈 30–50 CRYPTO IDX signals per day, Monday to Friday.
-💬 Main VIP access, live sessions and community guidance.""",
-                VIP_LEVEL_PREMIUM: """🔵 PREMIUM LEVEL — from USD 200
-
-🎓 Binary Teams Modules 1–4, a progressive path from fundamentals to advanced content; Module 4 is Smart Money Concept.
-📚 Study/support material: PDFs/guides, audiobooks, trading-plan and risk-management tables.
-🚀 Premium Anticipated Software with 300+ signals per day, Monday to Saturday.
-🤖 CRYPTO IDX AI 24/7.
-🎥 Live sessions and community guidance.""",
-                VIP_LEVEL_PRESTIGE: """🏆 PRESTIGE LEVEL — from USD 500 · HIGHEST LEVEL
-
-🎓 Binary Teams Modules 1–4 + Madness Advanced Trading — ALGO & LIT method.
-📚 Study/support material: PDFs/guides, audiobooks, trading-plan and risk-management tables.
-🚀 Premium Anticipated Software with 300+ signals per day, Monday to Saturday.
-🤖 CRYPTO IDX AI 24/7 + 24/7 currency-pair AI bot.
-🎥 Live sessions and guidance, private mentoring, closer support and funded-account preparation.""",
-            }
-            all_levels_label = "📊 VIEW ALL LEVELS"
-            all_levels_callback = "levels_plans_en"
-
         active_level = _active_member_level(chat_id)
-        if active_level != VIP_LEVEL_NONE and requested_level == active_level:
-            detail_rows = []
-            if active_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
-                detail_rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data="upgrade_conditions")])
-            detail_rows.extend(support_rows(lang, chat_id))
-            detail_keyboard = InlineKeyboardMarkup(detail_rows)
+        rows = []
+        if active_level != VIP_LEVEL_NONE:
+            if VIP_LEVEL_RANK.get(requested_level, 0) > VIP_LEVEL_RANK.get(active_level, 0):
+                rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{requested_level}")])
+            elif requested_level == active_level:
+                next_level = _next_member_level(active_level)
+                if next_level != VIP_LEVEL_NONE:
+                    rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{next_level}")])
+            rows.append([InlineKeyboardButton("💬 I HAVE A QUESTION" if lang == "en" else "💬 TENGO UNA PREGUNTA", callback_data="ask_here")])
+            rows.append([InlineKeyboardButton("✖️ CLOSE" if lang == "en" else "✖️ CERRAR", callback_data="panel_close")])
         else:
-            detail_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(all_levels_label, callback_data=all_levels_callback)],
-                *support_rows(lang, chat_id),
-            ])
-        await q.message.reply_text(level_texts[requested_level], reply_markup=detail_keyboard)
+            rows.append([InlineKeyboardButton("📊 VIEW ALL LEVELS" if lang == "en" else "📊 VER TODOS LOS NIVELES", callback_data="levels_plans_en" if lang == "en" else "niveles_planes")])
+            rows.extend(support_rows(lang, chat_id))
+        await _open_callback_panel(context, q, _level_detail_text(requested_level, lang), InlineKeyboardMarkup(rows))
         return
 
     # --- Niveles y Planes (informativo) ---
     if q.data == "niveles_planes":
         texto = _personalize_referral_links(respuesta_niveles_es(), chat_id)
-        await q.message.reply_text(texto, reply_markup=levels_keyboard("es", chat_id))
+        active_level = _active_member_level(chat_id)
+        if active_level != VIP_LEVEL_NONE:
+            rows = []
+            next_level = _next_member_level(active_level)
+            if next_level != VIP_LEVEL_NONE:
+                rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{next_level}")])
+            rows.append([InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")])
+            rows.append([InlineKeyboardButton("✖️ CERRAR", callback_data="panel_close")])
+            await _open_callback_panel(context, q, texto, InlineKeyboardMarkup(rows))
+        else:
+            await q.message.reply_text(texto, reply_markup=levels_keyboard("es", chat_id))
         return
 
     # --- Levels & Plans (EN) ---
     if q.data == "levels_plans_en":
         texto = _personalize_referral_links(respuesta_niveles_en(), chat_id)
-        await q.message.reply_text(texto, reply_markup=levels_keyboard("en", chat_id))
+        active_level = _active_member_level(chat_id)
+        if active_level != VIP_LEVEL_NONE:
+            rows = []
+            next_level = _next_member_level(active_level)
+            if next_level != VIP_LEVEL_NONE:
+                rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{next_level}")])
+            rows.append([InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")])
+            rows.append([InlineKeyboardButton("✖️ CLOSE", callback_data="panel_close")])
+            await _open_callback_panel(context, q, texto, InlineKeyboardMarkup(rows))
+        else:
+            await q.message.reply_text(texto, reply_markup=levels_keyboard("en", chat_id))
         return
 
 
@@ -6983,6 +7183,56 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _msg_account = MENSAJE_YA_TENGO_CUENTA_ES if lang=="es" else MENSAJE_YA_TENGO_CUENTA_EN
         await q.message.reply_text(_personalize_referral_links(_msg_account, chat_id))
 
+    elif q.data == "member_capital":
+        active_level = _active_member_level(chat_id)
+        if active_level == VIP_LEVEL_NONE:
+            await q.message.reply_text(
+                GESTION_CAPITAL_BUTTON_ES if lang == "es" else GESTION_CAPITAL_BUTTON_EN,
+                reply_markup=personal_chat_keyboard(lang),
+            )
+        else:
+            text_value = GESTION_CAPITAL_BUTTON_EN if lang == "en" else GESTION_CAPITAL_BUTTON_ES
+            rows = [
+                [InlineKeyboardButton("📩 CHAT WITH ME PERSONALLY" if lang == "en" else "📩 ESCRÍBEME A MI CHAT PERSONAL", url=SUPPORT_URL)],
+                [InlineKeyboardButton("✖️ CLOSE" if lang == "en" else "✖️ CERRAR", callback_data="panel_close")],
+            ]
+            await _open_callback_panel(context, q, text_value, InlineKeyboardMarkup(rows))
+
+    elif q.data == "member_socials":
+        if lang == "es":
+            text_value = """🌐 Redes Sociales:
+
+🔴 YouTube:
+https://youtube.com/@johaalegria.trader?si=JemqmPes0Rz3WqEZ
+
+🟣 Instagram:
+https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
+
+🎵 TikTok:
+https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
+
+💬 Telegram:
+https://t.me/JohaaleTrader_es"""
+        else:
+            text_value = """🌐 Social Media:
+
+🔴 YouTube:
+https://youtube.com/@johaalegria.trader?si=JemqmPes0Rz3WqEZ
+
+🟣 Instagram:
+https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
+
+🎵 TikTok:
+https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
+
+💬 Telegram:
+https://t.me/JohaaleTrader_en"""
+        rows = [
+            [InlineKeyboardButton("💬 I HAVE A QUESTION" if lang == "en" else "💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
+            [InlineKeyboardButton("✖️ CLOSE" if lang == "en" else "✖️ CERRAR", callback_data="panel_close")],
+        ]
+        await _open_callback_panel(context, q, text_value, InlineKeyboardMarkup(rows))
+
     elif q.data == "gestion_capital":
         # El botón informa las modalidades y termina siempre en atención personal.
         await q.message.reply_text(GESTION_CAPITAL_BUTTON_ES, reply_markup=personal_chat_keyboard("es"))
@@ -7022,7 +7272,7 @@ https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
 https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 
 💬 Telegram:
-https://t.me/JohaaleTrader_es""", reply_markup=support_keyboard(lang, chat_id))
+https://t.me/JohaaleTrader_en""", reply_markup=support_keyboard(lang, chat_id))
 
 # === PERSISTENCIA MENSAJE DEL USUARIO ===
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -9845,15 +10095,54 @@ def _recent_user_turn_count(chat_id: int, minutes: int = 120) -> int:
 
 
 def _should_offer_personal_chat(chat_id: int, question: str, personal_review: bool = False) -> bool:
+    """Reserva el chat personal para casos que realmente lo necesitan."""
     if personal_review:
         return True
     q = question or ""
     if _multiple_personal_accounts_case(q):
         return True
-    # Conversación larga o consulta compleja: ofrecer contacto humano sin bloquear la respuesta IA.
-    if _recent_user_turn_count(chat_id) >= 6:
-        return True
+
+    # Consulta realmente compleja/múltiple: sí conviene atención personal.
     if len(q) >= 420 and (q.count("?") + q.count("¿") >= 2 or len(_split_question_parts(q)) >= 3):
+        return True
+
+    # Flujos que el bot conoce bien no deben mandar al chat personal solo porque
+    # la conversación ya tenga varios turnos.
+    qn = _norm(q)
+    explicit_level = _explicit_target_level(q)
+    level_detail_query = explicit_level != VIP_LEVEL_NONE and any(x in qn for x in (
+        "que incluye", "que tiene", "beneficios", "que recibo", "ver nivel", "detalle", "contenido",
+        "what is included", "what does", "benefits", "what do i get", "view level", "details",
+    ))
+    general_levels_query = any(x in qn for x in (
+        "que niveles", "cuales son los niveles", "niveles disponibles", "todos los niveles", "cada nivel",
+        "diferencia entre niveles", "comparar niveles", "comparacion de niveles", "ver niveles",
+        "what levels", "available levels", "compare levels", "show me the levels",
+    ))
+    clear_self_service = (
+        _is_upgrade_query_text(q)
+        or _is_own_level_details_query(q)
+        or level_detail_query
+        or general_levels_query
+        or _is_min_50_intent(q)
+        or _looks_like_existing_account_query(q)
+        or _signals_channel_request(q)
+        or _profit_target_query(q)
+        or _live_schedule_query(q)
+        or _is_live_info_query(q)
+        or _is_short_acknowledgement(q)
+        or _is_balance_progress_statement(q)
+        or any(x in qn for x in (
+            "que nivel tengo", "cual es mi nivel", "en que nivel estoy", "mi nivel actual",
+            "what level am i", "my current level", "what is my level",
+        ))
+    )
+    if clear_self_service:
+        return False
+
+    # Muchas preguntas sí pueden justificar contacto humano, pero no con un umbral
+    # tan bajo que aparezca en casi todas las conversaciones activas.
+    if _recent_user_turn_count(chat_id) >= 10:
         return True
     return False
 
@@ -10255,6 +10544,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "am i premium", "am i prestige", "am i basic", "i am premium", "i am prestige",
             "what level am i", "what is my level", "my current level",
         ))
+        own_level_details_query = active_member and _is_own_level_details_query(question)
         only_signals_followup = active_member and any(x in q_norm for x in (
             "solo tengo senales", "solo tengo señales", "solo son senales", "solo son señales",
             "eso es todo", "nada mas", "nada más", "que mas tengo", "qué más tengo",
@@ -10685,11 +10975,17 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                 if lang == "en" else
                 (f"IDENTIDAD DE NIVEL ACTUAL: responde SOLO que el nivel actual de la persona es {_vip_level_label(current_active_level, lang)} e invítala a abrir el botón específico de su nivel para ver los detalles. No listes señales, bots, cursos ni beneficios en esta respuesta.")
             )
+        if own_level_details_query and not only_signals_followup:
+            decision_lines.append(
+                ("OWN LEVEL DETAILS: give only a compact 1–2 sentence summary of the active level. Do not enumerate the full contents because the level button opens the complete detail inline.")
+                if lang == "en" else
+                ("DETALLE DEL NIVEL PROPIO: responde con un resumen compacto de 1–2 frases. No enumeres todo el contenido porque el botón del nivel abre el detalle completo en el mismo mensaje.")
+            )
         if only_signals_followup:
             decision_lines.append(
-                ("FOLLOW-UP 'ONLY SIGNALS?': the user is asking what ELSE is included in the active level. Do not re-list the signals/bots already mentioned in the recent conversation. Focus on the non-signal benefits: training, study/support material, live sessions/guidance and level-specific extras. End by pointing to the specific level button.")
+                ("FOLLOW-UP 'ONLY SIGNALS?': answer briefly that signals are only one part of the active level, mention only 2–3 non-signal categories, and point to the level button for the full detail. Do not enumerate everything.")
                 if lang == "en" else
-                ("REPREGUNTA '¿SOLO TENGO SEÑALES?': la persona está preguntando QUÉ MÁS incluye su nivel activo. No vuelvas a enumerar señales/bots que ya se mencionaron en la conversación reciente. Enfócate en beneficios NO relacionados con señales: formación, material de estudio/apoyo, sesiones/acompañamiento y extras propios del nivel. Termina indicando el botón específico de su nivel.")
+                ("REPREGUNTA '¿SOLO TENGO SEÑALES?': responde breve que las señales son solo una parte del nivel, menciona solo 2–3 categorías adicionales y remite al botón del nivel para el detalle completo. No enumeres todo.")
             )
         if multi_pending:
             decision_lines.append(
@@ -11183,33 +11479,38 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                 else:
                     answer = "Actualmente estás en Básico 🟢 dentro de mi comunidad JT TRADERS TEAMS. Puedes ver todo lo que incluye tu nivel en el botón de abajo 👇"
 
+        if own_level_details_query and not only_signals_followup:
+            if lang == "en":
+                if current_active_level == VIP_LEVEL_PRESTIGE:
+                    answer = "In Prestige 🏆 you have advanced training, signals and AI tools, study/support resources, live guidance and private-level extras. Open your level button below to see the full detail 👇"
+                elif current_active_level == VIP_LEVEL_PREMIUM:
+                    answer = "In Premium 🔵 you have training, expanded signals and AI tools, study/support resources and live guidance. Open your level button below to see the full detail 👇"
+                else:
+                    answer = "In Basic 🟢 you have training, CRYPTO IDX signals, study/support material and community guidance. Open your level button below to see the full detail 👇"
+            else:
+                if current_active_level == VIP_LEVEL_PRESTIGE:
+                    answer = "En Prestige 🏆 tienes formación avanzada, señales y herramientas IA, material de estudio/apoyo, acompañamiento y extras exclusivos del nivel. Abre el botón de tu nivel para ver el detalle completo 👇"
+                elif current_active_level == VIP_LEVEL_PREMIUM:
+                    answer = "En Premium 🔵 tienes formación, señales ampliadas y herramientas IA, material de estudio/apoyo y acompañamiento. Abre el botón de tu nivel para ver el detalle completo 👇"
+                else:
+                    answer = "En Básico 🟢 tienes formación, señales CRYPTO IDX, material de estudio/apoyo y acompañamiento. Abre el botón de tu nivel para ver el detalle completo 👇"
+            answer = _clean_ai_plain_text_format(answer)
+
         if only_signals_followup:
             if lang == "en":
                 if current_active_level == VIP_LEVEL_PRESTIGE:
-                    answer = (
-                        "No 😊 Signals and AI bots are only part of your Prestige level. You also have Binary Teams Modules 1–4, Madness Advanced Trading, study/support material such as PDFs, guides and audiobooks, trading-plan and risk-management resources, live sessions/guidance, private mentoring and funded-account preparation. You can see your full level below 👇"
-                    )
+                    answer = "No 😊 Signals and AI bots are only part of Prestige. You also have advanced training, study/support material and private-level guidance. Open your level button for the full detail 👇"
                 elif current_active_level == VIP_LEVEL_PREMIUM:
-                    answer = (
-                        "No 😊 Signals and the CRYPTO IDX AI are only part of Premium. You also have Binary Teams Modules 1–4, study/support material such as PDFs, guides and audiobooks, trading-plan and risk-management resources, plus live sessions and community guidance. You can see your full level below 👇"
-                    )
+                    answer = "No 😊 Signals and the CRYPTO IDX AI are only part of Premium. You also have training, study/support material and live guidance. Open your level button for the full detail 👇"
                 else:
-                    answer = (
-                        "No 😊 Signals are only part of your Basic level. You also have Binary Teams Modules 1–3, study/support material, main VIP access, live sessions and community guidance. You can see your full level below 👇"
-                    )
+                    answer = "No 😊 Signals are only part of Basic. You also have training, study/support material and community guidance. Open your level button for the full detail 👇"
             else:
                 if current_active_level == VIP_LEVEL_PRESTIGE:
-                    answer = (
-                        "No 😊 Las señales y los bots son solo una parte de tu nivel Prestige. También tienes Binary Teams Módulos 1 al 4, Madness Trading Avanzado, material de estudio y apoyo como PDFs, guías y audiolibros, recursos de plan de trading y gestión de riesgo, sesiones/acompañamiento, mentorías privadas y preparación para cuentas de fondeo. Puedes ver tu nivel completo aquí abajo 👇"
-                    )
+                    answer = "No 😊 Las señales y los bots son solo una parte de Prestige. También tienes formación avanzada, material de estudio/apoyo y acompañamiento exclusivo del nivel. Abre el botón de tu nivel para ver el detalle completo 👇"
                 elif current_active_level == VIP_LEVEL_PREMIUM:
-                    answer = (
-                        "No 😊 Las señales y la IA CRYPTO IDX son solo una parte de Premium. También tienes Binary Teams Módulos 1 al 4, material de estudio y apoyo como PDFs, guías y audiolibros, recursos de plan de trading y gestión de riesgo, además de sesiones y acompañamiento de la comunidad. Puedes ver tu nivel completo aquí abajo 👇"
-                    )
+                    answer = "No 😊 Las señales y la IA CRYPTO IDX son solo una parte de Premium. También tienes formación, material de estudio/apoyo y acompañamiento. Abre el botón de tu nivel para ver el detalle completo 👇"
                 else:
-                    answer = (
-                        "No 😊 Las señales son solo una parte de tu nivel Básico. También tienes Binary Teams Módulos 1 al 3, material de estudio y apoyo, acceso al VIP principal, sesiones y acompañamiento de la comunidad. Puedes ver tu nivel completo aquí abajo 👇"
-                    )
+                    answer = "No 😊 Las señales son solo una parte de Básico. También tienes formación, material de estudio/apoyo y acompañamiento. Abre el botón de tu nivel para ver el detalle completo 👇"
             answer = _clean_ai_plain_text_format(answer)
 
         # Presentación estable de links para Telegram: sin Markdown literal y con separación.
@@ -11861,30 +12162,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # memoria de proceso ni context.user_data, por lo que sobrevive a redeploys mientras
     # se conserve la misma base de datos configurada.
     t_upgrade = _norm(texto)
-    upgrade_query = any(x in t_upgrade for x in (
-        "subir de nivel", "subir mi nivel", "upgrade", "cuanto me falta", "cuánto me falta",
-        "cuanta plata me falta", "cuánta plata me falta", "cuanto dinero me falta", "cuánto dinero me falta",
-        "cuanto tendria que depositar", "cuánto tendría que depositar", "cuanto tengo que depositar",
-        "cuánto tengo que depositar", "cuanto debo depositar para subir", "cuánto debo depositar para subir",
-        "para llegar a premium", "para llegar a prestige", "me falta para premium", "me falta para prestige",
-        "siguiente nivel", "proximo nivel", "próximo nivel", "ir al siguiente nivel", "pasar al siguiente nivel",
-        "que necesito para subir", "qué necesito para subir", "que necesito para el siguiente nivel", "qué necesito para el siguiente nivel",
-        "next level", "what do i need for the next level", "what do i need to reach the next level",
-        "todavia puedo subir", "todavía puedo subir", "aun puedo subir", "aún puedo subir",
-        "puedo subir de nivel", "puedo subir", "deposito mas", "depósito más", "depositar mas", "depositar más",
-        "hasta que dia puedo depositar", "hasta qué día puedo depositar", "hasta cuando puedo depositar", "hasta cuándo puedo depositar",
-        "hasta que fecha puedo depositar", "hasta qué fecha puedo depositar", "fecha limite para depositar", "fecha límite para depositar",
-        "cuantos dias tengo", "cuántos días tengo", "cuanto tiempo tengo para depositar", "cuánto tiempo tengo para depositar",
-        "plazo para depositar", "ventana de 30 dias", "ventana de 30 días",
-        "how much do i need to upgrade", "how much am i missing", "upgrade my level", "can i still upgrade",
-        "upgrade deadline", "how long do i have to deposit",
-    )) or any(x in t_upgrade for x in (
-        "mas herramientas", "más herramientas", "herramientas adicionales", "more tools",
-        "mas señales", "más señales", "more signals", "more resources",
-    )) or (
-        any(x in t_upgrade for x in ("deposit", "depósit", "recarg", "redeposit"))
-        and any(x in t_upgrade for x in ("fecha", "plazo", "hasta", "ventana", "beneficio", "herramient", "nivel", "subir", "upgrade"))
-    )
+    upgrade_query = _is_upgrade_query_text(texto)
     stage_for_upgrade = get_user_stage(chat_id)
     vip_for_upgrade = _vip_get_state(chat_id, create=False) or {}
     level_for_upgrade = vip_for_upgrade.get("level") or VIP_LEVEL_NONE
@@ -11931,6 +12209,29 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if upgrade_query and stage_for_upgrade == STAGE_DEPOSITED and level_for_upgrade != VIP_LEVEL_NONE:
+        explicit_target_for_upgrade = _explicit_target_level(texto)
+        if (
+            explicit_target_for_upgrade != VIP_LEVEL_NONE
+            and VIP_LEVEL_RANK.get(explicit_target_for_upgrade, 0) <= VIP_LEVEL_RANK.get(level_for_upgrade, 0)
+            and level_for_upgrade != VIP_LEVEL_PRESTIGE
+        ):
+            if explicit_target_for_upgrade == level_for_upgrade:
+                msg = (
+                    f"Ya estás en {_vip_level_label(level_for_upgrade, lang)} ✅. No necesitas hacer un upgrade para llegar a ese mismo nivel."
+                    if lang == "es" else
+                    f"You are already {_vip_level_label(level_for_upgrade, lang)} ✅. You do not need an upgrade to reach the same level."
+                )
+            else:
+                msg = (
+                    f"Actualmente estás en {_vip_level_label(level_for_upgrade, lang)}, que ya está por encima de {_vip_level_label(explicit_target_for_upgrade, lang)}. Tu nivel no necesita bajar; si quieres avanzar, el siguiente nivel disponible es {_vip_level_label(_next_member_level(level_for_upgrade), lang)}."
+                    if lang == "es" else
+                    f"You are currently {_vip_level_label(level_for_upgrade, lang)}, which is already above {_vip_level_label(explicit_target_for_upgrade, lang)}. Your level does not need to move down; if you want to advance, the next available level is {_vip_level_label(_next_member_level(level_for_upgrade), lang)}."
+                )
+            markup = ai_context_keyboard(texto, lang, chat_id)
+            await update.message.reply_text(msg, reply_markup=markup)
+            await send_admin_auto_log(context, update, "UPGRADE_TARGET_ALREADY_REACHED", msg)
+            return
+
         if level_for_upgrade == VIP_LEVEL_PRESTIGE:
             msg = (
                 "🏆 Actualmente estás en Prestige, que es el nivel más alto de mi comunidad. Ya tienes todas las herramientas de nivel habilitadas y no existe un nivel superior al cual subir."
@@ -11944,7 +12245,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_PRESTIGE", msg)
             return
 
-        target_level = VIP_LEVEL_PREMIUM if level_for_upgrade == VIP_LEVEL_BASIC else VIP_LEVEL_PRESTIGE
+        target_level = _upgrade_target_for_question(texto, level_for_upgrade)
         target_cents = VIP_LEVEL_THRESHOLDS_CENTS[target_level]
         broker_rows = [r for r in _broker_rows(chat_id, validated_only=True) if r.get("level") != VIP_LEVEL_NONE]
         details = []
@@ -12001,7 +12302,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += "\n\nEl cálculo usa únicamente depósitos ya validados de la misma cuenta/broker; Binomo y Stockity no se suman entre sí. 👇"
             else:
                 msg += "\n\nThis calculation uses only validated deposits from the same account/broker; Binomo and Stockity are never added together. 👇"
-            if any(x in t_upgrade for x in ("beneficio", "incluye", "herramient", "que recibo", "qué recibo", "what do i get", "benefit")):
+            if (_explicit_target_level(texto) == target_level) or any(x in t_upgrade for x in ("beneficio", "incluye", "herramient", "que recibo", "qué recibo", "what do i get", "benefit")):
                 msg += (
                     f"\n\nPuedes revisar todo lo que incluye {_vip_level_label(target_level, lang)} en el botón de abajo."
                     if lang == "es" else
