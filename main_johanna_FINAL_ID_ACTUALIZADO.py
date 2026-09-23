@@ -13507,8 +13507,18 @@ def _recent_live_recipients(days: int = LIVE_BROADCAST_DAYS):
 
 
 def _recent_marketing_recipients(days: int = MARKETING_BROADCAST_DAYS):
-    # Marketing manual solo PRE y POST; nunca DEPOSITED.
-    return _active_recipients(days, include_deposited=False)
+    # General: usuarios sin ID enviado, sin validación y sin acceso activo.
+    recipients = []
+    for cid, lang, stage in _active_recipients(days, include_deposited=False):
+        if stage != STAGE_PRE or _active_member_level(cid) != VIP_LEVEL_NONE:
+            continue
+        if _get_saved_trading_id(cid) or _broker_flow_get(cid).get("pending_trading_id"):
+            continue
+        if any(r.get("trading_id") or r.get("pending_trading_id") or r.get("id_validated")
+               or r.get("validated_total_cents") for r in _broker_rows(cid)):
+            continue
+        recipients.append((cid, lang, stage))
+    return recipients
 
 
 def _validated_id_marketing_recipients():
@@ -13549,6 +13559,11 @@ def _validated_id_marketing_recipients():
             )
             if not has_broker_id and not str(legacy_id or "").strip():
                 continue
+            if _active_member_level(cid) != VIP_LEVEL_NONE or any(
+                r.get("validated_total_cents") or r.get("deposit_count") or r.get("level") != VIP_LEVEL_NONE
+                for r in _broker_rows(cid)
+            ):
+                continue
             seen.add(cid)
             recipients.append((cid, lang if lang in ("es", "en") else "es", STAGE_POST))
         return recipients
@@ -13580,7 +13595,17 @@ def _marketing_confirm_keyboard():
 
 def _validated_id_marketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     """CTA del marketing a IDs validados: no vuelve a ofrecer registro."""
-    return InlineKeyboardMarkup(support_rows(lang))
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 ACTIVATE MY ACCESS" if lang == "en" else "🚀 ACTIVAR MI ACCESO", callback_data="DEP_YES|marketing")],
+        *support_rows(lang),
+    ])
+
+
+def _general_marketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 I WANT TO REGISTER" if lang == "en" else "📝 QUIERO REGISTRARME", callback_data="registrarme")],
+        *support_rows(lang),
+    ])
 
 
 async def live_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -13654,7 +13679,7 @@ async def marketing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.effective_message.reply_text(
             "📣 MARKETING MANUAL\n\n"
-            f"Se enviará únicamente a usuarios PRE/POST activos en los últimos {MARKETING_BROADCAST_DAYS} días.\n"
+            f"Se enviará únicamente a usuarios PRE sin ID ni proceso de registro activos en los últimos {MARKETING_BROADCAST_DAYS} días.\n"
             f"👥 Destinatarios actuales: {len(recipients)}\n"
             "🚫 Los usuarios con cuenta ya activa (DEPOSITED) quedan excluidos.\n\n"
             "Envíame ahora un texto o una foto con texto en el caption. "
@@ -13764,7 +13789,7 @@ async def admin_draft_capture(update: Update, context: ContextTypes.DEFAULT_TYPE
                 recipients = _recent_marketing_recipients()
                 preview_header = (
                     "📣 VISTA PREVIA MARKETING\n\n"
-                    f"👥 Destinatarios PRE/POST últimos {MARKETING_BROADCAST_DAYS} días: {len(recipients)}\n"
+                    f"👥 Destinatarios sin ID ni proceso últimos {MARKETING_BROADCAST_DAYS} días: {len(recipients)}\n"
                     "🚫 DEPOSITED: excluidos\n\n"
                 )
             preview = preview_header + (marketing_draft.get("text") or "")
@@ -14025,7 +14050,7 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         progress_text = f"⏳ Preparando y enviando marketing a {len(recipients)} IDs validados pendientes de depósito..."
     else:
         recipients = _recent_marketing_recipients()
-        progress_text = f"⏳ Preparando y enviando marketing a {len(recipients)} usuarios PRE/POST..."
+        progress_text = f"⏳ Preparando y enviando marketing a {len(recipients)} usuarios sin ID ni proceso..."
     await _safe_edit_callback_message(query, progress_text)
 
     # Una sola traducción por campaña. Todos los usuarios EN comparten esta versión;
@@ -14051,6 +14076,25 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     sent_es = 0
     sent_en = 0
     for chat_id, lang, _stage in recipients:
+        # Revalidar el estado justo antes del envío: pudo cambiar durante la traducción.
+        current_stage = get_user_stage(chat_id)
+        broker_states = _broker_rows(chat_id)
+        if audience == "validated_ids":
+            eligible = (current_stage == STAGE_POST
+                        and _has_validated_trading_id_for_deposit(chat_id)
+                        and _active_member_level(chat_id) == VIP_LEVEL_NONE
+                        and not any(r.get("validated_total_cents") or r.get("deposit_count")
+                                    or r.get("level") != VIP_LEVEL_NONE for r in broker_states))
+        else:
+            eligible = (current_stage == STAGE_PRE
+                        and _active_member_level(chat_id) == VIP_LEVEL_NONE
+                        and not _get_saved_trading_id(chat_id)
+                        and not _broker_flow_get(chat_id).get("pending_trading_id")
+                        and not any(r.get("trading_id") or r.get("pending_trading_id")
+                                    or r.get("id_validated") or r.get("validated_total_cents")
+                                    for r in broker_states))
+        if not eligible:
+            continue
         outbound_text = marketing_text if lang == "es" else marketing_text_en
         # Si había texto y falló su traducción, no enviamos accidentalmente español a EN.
         if lang == "en" and marketing_text and not outbound_text:
@@ -14063,7 +14107,7 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text=outbound_text,
-                        reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else remarketing_keyboard(lang)),
+                        reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else _general_marketing_keyboard(lang)),
                         disable_web_page_preview=True,
                     )
                 else:
@@ -14071,13 +14115,13 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         chat_id=chat_id,
                         photo=photo_file_id,
                         caption=outbound_text if outbound_text else None,
-                        reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else remarketing_keyboard(lang)),
+                        reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else _general_marketing_keyboard(lang)),
                     )
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=outbound_text,
-                    reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else remarketing_keyboard(lang)),
+                    reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else _general_marketing_keyboard(lang)),
                     disable_web_page_preview=True,
                 )
             sent += 1
