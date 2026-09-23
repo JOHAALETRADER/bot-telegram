@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.81-20260922-INLINE-PANEL-AUTOCLOSE-ACCESS-AUDIT"
+BOT_VERSION = "v7.10.82-20260922-UPGRADE-COMMUNITY-ID-INSTRUCTIONS"
+# v7.10.82: aclara que Básico/Premium/Prestige son niveles dentro de JT TRADERS TEAMS y añade instrucciones de upgrade por broker con ID validado, monto de referencia y envío del comprobante en este mismo chat. ES/EN.
 # v7.10.81: paneles inline de miembros activos se autocierra/restauran tras 90 s (configurable), CERRAR usa ❌ rojo y aparece como primera fila pegada al contenido; MI ESPACIO JT abierto desde botón usa el mismo comportamiento. Auditoría estructural de accesos por nivel reforzada sin alterar la secuencia VIP. ES/EN.
 # v7.10.80: corrige la secuencia de accesos al hacer upgrade: la pausa anti-flood cuenta solo incorporaciones de la activación/upgrade actual, no canales heredados; restaura cualquier acceso nuevo perdido del pending antes de cerrar el flujo; si un acceso ya existía, lo informa en vez de saltarlo en silencio. Refuerza verificación real de membresía restricted/is_member. ES/EN.
 # v7.10.79: navegación inline editable para miembros activos, CTA de upgrade por nivel objetivo explícito, respuestas de nivel más compactas y chat personal reservado a casos realmente complejos. ES/EN.
@@ -1094,26 +1095,106 @@ def _broker_bind_legacy_validated_id(chat_id: int, broker: str) -> bool:
         return False
 
 
-def upgrade_conditions_text(lang: str = "es") -> str:
+def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
+    target = target_level if target_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE) else VIP_LEVEL_NONE
     if lang == "en":
+        title = (
+            f"📈 JT TRADERS TEAMS UPGRADE · TO {_vip_level_label(target, lang).upper()}"
+            if target != VIP_LEVEL_NONE else
+            "📈 JT TRADERS TEAMS UPGRADE CONDITIONS"
+        )
         return (
-            "📈 UPGRADE CONDITIONS\n\n"
-            "• The first 3 validated deposits on the SAME broker/account may accumulate toward a level upgrade.\n"
+            f"{title}\n\n"
+            "These conditions apply to your level inside my JT TRADERS TEAMS community; they are not broker account tiers.\n\n"
+            "• The first 3 validated deposits on the SAME broker/account may accumulate toward a JT TRADERS TEAMS level upgrade.\n"
             "• The accumulation window lasts 30 days from the first validated deposit.\n"
             "• To be included in that accumulation, proof must be sent within 72 hours of the deposit.\n"
-            "• After the 3rd validated deposit or once the 30-day window ends, an upgrade requires ONE new deposit that by itself reaches the full minimum of the new level.\n"
+            "• After the 3rd validated deposit or once the 30-day window ends, an upgrade requires ONE new deposit that by itself reaches the full minimum of the new JT TRADERS TEAMS level.\n"
             "• Binomo and Stockity are managed separately and their deposits are never added together.\n"
             "• Only deposits reported and validated through this chat are considered."
         )
+    title = (
+        f"📈 UPGRADE JT TRADERS TEAMS · HACIA {_vip_level_label(target, lang).upper()}"
+        if target != VIP_LEVEL_NONE else
+        "📈 CONDICIONES DE UPGRADE · JT TRADERS TEAMS"
+    )
     return (
-        "📈 CONDICIONES PARA SUBIR DE NIVEL\n\n"
-        "• Los primeros 3 depósitos validados de una MISMA cuenta/broker pueden acumularse para subir de nivel.\n"
+        f"{title}\n\n"
+        "Estas condiciones corresponden a tu nivel dentro de mi comunidad JT TRADERS TEAMS; no son niveles de Binomo ni de Stockity.\n\n"
+        "• Los primeros 3 depósitos validados de una MISMA cuenta/broker pueden acumularse para subir de nivel dentro de JT TRADERS TEAMS.\n"
         "• La ventana de acumulación dura 30 días desde el primer depósito validado.\n"
         "• Para entrar en esa acumulación, el comprobante debe enviarse dentro de las 72 horas posteriores al depósito.\n"
-        "• Después del tercer depósito validado o una vez vencidos los 30 días, el upgrade requiere UN nuevo depósito que por sí solo alcance el monto mínimo completo del nuevo nivel.\n"
+        "• Después del tercer depósito validado o una vez vencidos los 30 días, el upgrade requiere UN nuevo depósito que por sí solo alcance el monto mínimo completo del nuevo nivel dentro de JT TRADERS TEAMS.\n"
         "• Binomo y Stockity se gestionan por separado y sus depósitos nunca se suman entre sí.\n"
         "• Solo se contabilizan depósitos reportados y validados por este chat."
     )
+
+
+def _upgrade_account_instructions_text(chat_id: int, target_level: str, lang: str = "es") -> str:
+    """Instrucciones concretas de depósito para upgrade usando solo IDs ya validados."""
+    if target_level not in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE):
+        return ""
+    target_cents = int(VIP_LEVEL_THRESHOLDS_CENTS.get(target_level, 0) or 0)
+    states = [
+        state for state in _broker_rows(chat_id, validated_only=True)
+        if str(state.get("trading_id") or "").strip()
+    ]
+    if not states:
+        legacy_id = str(_get_saved_trading_id(chat_id) or "").strip()
+        if not legacy_id:
+            return ""
+        if lang == "en":
+            return (
+                "\n\n✅ HOW TO COMPLETE YOUR JT TRADERS TEAMS UPGRADE\n"
+                f"🔐 Validated trading-account ID on file: {legacy_id}\n"
+                "Before making an additional deposit, confirm in this chat whether that ID belongs to Binomo or Stockity so I do not assign the deposit to the wrong broker. "
+                "After depositing, send the proof here in this same chat for validation."
+            )
+        return (
+            "\n\n✅ CÓMO REALIZAR TU UPGRADE EN JT TRADERS TEAMS\n"
+            f"🔐 ID validado de tu cuenta de trading: {legacy_id}\n"
+            "Antes de hacer un depósito adicional, confirma en este chat si ese ID corresponde a Binomo o Stockity para no asignar el depósito al broker equivocado. "
+            "Después de depositar, envía el comprobante aquí mismo para validarlo."
+        )
+
+    blocks = []
+    for state in states:
+        broker = state.get("broker")
+        broker_label = _broker_label(broker)
+        trading_id = str(state.get("trading_id") or "").strip()
+        accum_cents = int(state.get("upgrade_accum_cents") or 0)
+        if _broker_upgrade_window_open(state):
+            needed_cents = max(0, target_cents - accum_cents)
+        else:
+            needed_cents = target_cents
+        if lang == "en":
+            blocks.append(
+                f"• {broker_label}: validated ID {trading_id} · reference amount to reach {_vip_level_label(target_level, lang)}: USD {_usd(needed_cents)}"
+            )
+        else:
+            blocks.append(
+                f"• {broker_label}: ID validado {trading_id} · monto de referencia para llegar a {_vip_level_label(target_level, lang)}: USD {_usd(needed_cents)}"
+            )
+
+    if lang == "en":
+        intro = (
+            "\n\n✅ HOW TO COMPLETE YOUR JT TRADERS TEAMS UPGRADE\n"
+            "Make the additional deposit directly into one of your validated trading accounts listed below. Before depositing, verify that the account ID matches exactly:\n"
+        )
+        outro = (
+            "\n\nUse one broker/account for the upgrade calculation; do not split or combine Binomo and Stockity deposits. "
+            "After depositing, send the proof here in this same chat so I can validate it and update your JT TRADERS TEAMS level."
+        )
+    else:
+        intro = (
+            "\n\n✅ CÓMO REALIZAR TU UPGRADE EN JT TRADERS TEAMS\n"
+            "Realiza el depósito adicional directamente en una de tus cuentas de trading validadas que aparecen abajo. Antes de depositar, verifica que el ID de la cuenta coincida exactamente:\n"
+        )
+        outro = (
+            "\n\nUsa una sola cuenta/broker para el cálculo del upgrade; no dividas ni combines depósitos entre Binomo y Stockity. "
+            "Después de depositar, envía el comprobante aquí mismo en este chat para validarlo y actualizar tu nivel dentro de JT TRADERS TEAMS."
+        )
+    return intro + "\n".join(blocks) + outro
 
 
 def upgrade_info_keyboard(lang: str = "es", target_level: str = None) -> InlineKeyboardMarkup:
@@ -1684,14 +1765,14 @@ def _vip_activation_message(level: str, total_cents: int, lang: str, upgraded: b
         if level == VIP_LEVEL_PRESTIGE:
             return f"{prefix}\n\nYour current JT TRADERS TEAMS level is {label}."
         return (
-            f"{prefix}\n\nYour current level is {label}.\n"
+            f"{prefix}\n\nYour current level inside my JT TRADERS TEAMS community is {label}.\n"
             "Upgrades are calculated from validated deposits within the enabled level-update period."
         )
     prefix = "✅ Depósito adicional confirmado." if upgraded else "✅ Depósito confirmado."
     if level == VIP_LEVEL_PRESTIGE:
         return f"{prefix}\n\nTu nivel actual en JT TRADERS TEAMS es {label}."
     return (
-        f"{prefix}\n\nTu nivel actual es {label}.\n"
+        f"{prefix}\n\nTu nivel actual dentro de mi comunidad JT TRADERS TEAMS es {label}.\n"
         "Los upgrades se calculan según depósitos validados dentro del periodo habilitado para actualización de nivel."
     )
 
@@ -7135,12 +7216,8 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_level = requested_target
             if target_level == VIP_LEVEL_NONE or VIP_LEVEL_RANK.get(target_level, 0) <= VIP_LEVEL_RANK.get(active_level, 0):
                 target_level = _next_member_level(active_level)
-            text_value = upgrade_conditions_text(lang)
-            if target_level != VIP_LEVEL_NONE:
-                if lang == "en":
-                    text_value = text_value.replace("📈 UPGRADE CONDITIONS", f"📈 UPGRADE CONDITIONS · {_vip_level_label(target_level, lang).upper()}", 1)
-                else:
-                    text_value = text_value.replace("📈 CONDICIONES PARA SUBIR DE NIVEL", f"📈 CONDICIONES PARA SUBIR A {_vip_level_label(target_level, lang).upper()}", 1)
+            text_value = upgrade_conditions_text(lang, target_level)
+            text_value += _upgrade_account_instructions_text(chat_id, target_level, lang)
             rows = []
             if target_level != VIP_LEVEL_NONE:
                 rows.append([InlineKeyboardButton(_level_button_label(target_level, lang, own=False), callback_data=f"level_detail:{target_level}")])
@@ -12173,9 +12250,9 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
         if stage_now == STAGE_DEPOSITED and active_level != VIP_LEVEL_NONE and candidate and not explicit_new_account:
             if candidate in validated_ids:
                 block = (
-                    f"Ese ID ya está validado ✅ Tu nivel actual es {_vip_level_label(active_level, lang)}; no necesitas volver a enviarlo ni validarlo."
+                    f"Ese ID ya está validado ✅ Tu nivel actual dentro de mi comunidad JT TRADERS TEAMS es {_vip_level_label(active_level, lang)}; no necesitas volver a enviarlo ni validarlo."
                     if lang == "es" else
-                    f"That ID is already validated ✅ Your current level is {_vip_level_label(active_level, lang)}; you do not need to send or validate it again."
+                    f"That ID is already validated ✅ Your current level inside my JT TRADERS TEAMS community is {_vip_level_label(active_level, lang)}; you do not need to send or validate it again."
                 )
             else:
                 block = (
@@ -12519,15 +12596,15 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ):
             if explicit_target_for_upgrade == level_for_upgrade:
                 msg = (
-                    f"Ya estás en {_vip_level_label(level_for_upgrade, lang)} ✅. No necesitas hacer un upgrade para llegar a ese mismo nivel."
+                    f"Ya estás en {_vip_level_label(level_for_upgrade, lang)} ✅ dentro de mi comunidad JT TRADERS TEAMS. No necesitas hacer un upgrade para llegar a ese mismo nivel."
                     if lang == "es" else
-                    f"You are already {_vip_level_label(level_for_upgrade, lang)} ✅. You do not need an upgrade to reach the same level."
+                    f"You are already {_vip_level_label(level_for_upgrade, lang)} ✅ inside my JT TRADERS TEAMS community. You do not need an upgrade to reach the same level."
                 )
             else:
                 msg = (
-                    f"Actualmente estás en {_vip_level_label(level_for_upgrade, lang)}, que ya está por encima de {_vip_level_label(explicit_target_for_upgrade, lang)}. Tu nivel no necesita bajar; si quieres avanzar, el siguiente nivel disponible es {_vip_level_label(_next_member_level(level_for_upgrade), lang)}."
+                    f"Actualmente tu nivel dentro de mi comunidad JT TRADERS TEAMS es {_vip_level_label(level_for_upgrade, lang)}, que ya está por encima de {_vip_level_label(explicit_target_for_upgrade, lang)}. Tu nivel no necesita bajar; si quieres avanzar, el siguiente nivel disponible dentro de JT TRADERS TEAMS es {_vip_level_label(_next_member_level(level_for_upgrade), lang)}."
                     if lang == "es" else
-                    f"You are currently {_vip_level_label(level_for_upgrade, lang)}, which is already above {_vip_level_label(explicit_target_for_upgrade, lang)}. Your level does not need to move down; if you want to advance, the next available level is {_vip_level_label(_next_member_level(level_for_upgrade), lang)}."
+                    f"Your current level inside my JT TRADERS TEAMS community is {_vip_level_label(level_for_upgrade, lang)}, which is already above {_vip_level_label(explicit_target_for_upgrade, lang)}. Your level does not need to move down; if you want to advance, the next JT TRADERS TEAMS level is {_vip_level_label(_next_member_level(level_for_upgrade), lang)}."
                 )
             markup = ai_context_keyboard(texto, lang, chat_id)
             await update.message.reply_text(msg, reply_markup=markup)
@@ -12594,9 +12671,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if details:
             intro = (
-                f"Actualmente estás en {_vip_level_label(level_for_upgrade, lang)}. "
+                f"Actualmente tu nivel dentro de mi comunidad JT TRADERS TEAMS es {_vip_level_label(level_for_upgrade, lang)}. "
                 if lang == "es" else
-                f"You are currently {_vip_level_label(level_for_upgrade, lang)}. "
+                f"Your current level inside my JT TRADERS TEAMS community is {_vip_level_label(level_for_upgrade, lang)}. "
             )
             separator = "\n\n" if len(details) > 1 else ""
             msg = intro + separator + "\n\n".join(details)
@@ -12604,6 +12681,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += "\n\nEl cálculo usa únicamente depósitos ya validados de la misma cuenta/broker; Binomo y Stockity no se suman entre sí. 👇"
             else:
                 msg += "\n\nThis calculation uses only validated deposits from the same account/broker; Binomo and Stockity are never added together. 👇"
+            msg += _upgrade_account_instructions_text(chat_id, target_level, lang)
             if (_explicit_target_level(texto) == target_level) or any(x in t_upgrade for x in ("beneficio", "incluye", "herramient", "que recibo", "qué recibo", "what do i get", "benefit")):
                 msg += (
                     f"\n\nPuedes revisar todo lo que incluye {_vip_level_label(target_level, lang)} en el botón de abajo."
@@ -12621,12 +12699,13 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             saved_total = int(vip_for_upgrade.get("total_cents") or 0)
             reference_missing = max(0, target_cents - saved_total)
             msg = (
-                f"Actualmente estás en {_vip_level_label(level_for_upgrade, lang)}. Tengo guardado un total validado de USD {_usd(saved_total)}, que como referencia dejaría USD {_usd(reference_missing)} hasta {_vip_level_label(target_level, lang)}. "
+                f"Actualmente tu nivel dentro de mi comunidad JT TRADERS TEAMS es {_vip_level_label(level_for_upgrade, lang)}. Tengo guardado un total validado de USD {_usd(saved_total)}, que como referencia dejaría USD {_usd(reference_missing)} hasta {_vip_level_label(target_level, lang)} dentro de JT TRADERS TEAMS. "
                 "Esta cuenta todavía no tiene separado en el registro actual el historial de upgrade por broker, así que no voy a inventar la ventana ni pedirte que vuelvas a validar tu ID. Si vas a hacer un depósito adicional, solo necesito identificar una vez si corresponde a Binomo o Stockity."
                 if lang == "es" else
-                f"You are currently {_vip_level_label(level_for_upgrade, lang)}. I have a validated total of USD {_usd(saved_total)} saved, which as a reference leaves USD {_usd(reference_missing)} to {_vip_level_label(target_level, lang)}. "
+                f"Your current level inside my JT TRADERS TEAMS community is {_vip_level_label(level_for_upgrade, lang)}. I have a validated total of USD {_usd(saved_total)} saved, which as a reference leaves USD {_usd(reference_missing)} to {_vip_level_label(target_level, lang)} inside JT TRADERS TEAMS. "
                 "This legacy account does not yet have the upgrade history separated by broker in the current record, so I will not invent the window or ask you to validate your ID again. If you make an additional deposit, I only need to identify once whether it belongs to Binomo or Stockity."
             )
+            msg += _upgrade_account_instructions_text(chat_id, target_level, lang)
             upgrade_markup = ai_context_keyboard(texto, lang, chat_id)
             if _should_offer_personal_chat(chat_id, texto):
                 upgrade_markup = _append_personal_chat_button(upgrade_markup, lang)
@@ -12649,15 +12728,15 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             validated_ids.add(legacy_id)
         if bare_candidate in validated_ids:
             msg = (
-                f"Ese ID ya está validado ✅ Tu nivel actual es {_vip_level_label(level_for_upgrade, lang)}. No necesitas volver a validarlo."
+                f"Ese ID ya está validado ✅ Tu nivel actual dentro de mi comunidad JT TRADERS TEAMS es {_vip_level_label(level_for_upgrade, lang)}. No necesitas volver a validarlo."
                 if lang == "es" else
-                f"That ID is already validated ✅ Your current level is {_vip_level_label(level_for_upgrade, lang)}. You do not need to validate it again."
+                f"That ID is already validated ✅ Your current level inside my JT TRADERS TEAMS community is {_vip_level_label(level_for_upgrade, lang)}. You do not need to validate it again."
             )
         else:
             msg = (
-                f"Ya tienes una cuenta validada y estás en {_vip_level_label(level_for_upgrade, lang)}. No voy a enviar este número a validación automáticamente. Si es el ID de otra cuenta o broker que quieres vincular, dime cuál; si no, cuéntame qué necesitas consultar con ese número."
+                f"Ya tienes una cuenta validada y tu nivel dentro de mi comunidad JT TRADERS TEAMS es {_vip_level_label(level_for_upgrade, lang)}. No voy a enviar este número a validación automáticamente. Si es el ID de otra cuenta o broker que quieres vincular, dime cuál; si no, cuéntame qué necesitas consultar con ese número."
                 if lang == "es" else
-                f"You already have a validated account and you are {_vip_level_label(level_for_upgrade, lang)}. I will not send this number for validation automatically. If it is the ID of another account/broker you want to link, tell me which one; otherwise, tell me what you need to check with that number."
+                f"You already have a validated account and your level inside my JT TRADERS TEAMS community is {_vip_level_label(level_for_upgrade, lang)}. I will not send this number for validation automatically. If it is the ID of another account/broker you want to link, tell me which one; otherwise, tell me what you need to check with that number."
             )
         await update.message.reply_text(msg)
         await send_admin_auto_log(context, update, "ACTIVE_MEMBER_ID_GUARD", msg)
