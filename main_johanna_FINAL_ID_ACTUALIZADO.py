@@ -55,9 +55,11 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.76-20260922-LEVEL-CONTEXT-UPGRADE-CTA-FIX"
+BOT_VERSION = "v7.10.78-20260922-MEMBER-SPACE-CONTEXTUAL-NAVIGATION"
+# v7.10.78: separa la navegación de miembros activos en MI ESPACIO JT; elimina el menú general como salida frecuente para DEPOSITED, conserva CTAs de nivel/UPGRADE y ofrece solo el broker faltante como segunda opción cuando puede determinarse con certeza. ES/EN.
 # v7.10.74: cualquier aviso de depósito respeta la secuencia ID validado → comprobante; PRE nunca pide comprobante antes de confirmar/validar el ID.
 # v7.10.76: las consultas de nivel/upgrade de miembros activos muestran primero su nivel actual y luego UPGRADE; reconoce “siguiente nivel” y conserva el chat personal solo como CTA adicional cuando corresponde.
+# v7.10.77: cierra dos casos reales detectados en auditoría final: “otro enlace/otro mentor” se clasifica como cuenta NO vinculada y la guardia de primera persona cubre también variantes como “Joana generalmente sugiere”.
 # v7.10.75: restaura UPGRADE como segundo CTA al consultar el nivel propio; el chat personal, si corresponde por conversación larga, se añade después sin desplazarlo.
 # v7.10.72: refuerza continuidad del LIVE: misma señal por Telegram, motivo práctico completo de no entregar la interfaz y repreguntas contextuales sobre “las señales que muestras”.
 # v7.10.70: ID VALIDADO consulta directamente TODOS los usuarios POST con ID guardado, sin depender de la cola de 50; paginación de 20 por página.
@@ -2887,7 +2889,7 @@ async def _vip_send_next_or_welcome(
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=_vip_final_welcome_text(level, lang),
-                reply_markup=support_keyboard(lang),
+                reply_markup=support_keyboard(lang, chat_id),
                 disable_web_page_preview=True,
             )
             await _vip_notify_admin_completed(context, chat_id, level)
@@ -3215,7 +3217,7 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
                 "🔒 This request cannot be approved because that channel is not included in your active level. If your deposit or level changed, send me the proof here in this chat."
             )
             try:
-                await context.bot.send_message(chat_id=chat_id, text=denial, reply_markup=support_keyboard(lang))
+                await context.bot.send_message(chat_id=chat_id, text=denial, reply_markup=support_keyboard(lang, chat_id))
             except Exception:
                 pass
             logging.info("🔒 Solicitud VIP rechazada: %s / %s / stage=%s", chat_id, access_key, stage)
@@ -3654,9 +3656,110 @@ def schedule_daily_report(application):
     logging.info("📊 Reporte automático diario programado: 6:58 p. m. Colombia (único horario).")
 
 
-# === Teclado de soporte (ES/EN según idioma del usuario) ===
-def support_rows(lang: str = "es"):
-    """Prioriza que la conversación continúe dentro de este chat."""
+# === Teclados de soporte / navegación contextual (ES/EN) ===
+def _active_member_level(chat_id: int) -> str:
+    """Devuelve el nivel activo real solo para miembros DEPOSITED."""
+    try:
+        if get_user_stage(chat_id) != STAGE_DEPOSITED:
+            return VIP_LEVEL_NONE
+        level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
+        return level if level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE) else VIP_LEVEL_NONE
+    except Exception:
+        return VIP_LEVEL_NONE
+
+
+def _member_missing_broker(chat_id: int) -> str:
+    """Devuelve el único broker realmente faltante sin duplicar registros ni adivinar legacy."""
+    try:
+        rows = _broker_rows(chat_id)
+        established = {
+            _broker_norm(row.get("broker"))
+            for row in rows
+            if _broker_norm(row.get("broker"))
+            and (
+                bool(row.get("id_validated"))
+                or bool(str(row.get("trading_id") or "").strip())
+                or bool(str(row.get("pending_trading_id") or "").strip())
+            )
+        }
+        validated = {
+            _broker_norm(row.get("broker"))
+            for row in rows
+            if _broker_norm(row.get("broker"))
+            and bool(row.get("id_validated"))
+            and str(row.get("trading_id") or "").strip()
+        }
+    except Exception:
+        return ""
+    # Solo ofrecemos una segunda opción cuando conocemos con certeza UN broker ya
+    # validado y el otro no tiene siquiera ID pendiente. Si hay estado legacy sin
+    # broker identificable, ambos brokers o un segundo broker en proceso, no adivinamos.
+    if validated == {BROKER_BINOMO} and established == {BROKER_BINOMO}:
+        return BROKER_STOCKITY
+    if validated == {BROKER_STOCKITY} and established == {BROKER_STOCKITY}:
+        return BROKER_BINOMO
+    return ""
+
+
+def member_space_keyboard(chat_id: int, lang: str = "es") -> InlineKeyboardMarkup:
+    """Menú reducido y dinámico para miembros con nivel activo."""
+    level = _active_member_level(chat_id)
+    if level == VIP_LEVEL_NONE:
+        return build_main_menu(lang)
+
+    if lang == "en":
+        level_labels = {
+            VIP_LEVEL_BASIC: "🟢 MY BASIC LEVEL",
+            VIP_LEVEL_PREMIUM: "🔵 MY PREMIUM LEVEL",
+            VIP_LEVEL_PRESTIGE: "🏆 MY PRESTIGE LEVEL",
+        }
+        capital_label = "📊 CAPITAL MANAGEMENT"
+        socials_label = "🌐 SOCIAL MEDIA"
+        question_label = "💬 I HAVE A QUESTION"
+    else:
+        level_labels = {
+            VIP_LEVEL_BASIC: "🟢 MI NIVEL BÁSICO",
+            VIP_LEVEL_PREMIUM: "🔵 MI NIVEL PREMIUM",
+            VIP_LEVEL_PRESTIGE: "🏆 MI NIVEL PRESTIGE",
+        }
+        capital_label = "📊 GESTIÓN DE CAPITAL"
+        socials_label = "🌐 REDES SOCIALES"
+        question_label = "💬 TENGO UNA PREGUNTA"
+
+    rows = [[InlineKeyboardButton(level_labels[level], callback_data=f"level_detail:{level}")]]
+    if level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
+        rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data="upgrade_conditions")])
+
+    missing_broker = _member_missing_broker(chat_id)
+    if missing_broker:
+        missing_label = _broker_label(missing_broker).upper()
+        second_label = (
+            f"🔄 ADD {missing_label} AS SECOND OPTION"
+            if lang == "en" else
+            f"🔄 AÑADIR {missing_label} COMO SEGUNDA OPCIÓN"
+        )
+        rows.append([InlineKeyboardButton(second_label, callback_data=f"member_add_broker:{missing_broker}")])
+
+    rows.extend([
+        [InlineKeyboardButton(capital_label, callback_data="gestion_capital_en" if lang == "en" else "gestion_capital")],
+        [InlineKeyboardButton(socials_label, callback_data="redes_sociales")],
+        [InlineKeyboardButton(question_label, callback_data="ask_here")],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def support_rows(lang: str = "es", chat_id: int = None):
+    """Mantiene la conversación: miembro activo vuelve a MI ESPACIO JT, no al menú de registro."""
+    if chat_id is not None and _active_member_level(chat_id) != VIP_LEVEL_NONE:
+        if lang == "en":
+            return [
+                [InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")],
+                [InlineKeyboardButton("👤 MY JT SPACE", callback_data="member_space")],
+            ]
+        return [
+            [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
+            [InlineKeyboardButton("👤 MI ESPACIO JT", callback_data="member_space")],
+        ]
     if lang == "en":
         return [
             [InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")],
@@ -3667,18 +3770,18 @@ def support_rows(lang: str = "es"):
         [InlineKeyboardButton("🏠 Volver al menú principal", callback_data="back_main_menu")],
     ]
 
-def support_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(support_rows(lang))
+def support_keyboard(lang: str = "es", chat_id: int = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(support_rows(lang, chat_id))
 
 
-def levels_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
-    """Estructura completa + soporte, usando el Telegraph oficial actualizado."""
+def levels_keyboard(lang: str = "es", chat_id: int = None) -> InlineKeyboardMarkup:
+    """Estructura completa + navegación contextual."""
     label = "📄 Full structure" if lang == "en" else "📄 Ver estructura completa"
     upgrade_label = "ℹ️ View upgrade conditions" if lang == "en" else "ℹ️ Ver condiciones de upgrade"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, url=TELEGRAPH_LEVELS_URL)],
         [InlineKeyboardButton(upgrade_label, callback_data="upgrade_conditions")],
-        *support_rows(lang),
+        *support_rows(lang, chat_id),
     ])
 
 def personal_chat_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
@@ -3835,7 +3938,9 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     own_level_benefits = any(x in t for x in (
         "solo tengo senales", "solo tengo señales", "solo son senales", "solo son señales",
         "eso es todo", "nada mas", "nada más", "que mas tengo", "qué más tengo",
-        "que mas incluye mi nivel", "qué más incluye mi nivel", "que tengo en mi nivel", "qué tengo en mi nivel",
+        "que mas incluye mi nivel", "qué más incluye mi nivel", "que incluye mi nivel", "qué incluye mi nivel",
+        "que tengo en mi nivel", "qué tengo en mi nivel", "beneficios de mi nivel", "beneficios en mi nivel",
+        "que beneficios tengo", "qué beneficios tengo", "what does my level include", "benefits of my level",
         "is that all", "do i only have signals", "what else do i have", "what else is included in my level",
     ))
 
@@ -4145,12 +4250,12 @@ def remarketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
         *support_rows(lang),
     ])
 
-def live_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
+def live_keyboard(lang: str = "es", chat_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎵 TikTok (Lives)", url=TIKTOK_LIVE_URL)],
         [InlineKeyboardButton("📲 Instagram (Lives)", url="https://www.instagram.com/johaale_trader/")],
         [InlineKeyboardButton("▶️ YouTube", url=YOUTUBE_LIVE_URL)],
-        *support_rows(lang),
+        *support_rows(lang, chat_id),
     ])
 
 # === PANEL PRIVADO DE JOHANNA ===
@@ -6357,24 +6462,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Muestra solo bienvenida + REGISTRARME + MENÚ COMPLETO. El callback registrarme
     # conserva la personalización ADS existente mediante el click_id guardado.
     if start_param == "registro_canal":
-        set_user_lang(chat_id, nombre, "es")
-        lang = "es"
+        active_level = _active_member_level(chat_id)
+        if active_level != VIP_LEVEL_NONE:
+            # Un miembro activo que vuelva a tocar un CTA público de registro NO reinicia
+            # el proceso ni cambia de idioma: entra directamente a su espacio JT.
+            lang = get_user_lang(chat_id)
+            entry_keyboard = member_space_keyboard(chat_id, lang)
+            entry_caption = _personalized_welcome(update.effective_user, lang)
+        else:
+            set_user_lang(chat_id, nombre, "es")
+            lang = "es"
+            entry_keyboard = build_registration_entry_menu("es")
+            entry_caption = _personalized_welcome(update.effective_user, "es")
+
         _log_event(chat_id, "REGISTRATION_ENTRY_START", "registro_canal")
         _tracking_fire_event(chat_id, "REGISTRATION_ENTRY_START", "registro_canal")
 
-        entry_keyboard = build_registration_entry_menu("es")
         try:
             with open(WELCOME_IMG, "rb") as img:
                 await context.bot.send_photo(
                     chat_id=chat_id,
                     photo=InputFile(img),
-                    caption=_personalized_welcome(update.effective_user, "es"),
+                    caption=entry_caption,
                     reply_markup=entry_keyboard,
                 )
         except FileNotFoundError:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=_personalized_welcome(update.effective_user, "es"),
+                text=entry_caption,
                 reply_markup=entry_keyboard,
             )
 
@@ -6419,10 +6534,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         _log_event(chat_id, "CHANNEL_WELCOME_START", start_param)
         _tracking_fire_event(chat_id, "CHANNEL_WELCOME_START", start_param)
+        active_level = _active_member_level(chat_id)
+        channel_menu = member_space_keyboard(chat_id, lang) if active_level != VIP_LEVEL_NONE else build_main_menu(lang)
         await update.message.reply_text(
             texto_entrada,
             parse_mode=ParseMode.HTML,
-            reply_markup=build_main_menu(lang),
+            reply_markup=channel_menu,
         )
 
         # Mantiene exactamente la campaña que corresponda a su etapa,
@@ -6463,12 +6580,19 @@ async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.D
     except FileNotFoundError:
         await context.bot.send_message(chat_id=chat_id, text=welcome_text)
 
-    # Menú
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=("👇 Elige una opción para continuar:" if lang=="es" else "👇 Choose an option to continue:"),
-        reply_markup=build_main_menu(lang)
-    )
+    # Menú: miembros activos usan un espacio propio; PRE/POST conservan el menú general.
+    active_level = _active_member_level(chat_id)
+    if active_level != VIP_LEVEL_NONE:
+        menu_text = (
+            f"👤 MI ESPACIO JT\nTu nivel actual es {_vip_level_label(active_level, lang)}. Elige lo que necesitas:"
+            if lang == "es" else
+            f"👤 MY JT SPACE\nYour current level is {_vip_level_label(active_level, lang)}. Choose what you need:"
+        )
+        menu_markup = member_space_keyboard(chat_id, lang)
+    else:
+        menu_text = "👇 Elige una opción para continuar:" if lang=="es" else "👇 Choose an option to continue:"
+        menu_markup = build_main_menu(lang)
+    await context.bot.send_message(chat_id=chat_id, text=menu_text, reply_markup=menu_markup)
 
     # Mantener la campaña correcta según la etapa SIN reiniciar relojes existentes.
     _sync_menu_campaign_for_stage(chat_id, lang, context)
@@ -6489,7 +6613,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "upgrade_conditions":
         lang = get_user_lang(chat_id)
-        await q.message.reply_text(upgrade_conditions_text(lang), reply_markup=support_keyboard(lang))
+        await q.message.reply_text(upgrade_conditions_text(lang), reply_markup=support_keyboard(lang, chat_id))
         return
 
     if q.data == "vip_continue_access":
@@ -6500,7 +6624,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if level == VIP_LEVEL_NONE or not remaining:
             await q.message.reply_text(
                 "✅ No tienes accesos VIP pendientes." if lang == "es" else "✅ You have no pending VIP access.",
-                reply_markup=support_keyboard(lang),
+                reply_markup=support_keyboard(lang, chat_id),
             )
             return
         pause = _vip_get_pause(chat_id)
@@ -6534,9 +6658,82 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "back_main_menu":
         lang = get_user_lang(chat_id)
+        active_level = _active_member_level(chat_id)
+        if active_level != VIP_LEVEL_NONE:
+            await q.message.reply_text(
+                (f"👤 MI ESPACIO JT\nTu nivel actual es {_vip_level_label(active_level, lang)}. Elige lo que necesitas:"
+                 if lang == "es" else
+                 f"👤 MY JT SPACE\nYour current level is {_vip_level_label(active_level, lang)}. Choose what you need:"),
+                reply_markup=member_space_keyboard(chat_id, lang),
+            )
+        else:
+            await q.message.reply_text(
+                "👇 Elige una opción para continuar:" if lang == "es" else "👇 Choose an option to continue:",
+                reply_markup=build_main_menu(lang),
+            )
+        return
+
+    if q.data == "member_space":
+        lang = get_user_lang(chat_id)
+        active_level = _active_member_level(chat_id)
+        if active_level == VIP_LEVEL_NONE:
+            await q.message.reply_text(
+                "👇 Elige una opción para continuar:" if lang == "es" else "👇 Choose an option to continue:",
+                reply_markup=build_main_menu(lang),
+            )
+            return
         await q.message.reply_text(
-            "👇 Elige una opción para continuar:" if lang == "es" else "👇 Choose an option to continue:",
-            reply_markup=build_main_menu(lang),
+            (f"👤 MI ESPACIO JT\nTu nivel actual es {_vip_level_label(active_level, lang)}. Aquí tienes solo las opciones útiles para tu estado actual:"
+             if lang == "es" else
+             f"👤 MY JT SPACE\nYour current level is {_vip_level_label(active_level, lang)}. Here are the options relevant to your current status:"),
+            reply_markup=member_space_keyboard(chat_id, lang),
+        )
+        return
+
+    if q.data and q.data.startswith("member_add_broker:"):
+        lang = get_user_lang(chat_id)
+        active_level = _active_member_level(chat_id)
+        target = _broker_norm(q.data.split(":", 1)[1])
+        if active_level == VIP_LEVEL_NONE or target not in BROKERS:
+            await q.message.reply_text(
+                "No pude abrir esa opción. Continúa desde el menú principal." if lang == "es" else
+                "I couldn't open that option. Continue from the main menu.",
+                reply_markup=build_main_menu(lang),
+            )
+            return
+        missing = _member_missing_broker(chat_id)
+        if missing != target:
+            await q.message.reply_text(
+                "Esa segunda opción ya no está disponible porque tu estado de brokers cambió. Actualicé tu espacio JT." if lang == "es" else
+                "That second option is no longer available because your broker status changed. I refreshed your JT space.",
+                reply_markup=member_space_keyboard(chat_id, lang),
+            )
+            return
+        stockity_url, binomo_url = _referral_links_for_user(chat_id)
+        target_url = stockity_url if target == BROKER_STOCKITY else binomo_url
+        broker_label = _broker_label(target)
+        if lang == "es":
+            msg = (
+                f"🔄 Puedes añadir {broker_label} como segunda opción para diversificar tu operativa y tu gestión de capital sin reemplazar la cuenta que ya tienes vinculada.\n\n"
+                "Haz el nuevo registro desde el botón de abajo y, cuando termines, envíame el nuevo ID ANTES de depositar. "
+                "Binomo y Stockity se gestionan por separado: sus depósitos no se suman entre sí y cualquier upgrade se valida por cada cuenta/broker."
+            )
+            button_label = f"🔗 REGISTRARME EN {broker_label.upper()}"
+        else:
+            msg = (
+                f"🔄 You can add {broker_label} as a second option to diversify your trading and capital management without replacing the account you already have linked.\n\n"
+                "Create the new account from the button below and, when finished, send me the new ID BEFORE depositing. "
+                "Binomo and Stockity are managed separately: their deposits are never combined and any upgrade is validated per account/broker."
+            )
+            button_label = f"🔗 CREATE MY {broker_label.upper()} ACCOUNT"
+        await q.message.reply_text(
+            msg,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(button_label, url=target_url)],
+                [InlineKeyboardButton("👤 MY JT SPACE" if lang == "en" else "👤 MI ESPACIO JT", callback_data="member_space")],
+                [InlineKeyboardButton("💬 I HAVE A QUESTION" if lang == "en" else "💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
+            ]),
+            disable_web_page_preview=True,
         )
         return
 
@@ -6559,7 +6756,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "No pude identificar ese nivel. Puedes ver la estructura completa aquí abajo."
                 if lang == "es" else
                 "I couldn't identify that level. You can view the full structure below.",
-                reply_markup=levels_keyboard(lang),
+                reply_markup=levels_keyboard(lang, chat_id),
             )
             return
 
@@ -6614,23 +6811,31 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             all_levels_label = "📊 VIEW ALL LEVELS"
             all_levels_callback = "levels_plans_en"
 
-        detail_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(all_levels_label, callback_data=all_levels_callback)],
-            *support_rows(lang),
-        ])
+        active_level = _active_member_level(chat_id)
+        if active_level != VIP_LEVEL_NONE and requested_level == active_level:
+            detail_rows = []
+            if active_level in (VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM):
+                detail_rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data="upgrade_conditions")])
+            detail_rows.extend(support_rows(lang, chat_id))
+            detail_keyboard = InlineKeyboardMarkup(detail_rows)
+        else:
+            detail_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(all_levels_label, callback_data=all_levels_callback)],
+                *support_rows(lang, chat_id),
+            ])
         await q.message.reply_text(level_texts[requested_level], reply_markup=detail_keyboard)
         return
 
     # --- Niveles y Planes (informativo) ---
     if q.data == "niveles_planes":
         texto = _personalize_referral_links(respuesta_niveles_es(), chat_id)
-        await q.message.reply_text(texto, reply_markup=levels_keyboard("es"))
+        await q.message.reply_text(texto, reply_markup=levels_keyboard("es", chat_id))
         return
 
     # --- Levels & Plans (EN) ---
     if q.data == "levels_plans_en":
         texto = _personalize_referral_links(respuesta_niveles_en(), chat_id)
-        await q.message.reply_text(texto, reply_markup=levels_keyboard("en"))
+        await q.message.reply_text(texto, reply_markup=levels_keyboard("en", chat_id))
         return
 
 
@@ -6702,7 +6907,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Tell me exactly what you need help with (bonus, withdrawals, ID or schedules) and write it below 👇"
             )
         )
-        await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(msg, reply_markup=support_keyboard(lang, chat_id))
         await send_admin_auto_log(context, update, "IMG_IS_OTHER", msg)
         return
 
@@ -6743,7 +6948,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Perfect ✅\n\nTell me in a text message what you need me to review 👇"
         )
         context.user_data.pop("awaiting_deposit_proof", None)
-        await q.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(msg, reply_markup=support_keyboard(lang, chat_id))
         await send_admin_auto_log(context, update, "AUTO_DEP_NOT_RELATED_BTN", msg)
         return
 
@@ -6787,7 +6992,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(GESTION_CAPITAL_BUTTON_EN, reply_markup=personal_chat_keyboard("en"))
 
     elif q.data == "beneficios_vip":
-        await q.message.reply_text(BENEFICIOS_ES if lang=="es" else BENEFICIOS_EN, reply_markup=support_keyboard(lang))
+        await q.message.reply_text(BENEFICIOS_ES if lang=="es" else BENEFICIOS_EN, reply_markup=support_keyboard(lang, chat_id))
 
     elif q.data == "redes_sociales":
         if lang == "es":
@@ -6803,7 +7008,7 @@ https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
 https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 
 💬 Telegram:
-https://t.me/JohaaleTrader_es""", reply_markup=support_keyboard(lang))
+https://t.me/JohaaleTrader_es""", reply_markup=support_keyboard(lang, chat_id))
         else:
             await q.message.reply_text("""🌐 Social Media:
 
@@ -6817,7 +7022,7 @@ https://www.instagram.com/johaale_trader?igsh=ZWI5dXNnaXN6aDNw
 https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 
 💬 Telegram:
-https://t.me/JohaaleTrader_es""", reply_markup=support_keyboard(lang))
+https://t.me/JohaaleTrader_es""", reply_markup=support_keyboard(lang, chat_id))
 
 # === PERSISTENCIA MENSAJE DEL USUARIO ===
 async def guardar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8550,8 +8755,11 @@ def _looks_like_existing_account_query(texto: str) -> bool:
         "fue contigo", "fue registrada contigo", "fue registrado contigo",
         "creo que fue registrada contigo", "creo que fue registrado contigo",
         "no se si fue registrada contigo", "no sé si fue registrada contigo",
-        "no fue con tu enlace", "no fue contigo", "already have an account",
-        "old account", "registered with you", "registered through your link",
+        "no fue con tu enlace", "no fue contigo", "otro enlace", "otro link",
+        "enlace de otra persona", "enlace de otro mentor", "link de otra persona", "link de otro mentor",
+        "abri con otro enlace", "abrí con otro enlace", "abierta con otro enlace", "abierto con otro enlace",
+        "already have an account", "old account", "registered with you", "registered through your link",
+        "another link", "someone else’s link", "someone else's link", "another mentor's link",
     )
     return any(x in t for x in terms)
 
@@ -8576,7 +8784,11 @@ def _existing_account_relation(texto: str) -> str:
     not_linked = (
         "no fue con tu enlace", "no fue contigo", "no la registre contigo", "no la registré contigo",
         "no esta registrada contigo", "no está registrada contigo", "no fue registrada con tu enlace",
+        "otro enlace", "otro link", "enlace de otra persona", "enlace de otro mentor",
+        "link de otra persona", "link de otro mentor", "abri con otro enlace", "abrí con otro enlace",
+        "abierta con otro enlace", "abierto con otro enlace",
         "not through your link", "wasn't registered with you", "was not registered with you",
+        "another link", "someone else’s link", "someone else's link", "another mentor's link",
     )
     if any(x in t for x in not_linked):
         return "NOT_LINKED"
@@ -8595,14 +8807,14 @@ def _existing_account_reply(texto: str, lang: str, chat_id: int) -> str:
         if lang == "en":
             return (
                 "If that old account was not registered through my link, you need a new account correctly linked to me. "
-                "If it has funds, withdraw them first and then close/delete the old account. For the new registration, open an incognito browser window, use one of my links and a different email address. "
+                "If it has no funds, close/delete the old account directly; if it has funds, withdraw them first and then close/delete it. For the new registration, open an incognito browser window, use one of my links and a different email address. "
                 "When you finish, send me the new ID BEFORE depositing.\n\n"
                 f"🔗 Stockity — primary option:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
                 f"🔗 Binomo — secondary option:\n{ENLACE_REFERIDO}"
             )
         return (
             "Si esa cuenta vieja no fue registrada con mi enlace, necesitas crear una nueva correctamente vinculada conmigo. "
-            "Si tiene saldo, retíralo primero y luego elimina/cierra la cuenta anterior. Para el nuevo registro abre una ventana de incógnito, entra con uno de mis enlaces y usa un correo diferente. "
+            "Si no tiene saldo, cierra/elimina directamente la cuenta anterior; si tiene saldo, retíralo primero y después ciérrala/elíminala. Para el nuevo registro abre una ventana de incógnito, entra con uno de mis enlaces y usa un correo diferente. "
             "Cuando termines, envíame el nuevo ID ANTES de depositar.\n\n"
             f"🔗 Stockity — opción principal:\n{ENLACE_REFERIDO_STOCKITY}\n\n"
             f"🔗 Binomo — opción secundaria:\n{ENLACE_REFERIDO}"
@@ -8610,11 +8822,11 @@ def _existing_account_reply(texto: str, lang: str, chat_id: int) -> str:
     if lang == "en":
         return (
             "If that Binomo/Stockity account was created through my link, or you are not sure, send me its ID first and I will verify the link before you deposit. "
-            "If it was created through someone else’s link, it cannot be used to activate access with me: if it has funds, withdraw them first, then close/delete it; after that create a new account from my official link in an incognito window with a different email and send me the new ID before depositing."
+            "If it was created through someone else’s link, it cannot be used to activate access with me: if it has no funds, close/delete it directly; if it has funds, withdraw them first and then close/delete it. After that, create a new account from my official link in an incognito window with a different email and send me the new ID before depositing."
         )
     return (
         "Si esa cuenta de Binomo/Stockity fue creada con mi enlace, o no estás seguro, envíame primero el ID y verifico la vinculación antes de que deposites. "
-        "Si fue creada con el enlace de otra persona, no sirve para activar el acceso conmigo: si tiene saldo, primero retíralo y luego cierra/elimina esa cuenta; después crea una nueva desde mi enlace oficial en una ventana de incógnito con otro correo y envíame el nuevo ID antes de depositar."
+        "Si fue creada con el enlace de otra persona, no sirve para activar el acceso conmigo: si no tiene saldo, cierra/elimina esa cuenta directamente; si tiene saldo, primero retira y después ciérrala/elíminala. Luego crea una nueva desde mi enlace oficial en una ventana de incógnito con otro correo y envíame el nuevo ID antes de depositar."
     )
 
 
@@ -9700,7 +9912,8 @@ def _multiple_accounts_reply(text_value: str, lang: str = "es") -> str:
             + live_part + profit_part
         )
     return (
-        f"Ten cuidado con eso: no debes mantener varias cuentas personales de {broker_name}. Si esas cuentas no tienen saldo, ciérralas/elíminalas antes de crear una nueva correctamente vinculada conmigo; si tienen saldo, primero retira y después ciérralas. Como tienes varias cuentas/correos, escríbeme a mi chat personal antes de abrir otra para explicarte el proceso correcto."
+        (f"Ten cuidado con eso: Binomo no permite mantener varias cuentas personales a tu nombre. " if broker_name == "Binomo" else f"Ten cuidado con eso: no debes mantener varias cuentas personales de {broker_name}. ")
+        + "Si esas cuentas no tienen saldo, ciérralas/elíminalas antes de crear una nueva correctamente vinculada conmigo; si tienen saldo, primero retira y después ciérralas. Como tienes varias cuentas/correos, escríbeme a mi chat personal antes de abrir otra para explicarte el proceso correcto."
         + live_part + profit_part
     )
 
@@ -11019,30 +11232,34 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
         if answer:
             if lang == "en":
                 replacements = (
-                    (r"\b(?:Johanna|Joana|Johana)\s+(?:typically|normally|usually)\s+recommends?\b", "I normally recommend"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+(?:typically|normally|usually|generally)\s+recommends?\b", "I normally recommend"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+(?:typically|normally|usually|generally)\s+suggests?\b", "I normally suggest"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+(?:typically|normally|usually|generally)\s+advises?\b", "I normally recommend"),
                     (r"\b(?:Johanna|Joana|Johana)\s+recommends?\b", "I recommend"),
                     (r"\b(?:Johanna|Joana|Johana)\s+suggests?\b", "I suggest"),
                     (r"\b(?:Johanna|Joana|Johana)\s+advises?\b", "I recommend"),
-                    (r"\bJohanna['’]s\s+community\b", "my community"),
-                    (r"\bJohanna['’]s\s+links?\b", "my links"),
-                    (r"\bJohanna['’]s\s+recommendation\b", "my recommendation"),
-                    (r"\bwith\s+Johanna\b", "with me"),
-                    (r"\bfrom\s+Johanna\b", "from me"),
-                    (r"\baccording\s+to\s+Johanna\b", "based on my guidance"),
-                    (r"\bthe\s+Johanna\s+community\b", "my community"),
+                    (r"\b(?:Johanna|Joana|Johana)['’]s\s+community\b", "my community"),
+                    (r"\b(?:Johanna|Joana|Johana)['’]s\s+links?\b", "my links"),
+                    (r"\b(?:Johanna|Joana|Johana)['’]s\s+recommendation\b", "my recommendation"),
+                    (r"\bwith\s+(?:Johanna|Joana|Johana)\b", "with me"),
+                    (r"\bfrom\s+(?:Johanna|Joana|Johana)\b", "from me"),
+                    (r"\baccording\s+to\s+(?:Johanna|Joana|Johana)\b", "based on my guidance"),
+                    (r"\bthe\s+(?:Johanna|Joana|Johana)\s+community\b", "my community"),
                 )
             else:
                 replacements = (
-                    (r"\b(?:Johanna|Joana|Johana)\s+suele\s+recomendar\b", "suelo recomendar"),
-                    (r"\b(?:Johanna|Joana|Johana)\s+normalmente\s+recomienda\b", "normalmente recomiendo"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+(?:suele|normalmente|generalmente|usualmente)\s+recomendar\b", "normalmente recomiendo"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+(?:normalmente|generalmente|usualmente)\s+recomienda\b", "normalmente recomiendo"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+(?:normalmente|generalmente|usualmente)\s+sugiere\b", "normalmente sugiero"),
+                    (r"\b(?:Johanna|Joana|Johana)\s+(?:normalmente|generalmente|usualmente)\s+aconseja\b", "normalmente aconsejo"),
                     (r"\b(?:Johanna|Joana|Johana)\s+recomienda\b", "recomiendo"),
                     (r"\b(?:Johanna|Joana|Johana)\s+sugiere\b", "sugiero"),
                     (r"\b(?:Johanna|Joana|Johana)\s+aconseja\b", "aconsejo"),
-                    (r"\bla\s+comunidad\s+de\s+Johanna\b", "mi comunidad"),
-                    (r"\blos\s+enlaces\s+de\s+Johanna\b", "mis enlaces"),
-                    (r"\bla\s+recomendaci[oó]n\s+de\s+Johanna\b", "mi recomendación"),
-                    (r"\bcon\s+Johanna\b", "conmigo"),
-                    (r"\bseg[uú]n\s+Johanna\b", "según mi recomendación"),
+                    (r"\bla\s+comunidad\s+de\s+(?:Johanna|Joana|Johana)\b", "mi comunidad"),
+                    (r"\blos\s+enlaces\s+de\s+(?:Johanna|Joana|Johana)\b", "mis enlaces"),
+                    (r"\bla\s+recomendaci[oó]n\s+de\s+(?:Johanna|Joana|Johana)\b", "mi recomendación"),
+                    (r"\bcon\s+(?:Johanna|Joana|Johana)\b", "conmigo"),
+                    (r"\bseg[uú]n\s+(?:Johanna|Joana|Johana)\b", "según mi recomendación"),
                 )
             for pattern, repl in replacements:
                 answer = re.sub(pattern, repl, answer, flags=re.IGNORECASE)
@@ -11192,6 +11409,12 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
     try:
         answer = _personalize_referral_links(answer, chat_id)
         base_markup = personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang, chat_id)
+        # Para un miembro activo, si la respuesta no necesita un CTA más específico
+        # (nivel/upgrade/live/etc.), mantenemos una salida mínima y útil: pregunta + MI ESPACIO JT.
+        # No mostramos el menú general de registro y no añadimos el chat personal salvo
+        # que el caso realmente cumpla la regla de complejidad/muchos mensajes.
+        if not personal_review and base_markup is None and _active_member_level(chat_id) != VIP_LEVEL_NONE:
+            base_markup = support_keyboard(lang, chat_id)
         if _should_offer_personal_chat(chat_id, question, personal_review=personal_review):
             base_markup = _append_personal_chat_button(base_markup, lang)
         await context.bot.send_message(
@@ -11628,7 +11851,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = _vip_rate_limit_message(lang)
         await update.message.reply_text(
             msg,
-            reply_markup=_vip_pause_keyboard(lang) if pending else support_keyboard(lang),
+            reply_markup=_vip_pause_keyboard(lang) if pending else support_keyboard(lang, chat_id),
         )
         await send_admin_auto_log(context, update, "VIP_TELEGRAM_RATE_LIMIT", msg)
         return
@@ -11884,7 +12107,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         intent = meaningful[0]
     if intent == "GREETING":
         msg = "¡Hola! 🤍 ¿En qué puedo ayudarte hoy?" if lang == "es" else "Hi! 🤍 How can I help you today?"
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang, chat_id))
         await send_admin_auto_log(context, update, "AUTO_GREETING", msg)
         return
 
@@ -11909,7 +12132,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent == "DEP_LATER":
         msg = _immediate_block("DEP_LATER", lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang))
+        await update.message.reply_text(msg, reply_markup=support_keyboard(lang, chat_id))
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_LATER", msg)
         return
 
@@ -12021,7 +12244,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent in ("WHERE_SEND_ID", "LIVE", "ID"):
         msg = _immediate_block(intent, lang)
         if msg:
-            keyboard = live_keyboard(lang) if intent == "LIVE" else None
+            keyboard = live_keyboard(lang, chat_id) if intent == "LIVE" else None
             await _send_user_blocks(update, msg, reply_markup=keyboard)
             await send_admin_auto_log(context, update, intent, msg)
             return
@@ -12029,7 +12252,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "NIVELES":
         if _is_simple_levels_lookup(texto):
             msg = _immediate_block(intent, lang)
-            await _send_user_blocks(update, msg, reply_markup=levels_keyboard(lang))
+            await _send_user_blocks(update, msg, reply_markup=levels_keyboard(lang, chat_id))
             await send_admin_auto_log(context, update, intent, msg)
         else:
             schedule_ai_reply(update, context, texto)
@@ -12186,7 +12409,7 @@ LIVE_BROADCAST_MESSAGE_EN = (
 )
 
 
-def live_broadcast_keyboard(user_chat: bool = True, lang: str = "es") -> InlineKeyboardMarkup:
+def live_broadcast_keyboard(user_chat: bool = True, lang: str = "es", chat_id: int = None) -> InlineKeyboardMarkup:
     if lang == "en":
         rows = [
             [InlineKeyboardButton("🔴 JOIN LIVE ON TIKTOK", url=TIKTOK_LIVE_URL)],
@@ -12198,7 +12421,7 @@ def live_broadcast_keyboard(user_chat: bool = True, lang: str = "es") -> InlineK
             [InlineKeyboardButton("▶️ VER EN YOUTUBE", url=YOUTUBE_LIVE_URL)],
         ]
     if user_chat:
-        rows.extend(support_rows(lang))
+        rows.extend(support_rows(lang, chat_id))
     return InlineKeyboardMarkup(rows)
 
 
@@ -12646,7 +12869,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
                 chat_id=chat_id,
                 text=msg,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang),
+                reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang, chat_id=chat_id),
                 disable_web_page_preview=True,
             )
             sent += 1
@@ -12664,7 +12887,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
                     await asyncio.sleep(float(retry_after) + 1)
                     await context.bot.send_message(
                         chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang), disable_web_page_preview=True,
+                        reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang, chat_id=chat_id), disable_web_page_preview=True,
                     )
                     sent += 1
                     continue
