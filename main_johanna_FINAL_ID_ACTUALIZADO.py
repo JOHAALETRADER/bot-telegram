@@ -13593,6 +13593,13 @@ def _marketing_confirm_keyboard():
     ])
 
 
+def _marketing_collect_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👀 VER VISTA PREVIA", callback_data="marketing_preview")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data="marketing_cancel")],
+    ])
+
+
 def _validated_id_marketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
     """CTA del marketing a IDs validados: no vuelve a ofrecer registro."""
     return InlineKeyboardMarkup([
@@ -13671,7 +13678,7 @@ async def marketing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recipients = _recent_marketing_recipients()
     context.user_data["marketing_draft"] = {
         "status": "awaiting_content",
-        "photo_file_id": None,
+        "media": [],
         "text": "",
         "audience": "general",
     }
@@ -13682,8 +13689,8 @@ async def marketing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Se enviará a usuarios PRE sin ID ni proceso de registro activos en los últimos {MARKETING_BROADCAST_DAYS} días.\n"
             f"👥 Destinatarios actuales: {len(recipients)}\n"
             "🚫 Los usuarios con cuenta ya activa (DEPOSITED) quedan excluidos.\n\n"
-            "Envíame ahora un texto o una foto con texto en el caption. "
-            "Si envías la foto sin texto, después te pediré el texto.\n\n"
+            "Envíame el texto y las fotos o videos que quieras incluir (también puedes enviar un álbum). "
+            "Cuando termines, toca VER VISTA PREVIA. El texto puede ir en un mensaje o en el caption.\n\n"
             "🌐 Escríbelo una sola vez: los usuarios EN recibirán automáticamente la versión en inglés."
         )
     except Exception:
@@ -13700,7 +13707,7 @@ async def _start_validated_id_marketing(context: ContextTypes.DEFAULT_TYPE, mess
     recipients = _validated_id_marketing_recipients()
     context.user_data["marketing_draft"] = {
         "status": "awaiting_content",
-        "photo_file_id": None,
+        "media": [],
         "text": "",
         "audience": "validated_ids",
     }
@@ -13710,8 +13717,8 @@ async def _start_validated_id_marketing(context: ContextTypes.DEFAULT_TYPE, mess
             f"👥 Destinatarios actuales: {len(recipients)}\n"
             "🎯 Solo usuarios con ID validado que siguen en POST, pendientes de depósito/activación.\n"
             "🚫 PRE y DEPOSITED quedan fuera. No hay límite de días de actividad.\n\n"
-            "Envíame ahora un texto o una foto con texto en el caption. "
-            "Si envías la foto sin texto, después te pediré el texto.\n\n"
+            "Envíame el texto y las fotos o videos que quieras incluir (también puedes enviar un álbum). "
+            "Cuando termines, toca VER VISTA PREVIA. El texto puede ir en un mensaje o en el caption.\n\n"
             "🌐 Escríbelo una sola vez: los usuarios EN recibirán automáticamente la versión en inglés."
         )
     except Exception:
@@ -13747,67 +13754,58 @@ async def admin_draft_capture(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not marketing_draft:
             return
 
-        status = marketing_draft.get("status")
-        if status == "awaiting_content":
-            if update.message.photo:
-                marketing_draft["photo_file_id"] = update.message.photo[-1].file_id
-                caption = (update.message.caption or "").strip()
-                if caption:
-                    marketing_draft["text"] = caption
-                    marketing_draft["status"] = "ready"
-                else:
-                    marketing_draft["status"] = "awaiting_caption"
-                    context.user_data["marketing_draft"] = marketing_draft
-                    await update.message.reply_text(
-                        "📝 Imagen recibida. Ahora envíame el texto que quieres acompañar la imagen."
-                    )
-                    from telegram.ext import ApplicationHandlerStop
-                    raise ApplicationHandlerStop
-            elif update.message.text:
-                marketing_draft["text"] = update.message.text.strip()
-                marketing_draft["status"] = "ready"
-            else:
-                return
-
-        elif status == "awaiting_caption" and update.message.text:
+        if marketing_draft.get("status") not in ("awaiting_content", "ready"):
+            return
+        media = marketing_draft.setdefault("media", [])
+        if update.message.photo or update.message.video:
+            if len(media) >= 10:
+                await update.message.reply_text("⚠️ Máximo 10 fotos/videos por envío. Ya puedes revisar la vista previa.", reply_markup=_marketing_collect_keyboard())
+                from telegram.ext import ApplicationHandlerStop
+                raise ApplicationHandlerStop
+            media.append({"type": "photo" if update.message.photo else "video",
+                          "file_id": update.message.photo[-1].file_id if update.message.photo else update.message.video.file_id})
+            caption = (update.message.caption or "").strip()
+            if caption:
+                marketing_draft["text"] = caption
+        elif update.message.text:
             marketing_draft["text"] = update.message.text.strip()
-            marketing_draft["status"] = "ready"
         else:
             return
+        marketing_draft["status"] = "awaiting_content"
+        context.user_data["marketing_draft"] = marketing_draft
+        # En álbumes Telegram entrega cada elemento por separado: no responder diez veces.
+        if not update.message.media_group_id or len(media) == 1:
+            await update.message.reply_text(
+                f"✅ Borrador: {len(media)} foto(s)/video(s). "
+                + ("Texto recibido. " if marketing_draft.get("text") else "Falta el texto. ")
+                + "Puedes enviar más contenido o revisar la vista previa.",
+                reply_markup=_marketing_collect_keyboard(),
+            )
+        from telegram.ext import ApplicationHandlerStop
+        raise ApplicationHandlerStop
 
-        if marketing_draft.get("status") == "ready":
-            context.user_data["marketing_draft"] = marketing_draft
-            audience = marketing_draft.get("audience") or "general"
-            if audience == "validated_ids":
-                recipients = _validated_id_marketing_recipients()
-                preview_header = (
-                    "📣 VISTA PREVIA · MARKETING ID VALIDADO\n\n"
-                    f"👥 IDs validados pendientes de depósito: {len(recipients)}\n"
-                    "🎯 Solo POST · PRE/DEPOSITED excluidos\n\n"
-                )
-            else:
-                recipients = _recent_marketing_recipients()
-                preview_header = (
-                    "📣 VISTA PREVIA MARKETING\n\n"
-                    f"👥 Destinatarios sin ID ni proceso últimos {MARKETING_BROADCAST_DAYS} días: {len(recipients)}\n"
-                    "🚫 DEPOSITED: excluidos\n\n"
-                )
-            preview = preview_header + (marketing_draft.get("text") or "")
-            if marketing_draft.get("photo_file_id"):
-                await context.bot.send_photo(
-                    chat_id=ADMIN_ID,
-                    photo=marketing_draft["photo_file_id"],
-                    caption=preview[:1024],
-                    reply_markup=_marketing_confirm_keyboard(),
-                )
-            else:
-                await update.message.reply_text(
-                    preview,
-                    reply_markup=_marketing_confirm_keyboard(),
-                )
 
-            from telegram.ext import ApplicationHandlerStop
-            raise ApplicationHandlerStop
+async def _show_marketing_preview(context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("marketing_draft") or {}
+    audience = draft.get("audience") or "general"
+    recipients = (_validated_id_marketing_recipients() if audience == "validated_ids"
+                  else _recent_marketing_recipients())
+    media = draft.get("media") or []
+    for item in media:
+        if item["type"] == "photo":
+            await context.bot.send_photo(chat_id=ADMIN_ID, photo=item["file_id"])
+        else:
+            await context.bot.send_video(chat_id=ADMIN_ID, video=item["file_id"])
+    header = ("📣 VISTA PREVIA · MARKETING ID VALIDADO\n\n"
+              if audience == "validated_ids" else "📣 VISTA PREVIA MARKETING GENERAL\n\n")
+    summary = (f"👥 Destinatarios: {len(recipients)}\n"
+               f"🎞 Archivos: {len(media)}\n"
+               + ("📅 Ventana: 20 días\n" if audience != "validated_ids" else "🎯 ID validado sin depósito\n")
+               + "\n" + (draft.get("text") or ""))
+    await context.bot.send_message(
+        chat_id=ADMIN_ID, text=(header + summary)[:4096],
+        reply_markup=_marketing_confirm_keyboard(), disable_web_page_preview=True,
+    )
 
 
 async def _send_live_to_channels(context: ContextTypes.DEFAULT_TYPE, photo_file_id=None):
@@ -14016,6 +14014,18 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if query.from_user.id != ADMIN_ID:
         return
 
+    if query.data == "marketing_preview":
+        if context.user_data.get("admin_broadcast_flow") != "marketing":
+            await context.bot.send_message(chat_id=ADMIN_ID, text="ℹ️ Ese borrador ya no está activo.")
+            return
+        draft = context.user_data.get("marketing_draft") or {}
+        if not (draft.get("text") or "").strip():
+            await context.bot.send_message(chat_id=ADMIN_ID, text="📝 Envía el texto del marketing antes de revisar la vista previa.")
+            return
+        draft["status"] = "ready"
+        await _show_marketing_preview(context)
+        return
+
     if query.data == "marketing_cancel":
         context.user_data.pop("marketing_draft", None)
         if context.user_data.get("admin_broadcast_flow") == "marketing":
@@ -14038,8 +14048,11 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     draft = context.user_data.get("marketing_draft") or {}
     marketing_text = (draft.get("text") or "").strip()
-    photo_file_id = draft.get("photo_file_id")
-    if not marketing_text and not photo_file_id:
+    media = draft.get("media") or []
+    if draft.get("status") != "ready":
+        await context.bot.send_message(chat_id=ADMIN_ID, text="👀 Revisa primero la vista previa antes de confirmar.")
+        return
+    if not marketing_text:
         await context.bot.send_message(chat_id=ADMIN_ID, text="⚠️ No hay contenido de marketing preparado.")
         return
 
@@ -14101,27 +14114,26 @@ async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             failed += 1
             continue
         try:
-            if photo_file_id:
-                if outbound_text and len(outbound_text) > 1000:
-                    await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id)
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=outbound_text,
-                        reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else _general_marketing_keyboard(lang)),
-                        disable_web_page_preview=True,
-                    )
-                else:
-                    await context.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=photo_file_id,
-                        caption=outbound_text if outbound_text else None,
-                        reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else _general_marketing_keyboard(lang)),
-                    )
+            keyboard = (_validated_id_marketing_keyboard(lang) if audience == "validated_ids"
+                        else _general_marketing_keyboard(lang))
+            if media:
+                for index, item in enumerate(media):
+                    last = index == len(media) - 1
+                    kwargs = {"chat_id": chat_id}
+                    if last and len(outbound_text) <= 1000:
+                        kwargs.update(caption=outbound_text, reply_markup=keyboard)
+                    if item["type"] == "photo":
+                        await context.bot.send_photo(photo=item["file_id"], **kwargs)
+                    else:
+                        await context.bot.send_video(video=item["file_id"], **kwargs)
+                if len(outbound_text) > 1000:
+                    await context.bot.send_message(chat_id=chat_id, text=outbound_text,
+                                                   reply_markup=keyboard, disable_web_page_preview=True)
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=outbound_text,
-                    reply_markup=(_validated_id_marketing_keyboard(lang) if audience == "validated_ids" else _general_marketing_keyboard(lang)),
+                    reply_markup=keyboard,
                     disable_web_page_preview=True,
                 )
             sent += 1
@@ -14418,9 +14430,9 @@ if __name__ == "__main__":
         group=-5,
     )
 
-    # Captura fotos/texto de borradores antes del manejador normal del admin.
+    # Captura fotos, videos y texto de borradores antes del manejador normal del admin.
     app.add_handler(
-        MessageHandler(filters.User(ADMIN_ID) & (filters.TEXT | filters.PHOTO) & ~filters.COMMAND, admin_draft_capture),
+        MessageHandler(filters.User(ADMIN_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO) & ~filters.COMMAND, admin_draft_capture),
         group=-1,
     )
 
