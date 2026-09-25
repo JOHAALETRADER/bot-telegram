@@ -1602,13 +1602,15 @@ def _vip_final_welcome_text(level: str, lang: str) -> str:
     summary = _vip_level_summary(level, lang)
     if lang == "en":
         return (
-            f"🎉 Welcome to JT TRADERS TEAMS — {label} level!\n\n"
+            f"🎉 Welcome to JT TRADERS TEAMS! Your {label} level is active.\n\n"
+            "Here you have a space to learn, strengthen your analysis and develop your trading with support and tools for your level. Let's take it step by step. 🚀\n\n"
             "All access included in your current level is now confirmed. Here is a quick guide to what you have and how to use it:\n\n"
             f"{summary}\n\n"
             "📌 Check the pinned instructions inside each channel before using the signals. Martingale is optional and increases risk."
         )
     return (
-        f"🎉 ¡Bienvenida/o a JT TRADERS TEAMS — nivel {label}!\n\n"
+        f"🎉 ¡Te doy la bienvenida a JT TRADERS TEAMS! Tu nivel {label} ya está activo.\n\n"
+        "Aquí tienes un espacio para aprender, fortalecer tu análisis y desarrollar tu operativa con acompañamiento y herramientas según tu nivel. Vamos paso a paso. 🚀\n\n"
         "Todos los accesos correspondientes a tu nivel ya están confirmados. Aquí tienes una guía rápida de lo que incluye tu nivel y cómo utilizarlo:\n\n"
         f"{summary}\n\n"
         "📌 Revisa las indicaciones fijadas dentro de cada canal antes de utilizar las señales. La Martingala es opcional y aumenta el riesgo."
@@ -7246,7 +7248,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📣 Entrada desde publicidad al bot-puerta: "
                 f"{_telegram_display_name(user)} (ID: {user.id}) | origen={final_source}."
             ),
-            reply_markup=admin_user_quick_keyboard(user.id),
         )
         return
 
@@ -7309,7 +7310,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🚀 Entrada directa de registro al bot: "
                 f"{_telegram_display_name(user)} (ID: {user.id}) | origen={_get_channel_source(chat_id)}."
             ),
-            reply_markup=admin_user_quick_keyboard(user.id),
         )
         return
 
@@ -7360,7 +7360,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=mensaje_admin,
-            reply_markup=admin_user_quick_keyboard(user.id),
         )
         return
 
@@ -7373,7 +7372,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=mensaje_admin,
-        reply_markup=admin_user_quick_keyboard(user.id),
     )
 
 # Enviar bienvenida y menú después de elegir idioma
@@ -13631,8 +13629,7 @@ async def live_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 Usuarios activos últimos {LIVE_BROADCAST_DAYS} días: {len(recipients)}\n"
             f"📢 Canal informativo: {INFO_CHANNEL_ID}\n"
             "👑 Canal VIP: tema configurado\n\n"
-            "Si quieres imagen en los canales, envíamela ahora como foto. "
-            "Los usuarios privados recibirán SOLO el texto.\n\n"
+            "Si quieres imagen en los canales y en los chats privados, envíamela ahora como foto.\n\n"
             "Si no quieres imagen, toca Continuar sin imagen.",
             reply_markup=_live_preview_keyboard(),
         )
@@ -13651,7 +13648,7 @@ async def _show_live_confirmation(context: ContextTypes.DEFAULT_TYPE, message, p
     context.user_data["live_draft"] = {"status": "ready", "photo_file_id": photo_file_id}
     summary = (
         "🔴 CONFIRMAR LIVE\n\n"
-        f"👥 Usuarios últimos {LIVE_BROADCAST_DAYS} días: {len(recipients)} (reciben solo texto)\n"
+        f"👥 Usuarios últimos {LIVE_BROADCAST_DAYS} días: {len(recipients)} ({'imagen + texto' if photo_file_id else 'texto'})\n"
         f"📢 Informativo: {'imagen + texto' if photo_file_id else 'texto'}\n"
         f"👑 VIP: {'imagen + texto' if photo_file_id else 'texto'}\n"
         "🎵 TikTok + ▶️ YouTube incluidos.\n\n"
@@ -13882,6 +13879,21 @@ async def _safe_edit_callback_message(query, text_value: str):
         logging.info("No pude actualizar mensaje de control: %s", e)
 
 
+async def _send_live_to_private_user(context, chat_id: int, lang: str, photo_file_id=None):
+    msg = LIVE_BROADCAST_MESSAGE_ES if lang == "es" else LIVE_BROADCAST_MESSAGE_EN
+    keyboard = live_broadcast_keyboard(user_chat=True, lang=lang, chat_id=chat_id)
+    if photo_file_id:
+        await context.bot.send_photo(
+            chat_id=chat_id, photo=photo_file_id, caption=msg,
+            parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard,
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard, disable_web_page_preview=True,
+        )
+
+
 async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -13931,15 +13943,8 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
     sent = 0
     failed = 0
     for chat_id, lang, _stage in recipients:
-        msg = LIVE_BROADCAST_MESSAGE_ES if lang == "es" else LIVE_BROADCAST_MESSAGE_EN
         try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=msg,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang, chat_id=chat_id),
-                disable_web_page_preview=True,
-            )
+            await _send_live_to_private_user(context, chat_id, lang, photo_file_id)
             sent += 1
         except Exception as e:
             if _is_blocked_user_error(e):
@@ -13953,10 +13958,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
             if retry_after:
                 try:
                     await asyncio.sleep(float(retry_after) + 1)
-                    await context.bot.send_message(
-                        chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang, chat_id=chat_id), disable_web_page_preview=True,
-                    )
+                    await _send_live_to_private_user(context, chat_id, lang, photo_file_id)
                     sent += 1
                     continue
                 except Exception as retry_error:
@@ -13975,13 +13977,21 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
     # Johanna recibe en su propio bot una copia EXACTA del aviso entregado a los
     # usuarios, con los mismos botones, para poder revisar cómo salió publicado.
     try:
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text="📬 COPIA DEL AVISO LIVE ENVIADO\n\n" + LIVE_BROADCAST_MESSAGE_ES,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=live_broadcast_keyboard(user_chat=False),
-            disable_web_page_preview=True,
-        )
+        if photo_file_id:
+            await context.bot.send_photo(
+                chat_id=ADMIN_ID, photo=photo_file_id,
+                caption="📬 COPIA DEL AVISO LIVE ENVIADO\n\n" + LIVE_BROADCAST_MESSAGE_ES,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=live_broadcast_keyboard(user_chat=False),
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text="📬 COPIA DEL AVISO LIVE ENVIADO\n\n" + LIVE_BROADCAST_MESSAGE_ES,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=live_broadcast_keyboard(user_chat=False),
+                disable_web_page_preview=True,
+            )
     except Exception as e:
         logging.warning("No pude enviar copia LIVE al admin: %s", e)
 
