@@ -1805,6 +1805,20 @@ def _vip_insufficient_message(total_cents: int, lang: str) -> str:
     )
 
 
+async def _notify_admin_insufficient_deposit_sent(context, chat_id: int, user_msg: str, broker: str = ""):
+    """Copia el aviso real solo después de que Telegram acepta el envío al usuario."""
+    try:
+        broker_line = f"Broker: {_broker_label(broker)}\n" if broker else ""
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=("📬 DEPÓSITO INFERIOR AL MÍNIMO · AVISO ENVIADO\n\n"
+                  f"Usuario Telegram ID: {chat_id}\n{broker_line}\n"
+                  "Mensaje enviado al usuario:\n\n" + user_msg),
+        )
+    except Exception as e:
+        logging.warning("No pude copiar al admin el aviso de depósito insuficiente para %s: %s", chat_id, e)
+
+
 def _id_pending_review_message(lang: str) -> str:
     if lang == "en":
         return (
@@ -5387,6 +5401,7 @@ async def _admin_apply_deposit_confirmation(context: ContextTypes.DEFAULT_TYPE, 
         user_msg = _vip_insufficient_message(new_total, lang)
         try:
             await context.bot.send_message(chat_id=chat_id, text=user_msg)
+            await _notify_admin_insufficient_deposit_sent(context, chat_id, user_msg)
         except Exception as e:
             logging.warning("Depósito insuficiente guardado para %s, pero no pude avisarle: %s", chat_id, e)
         missing = VIP_LEVEL_THRESHOLDS_CENTS[VIP_LEVEL_BASIC] - new_total
@@ -5793,6 +5808,8 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
             else upgrade_info_keyboard(lang)
         ),
     )
+    if new_global == VIP_LEVEL_NONE:
+        await _notify_admin_insufficient_deposit_sent(context, chat_id, user_msg, broker)
 
     if new_keys:
         await context.bot.send_message(
