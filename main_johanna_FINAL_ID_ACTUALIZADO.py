@@ -1117,7 +1117,7 @@ def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
             f"{title}\n\n"
             "These conditions apply to your level inside my JT TRADERS TEAMS community, not to a broker account tier.\n\n"
             "• Up to the first 3 validated deposits on the SAME broker/account may accumulate during 30 days from the first validated deposit.\n"
-            "• Send each deposit proof within 72 hours of the deposit.\n"
+            "• To accumulate subsequent deposits, send each proof within 72 hours of that deposit. This check does not apply to the first deposit.\n"
             "• After the 3rd deposit or when the 30-day window ends, the next upgrade requires ONE deposit that by itself reaches the full minimum of the target level.\n"
             "• Binomo and Stockity are calculated separately. Only deposits reported and validated in this chat count."
         )
@@ -1130,7 +1130,7 @@ def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
         f"{title}\n\n"
         "Estas condiciones aplican a tu nivel dentro de mi comunidad JT TRADERS TEAMS, no a un nivel del broker.\n\n"
         "• Puedes acumular hasta los primeros 3 depósitos validados de una MISMA cuenta/broker durante 30 días desde el primero.\n"
-        "• Envía cada comprobante dentro de las 72 horas posteriores al depósito.\n"
+        "• Para acumular los depósitos posteriores, envía cada comprobante dentro de las 72 horas posteriores a ese depósito. Esta comprobación no aplica al primer depósito.\n"
         "• Después del tercer depósito o al vencer los 30 días, el siguiente upgrade requiere UN depósito que por sí solo alcance el mínimo completo del nivel objetivo.\n"
         "• Binomo y Stockity se calculan por separado. Solo cuentan depósitos reportados y validados en este chat."
     )
@@ -5144,8 +5144,16 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     if has_validated_id:
         buttons.append([InlineKeyboardButton("🆔 VER ID VALIDADO", callback_data=f"admin_user_ids:{chat_id}")])
     if stage == STAGE_PRE:
-        buttons.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
-        if _get_saved_trading_id(chat_id):
+        # PRE también incluye usuarios sin ID y usuarios cuyo ID fue rechazado.
+        # Solo ofrecemos validar cuando realmente queda un ID por revisar.
+        saved_id = (_get_saved_trading_id(chat_id) or "").strip()
+        has_pending_id = bool(saved_id) or any(
+            str(row.get("pending_trading_id") or "").strip()
+            for row in _broker_rows(chat_id)
+        )
+        if has_pending_id:
+            buttons.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
+        if saved_id:
             buttons.append([InlineKeyboardButton("❌ ID ERRADO", callback_data=f"admin_user_reject:{chat_id}")])
     elif stage == STAGE_POST:
         buttons.append([InlineKeyboardButton("💰 REVISAR DEPÓSITO", callback_data=f"admin_user_deposit:{chat_id}")])
@@ -7510,24 +7518,35 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _vip_schedule_access_recheck(context, chat_id, access_key, 0)
             return
 
-        # Respaldo para canales cuyo chat_id todavía no fue aprendido. El usuario ya
-        # está autorizado por nivel; esta confirmación solo evita congelar la secuencia.
-        _log_event(chat_id, "VIP_ACCESS_USER_CONFIRMED_NO_MAP", access_key)
-        _tracking_fire_event(chat_id, "VIP_ACCESS_USER_CONFIRMED_NO_MAP", access_key)
-        level_now, should_welcome = _vip_mark_access_approved(chat_id, access_key)
+        # Sin chat_id no es posible comprobar la membresía: conservamos el
+        # pendiente y dejamos que una solicitud/alta real identifique el canal.
         info = VIP_ACCESS_CHANNELS.get(access_key) or {}
         access_name = (info.get("name_es") if lang == "es" else info.get("name_en")) or access_key
         await q.message.reply_text(
             (
-                f"✅ Confirmado. Continúo con los accesos que falten después de {access_name}."
+                "⏳ Todavía no puedo verificar tu entrada a este canal. Abre el enlace y completa el ingreso o la solicitud de acceso. "
+                "Este acceso seguirá pendiente hasta que Telegram confirme tu membresía. Si no avanza, escribe por este chat para que revisemos tu acceso."
                 if lang == "es" else
-                f"✅ Confirmed. I'll continue with the remaining access after {access_name}."
+                "⏳ I can't verify your membership in this channel yet. Open the link and complete the join or access request. "
+                "This access will remain pending until Telegram confirms your membership. If it does not continue, write here so we can review your access."
             )
         )
-        await _vip_send_next_or_welcome(
-            context, chat_id, level_now or level, lang,
-            just_completed=access_key, should_welcome=should_welcome, bypass_pause=False,
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "⚠️ VERIFICACIÓN VIP PENDIENTE\n\n"
+                    f"Usuario ID: {chat_id}\n"
+                    f"Canal: {access_name}\n"
+                    "El usuario pulsó VERIFICAR Y CONTINUAR, pero el bot aún no conoce el ID de ese canal. "
+                    "No se confirmó ni se retiró este acceso de los pendientes. "
+                    "Revisa que el bot sea administrador y que pueda recibir las solicitudes/altas de ese canal."
+                ),
+                reply_markup=admin_user_quick_keyboard(chat_id),
+            )
+        except Exception as e:
+            logging.warning("No pude avisar verificación VIP sin mapa %s/%s: %s", chat_id, access_key, e)
+        _vip_schedule_access_recheck(context, chat_id, access_key, 0)
         return
 
     if q.data == "vip_continue_access":
