@@ -25,7 +25,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, text, or_
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, text, or_, func
 from sqlalchemy.orm import sessionmaker, declarative_base
 import os
 
@@ -55,7 +55,9 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.87-20260923-FIRST-DEPOSIT-ATTRIBUTION-FIX"
+BOT_VERSION = "v7.10.89-20261002-HIGH-VOLUME-ADS-REPORT-CLOSURES"
+# v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
+# v7.10.88: adaptación conservadora a tráfico masivo de Telegram Ads: IA a 150 s, concurrencia controlada, límite de IA simultánea, /start silencioso para admin, reporte acumulado de STARTS cada 15 min y selección de idioma sin spam administrativo. Conserva ADS/tracking, campañas, registro, multi-broker, depósitos, upgrades, VIP, accesos y privacidad.
 # v7.10.87: aplica sobre la base desplegada FIRST-DEPOSIT-BELOW-50-FIX la atribución conservadora del canal: si Telegram no entrega invite_link/invite_name, clasifica SIN ATRIBUIR en vez de asumir ORGÁNICO. Conserva la corrección de primer depósito < USD 50, ADS canal-primero, VIP, IA, depósitos, campañas y compatibilidad trk_.
 # v7.10.86-ADS: activa ADS canal-primero sin romper compatibilidad: /ads -> enlace exclusivo source-ADS del canal -> bienvenida -> bot. Añade métrica CHANNEL_TO_BOT, adapta reporte diario a Visitas ADS / Canal / Canal→Bot y conserva la puerta trk_ histórica solo como respaldo.
 # v7.10.85: corrige y blinda la metodología de gestión de riesgo de Johanna en IA: 2% para toda la secuencia, hasta 3% solo ocasionalmente con cuentas > USD 1,000, división en 6–7 partes (1 / 2 / 3–4), límite diario 5–7% y meta orientativa 10–12%. Añade respuesta determinística ES/EN para dudas de cuánto operar por entrada/MG1/MG2 sin confundirlo con gestión de cuentas.
@@ -196,6 +198,20 @@ for _logger_name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connectio
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# === TRÁFICO MASIVO / TELEGRAM ADS ===
+# Procesa varios usuarios a la vez sin abrir concurrencia ilimitada.
+try:
+    BOT_CONCURRENT_UPDATES = max(4, min(32, int(os.getenv("BOT_CONCURRENT_UPDATES", "16"))))
+except Exception:
+    BOT_CONCURRENT_UPDATES = 16
+
+# Reporte agregado de /start. Evita cientos de avisos individuales al ADMIN.
+try:
+    START_REPORT_MINUTES = max(5, min(60, int(os.getenv("START_REPORT_MINUTES", "15"))))
+except Exception:
+    START_REPORT_MINUTES = 15
+START_REPORT_SECONDS = START_REPORT_MINUTES * 60
 
 # === PUENTE DE TRACKING (servicio independiente) ===
 # Si alguna variable falta o el servicio externo falla, el bot principal continúa
@@ -4086,6 +4102,410 @@ async def report_group_test_command(update: Update, context: ContextTypes.DEFAUL
         )
 
 
+async def start_volume_report_job(context: ContextTypes.DEFAULT_TYPE):
+    """Resumen agregado de /start para alto volumen, sin spam por usuario."""
+    try:
+        now_utc = utcnow_naive()
+        since_utc = now_utc - timedelta(minutes=START_REPORT_MINUTES)
+        with Session() as session:
+            recent_starts = int(
+                session.query(func.count(BotEvent.id))
+                .filter(BotEvent.event_type == "BOT_START", BotEvent.created_at >= since_utc)
+                .scalar() or 0
+            )
+            recent_unique = int(
+                session.query(func.count(func.distinct(BotEvent.telegram_id)))
+                .filter(BotEvent.event_type == "BOT_START", BotEvent.created_at >= since_utc)
+                .scalar() or 0
+            )
+            total_starts = int(
+                session.query(func.count(BotEvent.id))
+                .filter(BotEvent.event_type == "BOT_START")
+                .scalar() or 0
+            )
+
+        # Si no hubo tráfico en el corte, no añadimos ruido al chat admin.
+        if recent_starts <= 0:
+            return
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"📊 STARTS BOT · CORTE {START_REPORT_MINUTES} MIN\n\n"
+                f"🔥 Últimos {START_REPORT_MINUTES} min: {recent_starts}\n"
+                f"👥 Usuarios únicos en el corte: {recent_unique}\n"
+                f"📈 Total acumulado desde v7.10.88: {total_starts}"
+            ),
+        )
+    except Exception as e:
+        logging.warning("No pude enviar reporte agregado de STARTS: %s", e)
+
+
+def schedule_start_volume_report(application):
+    """Programa un único corte repetitivo de STARTS y evita duplicados en redeploy."""
+    if not application.job_queue:
+        return
+    try:
+        for job in application.job_queue.get_jobs_by_name("START_VOLUME_REPORT"):
+            job.schedule_removal()
+    except Exception:
+        pass
+    application.job_queue.run_repeating(
+        start_volume_report_job,
+        interval=START_REPORT_SECONDS,
+        first=START_REPORT_SECONDS,
+        name="START_VOLUME_REPORT",
+    )
+    logging.info(
+        "📊 Reporte de STARTS programado cada %s min; avisos individuales desactivados.",
+        START_REPORT_MINUTES,
+    )
+
+
+# === CIERRES BOT INDEPENDIENTES (NO MEZCLAR CON REPORTE ADS 18:58) ===
+BOT_CLOSE_FEATURE_EVENT = "BOT_CLOSE_FEATURE_STARTED"
+BOT_CLOSE_SENT_EVENT = "BOT_CLOSE_REPORT_SENT"
+
+
+def _bot_close_feature_started_utc():
+    """Momento persistente desde el que esta versión puede medir /start localmente."""
+    try:
+        with Session() as session:
+            value = (
+                session.query(func.min(BotEvent.created_at))
+                .filter(BotEvent.event_type == BOT_CLOSE_FEATURE_EVENT)
+                .scalar()
+            )
+        return value
+    except Exception as e:
+        logging.warning("No pude leer inicio de cierres BOT: %s", e)
+        return None
+
+
+def _ensure_bot_close_feature_marker():
+    """Marca una sola vez el inicio real de la medición de cierres BOT."""
+    started = _bot_close_feature_started_utc()
+    if started:
+        return started
+    _log_event(ADMIN_ID, BOT_CLOSE_FEATURE_EVENT, BOT_VERSION)
+    return _bot_close_feature_started_utc()
+
+
+def _colombia_date_range_utc(start_date, end_date_exclusive):
+    """Convierte un rango de fechas Colombia [inicio, fin) a UTC naive."""
+    start_local = datetime(
+        start_date.year, start_date.month, start_date.day, 0, 0, 0,
+        tzinfo=COLOMBIA_TZ,
+    )
+    end_local = datetime(
+        end_date_exclusive.year, end_date_exclusive.month, end_date_exclusive.day, 0, 0, 0,
+        tzinfo=COLOMBIA_TZ,
+    )
+    return (
+        start_local.astimezone(timezone.utc).replace(tzinfo=None),
+        end_local.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
+def _bot_period_metrics(start_utc: datetime, end_utc: datetime):
+    """Métricas operativas del bot para un rango cerrado; no depende de Meta/ADS externo."""
+    try:
+        with Session() as session:
+            total_starts = int(
+                session.query(func.count(BotEvent.id))
+                .filter(
+                    BotEvent.event_type == "BOT_START",
+                    BotEvent.created_at >= start_utc,
+                    BotEvent.created_at < end_utc,
+                )
+                .scalar() or 0
+            )
+            unique_starts = int(
+                session.query(func.count(func.distinct(BotEvent.telegram_id)))
+                .filter(
+                    BotEvent.event_type == "BOT_START",
+                    BotEvent.created_at >= start_utc,
+                    BotEvent.created_at < end_utc,
+                )
+                .scalar() or 0
+            )
+            new_users = int(
+                session.query(func.count(Usuario.id))
+                .filter(
+                    Usuario.fecha_registro >= start_utc,
+                    Usuario.fecha_registro < end_utc,
+                )
+                .scalar() or 0
+            )
+    except Exception as e:
+        logging.warning("No pude calcular STARTS/usuarios del cierre BOT: %s", e)
+        total_starts = unique_starts = new_users = 0
+
+    writers = len(_event_user_ids("MESSAGE", start_utc, end_utc))
+    registrations = len(_event_user_ids("REGISTRATION_ENTRY_START", start_utc, end_utc))
+    ids_sent = len(_event_user_ids("ID_SUBMITTED", start_utc, end_utc))
+    ids_validated = len(_event_user_ids("ID_VALIDATED", start_utc, end_utc))
+    deposits_reported = len(_event_user_ids("DEPOSIT_REPORTED", start_utc, end_utc))
+    activated = len(_event_user_ids("ACCOUNT_ACTIVATED", start_utc, end_utc))
+    return {
+        "total_starts": total_starts,
+        "unique_starts": unique_starts,
+        "new_users": new_users,
+        "writers": writers,
+        "registrations": registrations,
+        "ids_sent": ids_sent,
+        "ids_validated": ids_validated,
+        "deposits_reported": deposits_reported,
+        "activated": activated,
+    }
+
+
+def _bot_close_marker(kind: str, start_date, end_date_exclusive) -> str:
+    return f"{kind.upper()}:{start_date.isoformat()}:{end_date_exclusive.isoformat()}"
+
+
+def _bot_close_already_sent(kind: str, start_date, end_date_exclusive) -> bool:
+    marker = _bot_close_marker(kind, start_date, end_date_exclusive)
+    try:
+        with Session() as session:
+            row = (
+                session.query(BotEvent.id)
+                .filter(
+                    BotEvent.telegram_id == str(ADMIN_ID),
+                    BotEvent.event_type == BOT_CLOSE_SENT_EVENT,
+                    BotEvent.detail == marker,
+                )
+                .first()
+            )
+        return bool(row)
+    except Exception as e:
+        logging.warning("No pude verificar marca de cierre %s: %s", marker, e)
+        return False
+
+
+def _bot_close_period_has_coverage(start_utc: datetime, end_utc: datetime) -> bool:
+    started = _bot_close_feature_started_utc()
+    return bool(started and started < end_utc)
+
+
+def _bot_close_trend(current: int, previous: int | None, label: str) -> str:
+    if previous is None:
+        return f"📉/📈 {label}: N/D (sin periodo previo comparable)"
+    if previous == 0:
+        if current == 0:
+            return f"➖ {label}: 0% (0 → 0)"
+        return f"📈 {label}: nuevo crecimiento (0 → {current})"
+    pct = ((current - previous) / previous) * 100.0
+    if pct > 0:
+        icon = "📈"
+    elif pct < 0:
+        icon = "📉"
+    else:
+        icon = "➖"
+    return f"{icon} {label}: {pct:+.1f}% ({previous} → {current})"
+
+
+def _bot_close_text(kind: str, start_date, end_date_exclusive, previous_start_date=None, previous_end_date=None) -> str:
+    start_utc, end_utc = _colombia_date_range_utc(start_date, end_date_exclusive)
+    current = _bot_period_metrics(start_utc, end_utc)
+
+    previous = None
+    if previous_start_date is not None and previous_end_date is not None:
+        prev_start_utc, prev_end_utc = _colombia_date_range_utc(previous_start_date, previous_end_date)
+        if _bot_close_period_has_coverage(prev_start_utc, prev_end_utc):
+            previous = _bot_period_metrics(prev_start_utc, prev_end_utc)
+
+    started = _bot_close_feature_started_utc()
+    coverage_note = ""
+    if started and started > start_utc:
+        started_local = started.replace(tzinfo=timezone.utc).astimezone(COLOMBIA_TZ)
+        coverage_note = (
+            "\n⚠️ Primer periodo parcial: la medición persistente de STARTS comenzó "
+            f"el {started_local.strftime('%d/%m/%Y %I:%M %p')}.\n"
+        )
+
+    if kind == "daily":
+        title = "📘 CIERRE BOT · DIARIO"
+        period = start_date.strftime("%d/%m/%Y")
+        avg_line = ""
+    elif kind == "weekly":
+        title = "📗 CIERRE BOT · SEMANAL"
+        last_day = end_date_exclusive - timedelta(days=1)
+        period = f"{start_date.strftime('%d/%m/%Y')} → {last_day.strftime('%d/%m/%Y')}"
+        avg_line = f"📅 Promedio usuarios únicos/día: {current['unique_starts'] / 7:.1f}\n"
+    else:
+        title = "📙 CIERRE BOT · MENSUAL"
+        last_day = end_date_exclusive - timedelta(days=1)
+        period = f"{start_date.strftime('%d/%m/%Y')} → {last_day.strftime('%d/%m/%Y')}"
+        days = max(1, (end_date_exclusive - start_date).days)
+        avg_line = f"📅 Promedio usuarios únicos/día: {current['unique_starts'] / days:.1f}\n"
+
+    prev_unique = previous["unique_starts"] if previous else None
+    prev_total = previous["total_starts"] if previous else None
+    trend_unique = _bot_close_trend(current["unique_starts"], prev_unique, "Usuarios únicos vs periodo anterior")
+    trend_total = _bot_close_trend(current["total_starts"], prev_total, "STARTS totales vs periodo anterior")
+
+    return (
+        f"{title}\n"
+        f"📅 Periodo: {period}\n"
+        "ℹ️ Este cierre mide actividad interna del bot; es independiente del reporte ADS de las 6:58 p. m.\n"
+        f"{coverage_note}\n"
+        f"🚀 STARTS totales: {current['total_starts']}\n"
+        f"👥 Usuarios únicos con START: {current['unique_starts']}\n"
+        f"🆕 Usuarios nuevos creados en el bot: {current['new_users']}\n"
+        f"✍️ Usuarios que escribieron: {current['writers']}\n"
+        f"📝 Iniciaron registro: {current['registrations']}\n"
+        f"🆔 Enviaron ID: {current['ids_sent']}\n"
+        f"✅ ID validados: {current['ids_validated']}\n"
+        f"💳 Reportaron depósito: {current['deposits_reported']}\n"
+        f"🟢 Cuentas activadas: {current['activated']}\n"
+        f"{avg_line}\n"
+        f"{trend_unique}\n"
+        f"{trend_total}"
+    )
+
+
+async def _send_bot_close_report(context_or_application, kind: str, start_date, end_date_exclusive, previous_start_date=None, previous_end_date=None):
+    """Envía al grupo de reportes, con fallback privado, y marca el periodo para no duplicarlo."""
+    if _bot_close_already_sent(kind, start_date, end_date_exclusive):
+        return False
+    start_utc, end_utc = _colombia_date_range_utc(start_date, end_date_exclusive)
+    if not _bot_close_period_has_coverage(start_utc, end_utc):
+        return False
+
+    bot = getattr(context_or_application, "bot", None)
+    if bot is None and hasattr(context_or_application, "application"):
+        bot = context_or_application.application.bot
+    if bot is None:
+        return False
+
+    text_value = _bot_close_text(
+        kind, start_date, end_date_exclusive,
+        previous_start_date=previous_start_date,
+        previous_end_date=previous_end_date,
+    )
+    target_chat_id = REPORT_CHAT_ID if REPORT_CHAT_ID else ADMIN_ID
+    try:
+        await bot.send_message(chat_id=target_chat_id, text=text_value)
+    except Exception as e:
+        logging.warning("No pude enviar cierre BOT %s a %s: %s", kind, target_chat_id, e)
+        if target_chat_id != ADMIN_ID:
+            try:
+                await bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "⚠️ No pude publicar este cierre en JOHAALETRADER · ADS REPORTS. "
+                        "Te lo envío aquí como respaldo.\n\n" + text_value
+                    ),
+                )
+            except Exception as fallback_error:
+                logging.warning("Tampoco pude enviar respaldo del cierre BOT: %s", fallback_error)
+                return False
+        else:
+            return False
+
+    _log_event(ADMIN_ID, BOT_CLOSE_SENT_EVENT, _bot_close_marker(kind, start_date, end_date_exclusive))
+    return True
+
+
+async def bot_daily_close_job(context: ContextTypes.DEFAULT_TYPE):
+    now_local = datetime.now(COLOMBIA_TZ)
+    end_date = now_local.date()
+    start_date = end_date - timedelta(days=1)
+    prev_end = start_date
+    prev_start = prev_end - timedelta(days=1)
+    await _send_bot_close_report(context, "daily", start_date, end_date, prev_start, prev_end)
+
+
+async def bot_weekly_close_job(context: ContextTypes.DEFAULT_TYPE):
+    now_local = datetime.now(COLOMBIA_TZ)
+    if now_local.weekday() != 0:  # solo lunes
+        return
+    end_date = now_local.date()  # lunes actual; excluyente
+    start_date = end_date - timedelta(days=7)
+    prev_end = start_date
+    prev_start = prev_end - timedelta(days=7)
+    await _send_bot_close_report(context, "weekly", start_date, end_date, prev_start, prev_end)
+
+
+async def bot_monthly_close_job(context: ContextTypes.DEFAULT_TYPE):
+    now_local = datetime.now(COLOMBIA_TZ)
+    if now_local.day != 1:  # solo primer día del mes
+        return
+    end_date = now_local.date()
+    previous_last_day = end_date - timedelta(days=1)
+    start_date = previous_last_day.replace(day=1)
+    prev_end = start_date
+    prev_last_day = prev_end - timedelta(days=1)
+    prev_start = prev_last_day.replace(day=1)
+    await _send_bot_close_report(context, "monthly", start_date, end_date, prev_start, prev_end)
+
+
+def schedule_bot_close_reports(application):
+    """Programa cierres en Colombia y elimina jobs homónimos tras redeploy."""
+    if not application.job_queue:
+        return
+    for job_name in ("BOT_CLOSE_DAILY_0005", "BOT_CLOSE_WEEKLY_0010", "BOT_CLOSE_MONTHLY_0015"):
+        try:
+            for job in application.job_queue.get_jobs_by_name(job_name):
+                job.schedule_removal()
+        except Exception:
+            pass
+    application.job_queue.run_daily(
+        bot_daily_close_job,
+        time=dt_time(hour=0, minute=5, tzinfo=COLOMBIA_TZ),
+        name="BOT_CLOSE_DAILY_0005",
+    )
+    # Se ejecutan a diario y las funciones filtran lunes/día 1. Esto evita depender
+    # de diferencias de API de `days=` entre versiones de python-telegram-bot.
+    application.job_queue.run_daily(
+        bot_weekly_close_job,
+        time=dt_time(hour=0, minute=10, tzinfo=COLOMBIA_TZ),
+        name="BOT_CLOSE_WEEKLY_0010",
+    )
+    application.job_queue.run_daily(
+        bot_monthly_close_job,
+        time=dt_time(hour=0, minute=15, tzinfo=COLOMBIA_TZ),
+        name="BOT_CLOSE_MONTHLY_0015",
+    )
+    logging.info("📚 Cierres BOT programados: diario 00:05, semanal lunes 00:10, mensual día 1 00:15 Colombia.")
+
+
+async def recover_missed_bot_close_reports(application):
+    """Recupera cierres vencidos si Railway estaba reiniciando/caído a la hora programada."""
+    _ensure_bot_close_feature_marker()
+    now_local = datetime.now(COLOMBIA_TZ)
+
+    # Día anterior: siempre es el último periodo diario completo.
+    daily_end = now_local.date()
+    daily_start = daily_end - timedelta(days=1)
+    await _send_bot_close_report(
+        application, "daily", daily_start, daily_end,
+        daily_start - timedelta(days=1), daily_start,
+    )
+
+    # Semana anterior: solo se considera vencida desde el lunes que la cierra.
+    current_monday = now_local.date() - timedelta(days=now_local.weekday())
+    weekly_end = current_monday
+    weekly_start = weekly_end - timedelta(days=7)
+    await _send_bot_close_report(
+        application, "weekly", weekly_start, weekly_end,
+        weekly_start - timedelta(days=7), weekly_start,
+    )
+
+    # Mes anterior: último mes calendario completamente cerrado.
+    month_end = now_local.date().replace(day=1)
+    previous_last_day = month_end - timedelta(days=1)
+    month_start = previous_last_day.replace(day=1)
+    prev_month_end = month_start
+    prev_month_last_day = prev_month_end - timedelta(days=1)
+    prev_month_start = prev_month_last_day.replace(day=1)
+    await _send_bot_close_report(
+        application, "monthly", month_start, month_end,
+        prev_month_start, prev_month_end,
+    )
+
+
 def schedule_daily_report(application):
     """Mantiene UN SOLO reporte automático diario: 6:58 p. m. Colombia.
 
@@ -7213,6 +7633,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_param_raw = (context.args[0].strip() if context.args else "")
     start_param = start_param_raw.lower()
 
+    # v7.10.88: cada /start queda persistido; el ADMIN recibe solo cortes agregados.
+    # detail conserva el deep-link/origen para auditoría sin alterar el tracking existente.
+    _log_event(chat_id, "BOT_START", start_param or "normal")
+
     # === PUERTA ADS LEGACY: compatibilidad con enlaces trk_ ya publicados ===
     # El flujo vigente desde v7.10.86 es /ads -> enlace source-ADS del canal -> bienvenida -> bot.
     # Este bloque NO se elimina para no romper enlaces antiguos que todavía puedan circular.
@@ -7266,14 +7690,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ads_gate_keyboard,
         )
 
-        user = update.effective_user
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                "📣 Entrada desde publicidad al bot-puerta: "
-                f"{_telegram_display_name(user)} (ID: {user.id}) | origen={final_source}."
-            ),
-        )
+        # v7.10.88: START individual silenciado para ADMIN; queda en BOT_START + tracking.
         return
 
     # Métrica limpia del nuevo embudo: solo cuenta deep-links del canal cuando
@@ -7328,14 +7745,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Conserva las campañas/etapa actuales sin reiniciar relojes existentes.
         _sync_menu_campaign_for_stage(chat_id, lang, context)
 
-        user = update.effective_user
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                "🚀 Entrada directa de registro al bot: "
-                f"{_telegram_display_name(user)} (ID: {user.id}) | origen={_get_channel_source(chat_id)}."
-            ),
-        )
+        # v7.10.88: entrada de registro contabilizada en BOT_START; sin alerta individual.
         return
 
     # Deep links exclusivos de las bienvenidas de los canales ES / EN.
@@ -7377,27 +7787,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # sin reiniciar relojes existentes si el usuario vuelve a tocar el enlace.
         _sync_menu_campaign_for_stage(chat_id, lang, context)
 
-        user = update.effective_user
-        mensaje_admin = (
-            f"🚀 Llegó al bot desde la bienvenida del {source_label}: "
-            f"{_telegram_display_name(user)} (ID: {user.id})."
-        )
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=mensaje_admin,
-        )
+        # v7.10.88: bienvenida del canal contabilizada en BOT_START; sin alerta individual.
         return
 
     # /start normal: conserva el comportamiento original.
     await update.message.reply_text("Elige tu idioma / Choose your language:", reply_markup=build_lang_picker())
 
-    # Notificar admin
-    user = update.effective_user
-    mensaje_admin = f"🚨 El usuario {_telegram_display_name(user)} (ID: {user.id}) ejecutó /start (selección de idioma)."
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=mensaje_admin,
-    )
+    # v7.10.88: /start normal se contabiliza en BOT_START y se resume cada 15 min.
 
 # Enviar bienvenida y menú después de elegir idioma
 async def send_welcome_and_menu(chat_id: int, lang: str, context: ContextTypes.DEFAULT_TYPE, telegram_user=None):
@@ -7586,8 +7982,11 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Notificar interacción
-    await notificar_interaccion(update, context)
+    # Notificar interacción solo cuando aporta señal operativa.
+    # Seleccionar idioma es navegación de entrada y, con Ads, puede ocurrir cientos
+    # de veces por hora; no debe llenar el panel administrativo.
+    if q.data not in ("set_lang_es", "set_lang_en"):
+        await notificar_interaccion(update, context)
 
     if q.data == "back_main_menu":
         lang = get_user_lang(chat_id)
@@ -7902,6 +8301,9 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if lang == "es":
             text_value = """🌐 Redes Sociales:
 
+🌐 Sitio oficial:
+https://JOHAALETRADER.com
+
 🔴 YouTube:
 https://youtube.com/@johaalegria.trader?si=JemqmPes0Rz3WqEZ
 
@@ -7915,6 +8317,9 @@ https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 https://t.me/JohaaleTrader_es"""
         else:
             text_value = """🌐 Social Media:
+
+🌐 Official website:
+https://JOHAALETRADER.com
 
 🔴 YouTube:
 https://youtube.com/@johaalegria.trader?si=JemqmPes0Rz3WqEZ
@@ -7948,6 +8353,9 @@ https://t.me/JohaaleTrader_en"""
         if lang == "es":
             await q.message.reply_text("""🌐 Redes Sociales:
 
+🌐 Sitio oficial:
+https://JOHAALETRADER.com
+
 🔴 YouTube:
 https://youtube.com/@johaalegria.trader?si=JemqmPes0Rz3WqEZ
 
@@ -7961,6 +8369,9 @@ https://www.tiktok.com/@joha_binomo?_t=ZN-8xceLrp5GTe&_r=1
 https://t.me/JohaaleTrader_es""", reply_markup=support_keyboard(lang, chat_id))
         else:
             await q.message.reply_text("""🌐 Social Media:
+
+🌐 Official website:
+https://JOHAALETRADER.com
 
 🔴 YouTube:
 https://youtube.com/@johaalegria.trader?si=JemqmPes0Rz3WqEZ
@@ -8415,14 +8826,22 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 # Modelo recomendado para transcribir respuestas de voz de Johanna.
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
-# v7.10.46: prioridad para Johanna mantiene un máximo de 4 minutos.
-# Si Railway conserva una variable antigua AI_WAIT_MINUTES=5, el código la limita a 4.
-# Se permiten valores enteros menores (por ejemplo 3) sin superar el máximo actual.
+# v7.10.88: ventana de 2 min 30 s para que Johanna pueda responder primero.
+# Se usa AI_WAIT_SECONDS para admitir precisión sub-minuto; AI_WAIT_MINUTES antiguo
+# queda deliberadamente fuera de esta espera para que una variable vieja de Railway
+# (por ejemplo 4 o 5) no revierta el ajuste de alto volumen.
 try:
-    AI_WAIT_MINUTES = max(1, min(4, int(float(os.getenv("AI_WAIT_MINUTES", "4")))))
+    AI_WAIT_SECONDS = max(30, min(600, int(float(os.getenv("AI_WAIT_SECONDS", "150")))))
 except Exception:
-    AI_WAIT_MINUTES = 4
-AI_WAIT_SECONDS = AI_WAIT_MINUTES * 60
+    AI_WAIT_SECONDS = 150
+AI_WAIT_MINUTES = AI_WAIT_SECONDS / 60.0
+
+# Evita que una avalancha dispare decenas/cientos de solicitudes OpenAI simultáneas.
+try:
+    AI_MAX_CONCURRENT_REQUESTS = max(2, min(20, int(os.getenv("AI_MAX_CONCURRENT_REQUESTS", "8"))))
+except Exception:
+    AI_MAX_CONCURRENT_REQUESTS = 8
+AI_REQUEST_SEMAPHORE = asyncio.Semaphore(AI_MAX_CONCURRENT_REQUESTS)
 AI_HISTORY_MAX_MESSAGES = 16
 try:
     AI_LONG_MEMORY_MAX_CHARS = max(4000, min(20000, int(os.getenv("AI_LONG_MEMORY_MAX_CHARS", "9000"))))
@@ -12468,7 +12887,14 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         if personal_intent:
             answer = _immediate_block(personal_intent, lang)
         else:
-            answer = await openai_answer(question, chat_id, lang, stage, answered_topics)
+            # Alto volumen: solo unas pocas generaciones IA pueden ejecutarse a la vez.
+            # Si Johanna respondió mientras este usuario esperaba cupo, no gastamos una
+            # llamada OpenAI ni enviamos una respuesta duplicada.
+            async with AI_REQUEST_SEMAPHORE:
+                latest_before_ai = _get_pending_ai(chat_id)
+                if not latest_before_ai or str(latest_before_ai.get("message_id") or "") != expected_message_id:
+                    return
+                answer = await openai_answer(question, chat_id, lang, stage, answered_topics)
 
     if not answer:
         personal_review = True
@@ -14247,7 +14673,7 @@ async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.effective_message.reply_text(
         f"✅ Bot activo: {BOT_VERSION}\n"
-        f"⏱ IA: {AI_WAIT_MINUTES} min\n"
+        f"⏱ IA: {AI_WAIT_MINUTES:g} min ({AI_WAIT_SECONDS} s)\n"
         f"📣 Marketing/LIVE: {LIVE_BROADCAST_DAYS} días\n"
         "🧠 Multi-pregunta general: ACTIVA"
     )
@@ -14408,6 +14834,10 @@ async def post_init_app(application):
     # en Telegram; la privacidad diaria la mantiene cleanup_vip_membership_service_message,
     # que elimina nuevas altas/bajas y cualquier contenido que aparezca en General.
     schedule_daily_report(application)
+    schedule_start_volume_report(application)
+    _ensure_bot_close_feature_marker()
+    await recover_missed_bot_close_reports(application)
+    schedule_bot_close_reports(application)
     schedule_promo_expiry_reminder(application)
     await _check_promo_expiry_reminders(application.bot)
     try:
@@ -14422,7 +14852,13 @@ async def post_init_app(application):
 
 # === EJECUCIÓN ===
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init_app).build()
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .concurrent_updates(BOT_CONCURRENT_UPDATES)
+        .post_init(post_init_app)
+        .build()
+    )
 
     # Tracking de altas al canal ES. El enlace especial ADS es permanente;
     # el enlace público normal del canal continúa funcionando como Orgánico/Otros.
