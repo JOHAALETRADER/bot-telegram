@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.89-20261002-HIGH-VOLUME-ADS-REPORT-CLOSURES"
+BOT_VERSION = "v7.10.90-20261002-HIGH-VOLUME-ADS-OCT-BASELINE"
+# v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
 # v7.10.88: adaptación conservadora a tráfico masivo de Telegram Ads: IA a 150 s, concurrencia controlada, límite de IA simultánea, /start silencioso para admin, reporte acumulado de STARTS cada 15 min y selección de idioma sin spam administrativo. Conserva ADS/tracking, campañas, registro, multi-broker, depósitos, upgrades, VIP, accesos y privacidad.
 # v7.10.87: aplica sobre la base desplegada FIRST-DEPOSIT-BELOW-50-FIX la atribución conservadora del canal: si Telegram no entrega invite_link/invite_name, clasifica SIN ATRIBUIR en vez de asumir ORGÁNICO. Conserva la corrección de primer depósito < USD 50, ADS canal-primero, VIP, IA, depósitos, campañas y compatibilidad trk_.
@@ -4134,7 +4135,7 @@ async def start_volume_report_job(context: ContextTypes.DEFAULT_TYPE):
                 f"📊 STARTS BOT · CORTE {START_REPORT_MINUTES} MIN\n\n"
                 f"🔥 Últimos {START_REPORT_MINUTES} min: {recent_starts}\n"
                 f"👥 Usuarios únicos en el corte: {recent_unique}\n"
-                f"📈 Total acumulado desde v7.10.88: {total_starts}"
+                f"📈 Total acumulado desde activación del contador: {total_starts}"
             ),
         )
     except Exception as e:
@@ -4165,6 +4166,23 @@ def schedule_start_volume_report(application):
 # === CIERRES BOT INDEPENDIENTES (NO MEZCLAR CON REPORTE ADS 18:58) ===
 BOT_CLOSE_FEATURE_EVENT = "BOT_CLOSE_FEATURE_STARTED"
 BOT_CLOSE_SENT_EVENT = "BOT_CLOSE_REPORT_SENT"
+
+# Ajuste histórico confirmado manualmente por Johanna antes del deploy del contador.
+# Regla dura: SOLO pertenece al 02/10/2026. Al no caer dentro de otros periodos,
+# desaparece automáticamente de noviembre y de cualquier cierre posterior.
+BOT_HISTORICAL_START_ADJUSTMENTS = {
+    "2026-10-02": 190,
+}
+
+
+def _bot_historical_start_adjustment(start_date, end_date_exclusive) -> int:
+    """Suma ajustes históricos únicamente cuando la fecha pertenece al rango [inicio, fin)."""
+    total = 0
+    current = start_date
+    while current < end_date_exclusive:
+        total += int(BOT_HISTORICAL_START_ADJUSTMENTS.get(current.isoformat(), 0) or 0)
+        current += timedelta(days=1)
+    return total
 
 
 def _bot_close_feature_started_utc():
@@ -4308,21 +4326,33 @@ def _bot_close_trend(current: int, previous: int | None, label: str) -> str:
 def _bot_close_text(kind: str, start_date, end_date_exclusive, previous_start_date=None, previous_end_date=None) -> str:
     start_utc, end_utc = _colombia_date_range_utc(start_date, end_date_exclusive)
     current = _bot_period_metrics(start_utc, end_utc)
+    historical_start_adjustment = _bot_historical_start_adjustment(start_date, end_date_exclusive)
+    if historical_start_adjustment:
+        current["total_starts"] += historical_start_adjustment
 
     previous = None
     if previous_start_date is not None and previous_end_date is not None:
         prev_start_utc, prev_end_utc = _colombia_date_range_utc(previous_start_date, previous_end_date)
         if _bot_close_period_has_coverage(prev_start_utc, prev_end_utc):
             previous = _bot_period_metrics(prev_start_utc, prev_end_utc)
+            previous_adjustment = _bot_historical_start_adjustment(previous_start_date, previous_end_date)
+            if previous_adjustment:
+                previous["total_starts"] += previous_adjustment
 
     started = _bot_close_feature_started_utc()
     coverage_note = ""
     if started and started > start_utc:
         started_local = started.replace(tzinfo=timezone.utc).astimezone(COLOMBIA_TZ)
-        coverage_note = (
-            "\n⚠️ Primer periodo parcial: la medición persistente de STARTS comenzó "
-            f"el {started_local.strftime('%d/%m/%Y %I:%M %p')}.\n"
-        )
+        if historical_start_adjustment:
+            coverage_note = (
+                "\nℹ️ Total STARTS corregido con el histórico previo a la activación del contador "
+                f"del {started_local.strftime('%d/%m/%Y')}.\n"
+            )
+        else:
+            coverage_note = (
+                "\n⚠️ Primer periodo parcial: la medición persistente de STARTS comenzó "
+                f"el {started_local.strftime('%d/%m/%Y %I:%M %p')}.\n"
+            )
 
     if kind == "daily":
         title = "📘 CIERRE BOT · DIARIO"
