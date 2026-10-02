@@ -11340,7 +11340,9 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                     "Important semantics: phrases such as 'qué me toca', 'qué hago ahora', 'cómo sigo', 'por dónde empiezo' "
                     "normally mean next_step unless the user explicitly asks which level/benefits. "
                     "'the bot/program/software you show in your live/on screen' means live_panel unless CRYPTO IDX 24/7 "
-                    "or the currency-pair AI bot is explicitly named. Questions about how much someone should/can deposit to join, start or enter the community mean entry_minimum, even when a country or nationality is mentioned. Country/nationality does not change JT TRADERS TEAMS level thresholds. A money amount alone does NOT mean promo. "
+                    "or the currency-pair AI bot is explicitly named. Merely mentioning live sessions or being unable to watch them does NOT mean live_panel. "
+                    "Messages about TikTok being banned, blocked, unavailable, or inaccessible in a country concern watching the broadcast; use other unless an actual schedule or another intent is asked. "
+                    "Questions about how much someone should/can deposit to join, start or enter the community mean entry_minimum, even when a country or nationality is mentioned. Country/nationality does not change JT TRADERS TEAMS level thresholds. A money amount alone does NOT mean promo. "
                     "Set promo only when bonuses/promo codes/70%/100% are explicitly asked. "
                     "Schema: {\"primary\":\"intent\",\"intents\":[\"...\"],\"amount_usd\":number_or_null,"
                     "\"multi_question\":true_or_false}."
@@ -11423,7 +11425,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "que muestras", "que usas", "que utilizas", "que se ve", "que aparece", "muestras en los",
             "en tu pantalla", "de tu pantalla", "you show", "you use", "on your screen",
         ))
-        tool_reference = any(x in q_norm for x in ("bot", "software", "programa", "sistema", "herramienta", "panel", "interfaz", "pantalla", "tool"))
+        tool_reference = any(x in q_norm for x in ("bot", "software", "programa", "program", "sistema", "herramienta", "panel", "interfaz", "interface", "pantalla", "tool"))
         explicit_member_ai_bot = any(x in q_norm for x in (
             "bot ia", "ia crypto", "crypto idx 24/7", "bot de crypto", "bot crypto", "bot de pares",
             "pares de divisas 24/7", "ai bot", "currency pair bot", "automatic alert", "alerta automatica",
@@ -11447,11 +11449,31 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "i want those signals", "i want the signals you show",
         ))
         live_signal_followup = bool(shown_signal_reference and (recent_live_panel_context or live_reference) and not explicit_member_ai_bot)
-        panel_topic = (
-            ("live_panel" in planner_intents)
-            or (live_reference and shown_tool_reference and tool_reference and not explicit_member_ai_bot)
-            or live_signal_followup
+        # Una etiqueta del planificador no basta para forzar la explicación
+        # privada: debe haber una referencia real a herramientas/señales.
+        # Conservamos repreguntas breves sobre la herramienta del turno anterior.
+        contextual_tool_followup = bool(
+            recent_live_panel_context
+            and len(q_norm.split()) <= 20
+            and any(x in q_norm for x in (
+                "quiero eso", "quiero esa", "lo quiero", "tenerlo", "obtenerlo",
+                "me lo das", "me lo envias", "como lo consigo",
+                "i want it", "i want that", "can i get it", "can i have it",
+                "how do i get it", "send it to me",
+            ))
         )
+        panel_topic = bool(
+            not explicit_member_ai_bot
+            and (
+                ("live_panel" in planner_intents and (tool_reference or live_signal_followup or contextual_tool_followup))
+                or (live_reference and shown_tool_reference and tool_reference)
+                or live_signal_followup
+            )
+        )
+        if not panel_topic:
+            planner_intents.discard("live_panel")
+            if planner_primary == "live_panel":
+                planner_primary = "other"
         if panel_topic:
             planner_intents.add("live_panel")
             if planner_primary in ("", "other", "ai_bot") and not explicit_member_ai_bot:
@@ -11787,6 +11809,7 @@ OBJETIVO PRINCIPAL
 - PROMOCIONES CERRADAS POR DEFECTO: si la prioridad actual dice que promociones están bloqueadas, está PROHIBIDO mencionar bonos, códigos, 70%, 100%, volumen o retiro por bono aunque aparezcan en el historial o en ejemplos antiguos.
 - El bloque de conocimiento que recibes ya está filtrado por temas relevantes. NO tienes que mencionar todo lo que aparece allí: úsalo como referencia factual, no como checklist.
 - PRINCIPIO DE MISMA CATEGORÍA: si preguntan por un curso, responde sobre cursos; si preguntan por señales, responde sobre las fuentes de señales; si preguntan por bots, responde sobre bots. Solo cruza categorías cuando sea necesario para contestar correctamente o cuando la pregunta sea amplia sobre beneficios/qué incluye.
+- DIFICULTAD PARA VER UN LIVE: si el usuario no puede ver una transmisión por bloqueo de TikTok, país o disponibilidad de la plataforma, responde a esa dificultad. No lo interpretes como una solicitud del software/interfaz ni fuerces información sobre señales o niveles. No inventes plataformas alternativas, enlaces de transmisión ni disponibilidad de grabaciones que no estén confirmados en el contexto.
 - REFERENCIAS A LO QUE SE VE EN LIVE: si el usuario habla del “bot/software/programa/herramienta que muestras o usas en vivo”, resuelve primero esa referencia como la interfaz visual privada del live. NO la conviertas en un bot de Premium/Prestige ni en un beneficio por nivel, salvo que la persona nombre explícitamente CRYPTO IDX 24/7 o el bot de pares de divisas 24/7.
 - Un monto o el nombre “Premium/Prestige/Básico” NO significa automáticamente “dime todos los beneficios”. Si la pregunta es específica, el nivel/monto solo sirve para ubicar la respuesta.
 - MONTO AISLADO ≠ NIVEL: si alguien solo cuenta “subí mi cuenta a 1000”, “mi cuenta llegó a 300”, “he operado con 300” o menciona un saldo pasado/presente sin preguntar por ingreso/nivel/depósito, NO infieras que está registrado conmigo, NO le asignes nivel y NO actives la explicación de 50/200/500. Responde al hecho humano que contó.
