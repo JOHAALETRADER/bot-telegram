@@ -6,7 +6,7 @@ import tempfile
 import shutil
 import subprocess
 from pathlib import Path
-from datetime import datetime, timedelta, time as dt_time, timezone
+from datetime import datetime, timedelta, time as dt_time, timezone, date
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -55,7 +55,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.90-20261002-HIGH-VOLUME-ADS-OCT-BASELINE"
+BOT_VERSION = "v7.10.91-20261003-CLOSE-FIX-HOURLY-STARTS"
+# v7.10.91: corrige cierres BOT para que un fallo de una métrica no borre STARTS/únicos; re-emite una única corrección persistente del cierre 02/10/2026; cambia el reporte agregado de STARTS de 15 min a 1 hora. Conserva intactos los flujos previos.
 # v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
 # v7.10.88: adaptación conservadora a tráfico masivo de Telegram Ads: IA a 150 s, concurrencia controlada, límite de IA simultánea, /start silencioso para admin, reporte acumulado de STARTS cada 15 min y selección de idioma sin spam administrativo. Conserva ADS/tracking, campañas, registro, multi-broker, depósitos, upgrades, VIP, accesos y privacidad.
@@ -208,11 +209,9 @@ except Exception:
     BOT_CONCURRENT_UPDATES = 16
 
 # Reporte agregado de /start. Evita cientos de avisos individuales al ADMIN.
-try:
-    START_REPORT_MINUTES = max(5, min(60, int(os.getenv("START_REPORT_MINUTES", "15"))))
-except Exception:
-    START_REPORT_MINUTES = 15
-START_REPORT_SECONDS = START_REPORT_MINUTES * 60
+# v7.10.91: corte fijo cada 1 hora para reducir ruido administrativo.
+START_REPORT_MINUTES = 60
+START_REPORT_SECONDS = 60 * 60
 
 # === PUENTE DE TRACKING (servicio independiente) ===
 # Si alguna variable falta o el servicio externo falla, el bot principal continúa
@@ -4132,9 +4131,9 @@ async def start_volume_report_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
-                f"📊 STARTS BOT · CORTE {START_REPORT_MINUTES} MIN\n\n"
-                f"🔥 Últimos {START_REPORT_MINUTES} min: {recent_starts}\n"
-                f"👥 Usuarios únicos en el corte: {recent_unique}\n"
+                "📊 STARTS BOT · CORTE 1 HORA\n\n"
+                f"🔥 Última hora: {recent_starts}\n"
+                f"👥 Usuarios únicos en la hora: {recent_unique}\n"
                 f"📈 Total acumulado desde activación del contador: {total_starts}"
             ),
         )
@@ -4158,14 +4157,14 @@ def schedule_start_volume_report(application):
         name="START_VOLUME_REPORT",
     )
     logging.info(
-        "📊 Reporte de STARTS programado cada %s min; avisos individuales desactivados.",
-        START_REPORT_MINUTES,
+        "📊 Reporte de STARTS programado cada 1 hora; avisos individuales desactivados."
     )
 
 
 # === CIERRES BOT INDEPENDIENTES (NO MEZCLAR CON REPORTE ADS 18:58) ===
 BOT_CLOSE_FEATURE_EVENT = "BOT_CLOSE_FEATURE_STARTED"
 BOT_CLOSE_SENT_EVENT = "BOT_CLOSE_REPORT_SENT"
+BOT_CLOSE_CORRECTION_EVENT = "BOT_CLOSE_CORRECTION_SENT"
 
 # Ajuste histórico confirmado manualmente por Johanna antes del deploy del contador.
 # Regla dura: SOLO pertenece al 02/10/2026. Al no caer dentro de otros periodos,
@@ -4226,7 +4225,15 @@ def _colombia_date_range_utc(start_date, end_date_exclusive):
 
 
 def _bot_period_metrics(start_utc: datetime, end_utc: datetime):
-    """Métricas operativas del bot para un rango cerrado; no depende de Meta/ADS externo."""
+    """Métricas operativas del bot para un rango cerrado; cada métrica falla de forma aislada.
+
+    Importante: un error en `usuarios.fecha_registro` NO puede volver a poner en cero
+    los STARTS ya contados en `bot_events`.
+    """
+    total_starts = 0
+    unique_starts = 0
+    new_users = 0
+
     try:
         with Session() as session:
             total_starts = int(
@@ -4238,6 +4245,11 @@ def _bot_period_metrics(start_utc: datetime, end_utc: datetime):
                 )
                 .scalar() or 0
             )
+    except Exception as e:
+        logging.warning("No pude calcular total STARTS del cierre BOT: %s", e)
+
+    try:
+        with Session() as session:
             unique_starts = int(
                 session.query(func.count(func.distinct(BotEvent.telegram_id)))
                 .filter(
@@ -4247,6 +4259,11 @@ def _bot_period_metrics(start_utc: datetime, end_utc: datetime):
                 )
                 .scalar() or 0
             )
+    except Exception as e:
+        logging.warning("No pude calcular usuarios únicos con START del cierre BOT: %s", e)
+
+    try:
+        with Session() as session:
             new_users = int(
                 session.query(func.count(Usuario.id))
                 .filter(
@@ -4256,8 +4273,8 @@ def _bot_period_metrics(start_utc: datetime, end_utc: datetime):
                 .scalar() or 0
             )
     except Exception as e:
-        logging.warning("No pude calcular STARTS/usuarios del cierre BOT: %s", e)
-        total_starts = unique_starts = new_users = 0
+        # Esta métrica es informativa; jamás debe invalidar STARTS/únicos.
+        logging.warning("No pude calcular usuarios nuevos del cierre BOT: %s", e)
 
     writers = len(_event_user_ids("MESSAGE", start_utc, end_utc))
     registrations = len(_event_user_ids("REGISTRATION_ENTRY_START", start_utc, end_utc))
@@ -4435,6 +4452,100 @@ async def _send_bot_close_report(context_or_application, kind: str, start_date, 
             return False
 
     _log_event(ADMIN_ID, BOT_CLOSE_SENT_EVENT, _bot_close_marker(kind, start_date, end_date_exclusive))
+    return True
+
+
+def _bot_close_correction_marker(start_date, end_date_exclusive) -> str:
+    return f"DAILY_CORRECTED:{start_date.isoformat()}:{end_date_exclusive.isoformat()}"
+
+
+def _bot_close_correction_already_sent(start_date, end_date_exclusive) -> bool:
+    marker = _bot_close_correction_marker(start_date, end_date_exclusive)
+    try:
+        with Session() as session:
+            row = (
+                session.query(BotEvent.id)
+                .filter(
+                    BotEvent.telegram_id == str(ADMIN_ID),
+                    BotEvent.event_type == BOT_CLOSE_CORRECTION_EVENT,
+                    BotEvent.detail == marker,
+                )
+                .first()
+            )
+        return bool(row)
+    except Exception as e:
+        logging.warning("No pude verificar corrección de cierre %s: %s", marker, e)
+        return False
+
+
+async def send_oct2_2026_corrected_close_if_needed(application):
+    """Re-emite una sola vez el cierre correcto del 02/10/2026 tras el bug de v7.10.90."""
+    start_date = date(2026, 10, 2)
+    end_date = date(2026, 10, 3)
+
+    # Nunca corregir antes de que el día esté completamente cerrado en Colombia.
+    if datetime.now(COLOMBIA_TZ).date() < end_date:
+        return False
+    if _bot_close_correction_already_sent(start_date, end_date):
+        return False
+
+    # Solo reemitimos como CORREGIDO si el cierre diario original realmente quedó
+    # marcado como enviado. Si no existe esa marca, la recuperación normal enviará
+    # el cierre correcto una sola vez y evitamos duplicados.
+    if not _bot_close_already_sent("daily", start_date, end_date):
+        return False
+
+    start_utc, end_utc = _colombia_date_range_utc(start_date, end_date)
+    if not _bot_close_period_has_coverage(start_utc, end_utc):
+        return False
+
+    metrics = _bot_period_metrics(start_utc, end_utc)
+    historical = _bot_historical_start_adjustment(start_date, end_date)
+    metrics["total_starts"] += historical
+
+    text_value = (
+        "♻️ CIERRE BOT · DIARIO — CORREGIDO\n"
+        "📅 Periodo: 02/10/2026\n"
+        "ℹ️ Este reporte reemplaza el cierre anterior que mostró únicamente el histórico previo al contador.\n\n"
+        f"🚀 STARTS totales: {metrics['total_starts']}\n"
+        f"👥 Usuarios únicos con START medidos: {metrics['unique_starts']}\n"
+        f"🆕 Usuarios nuevos creados en el bot: {metrics['new_users']}\n"
+        f"✍️ Usuarios que escribieron: {metrics['writers']}\n"
+        f"📝 Iniciaron registro: {metrics['registrations']}\n"
+        f"🆔 Enviaron ID: {metrics['ids_sent']}\n"
+        f"✅ ID validados: {metrics['ids_validated']}\n"
+        f"💳 Reportaron depósito: {metrics['deposits_reported']}\n"
+        f"🟢 Cuentas activadas: {metrics['activated']}\n\n"
+        f"ℹ️ El total de STARTS incluye el ajuste histórico confirmado de {historical} STARTS "
+        "previos a la activación del contador del 02/10/2026."
+    )
+
+    target_chat_id = REPORT_CHAT_ID if REPORT_CHAT_ID else ADMIN_ID
+    try:
+        await application.bot.send_message(chat_id=target_chat_id, text=text_value)
+    except Exception as e:
+        logging.warning("No pude enviar corrección del cierre 02/10/2026 a %s: %s", target_chat_id, e)
+        if target_chat_id != ADMIN_ID:
+            try:
+                await application.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "⚠️ No pude publicar la corrección del cierre en JOHAALETRADER · ADS REPORTS. "
+                        "Te la envío aquí como respaldo.\n\n" + text_value
+                    ),
+                )
+            except Exception as fallback_error:
+                logging.warning("Tampoco pude enviar respaldo de la corrección 02/10/2026: %s", fallback_error)
+                return False
+        else:
+            return False
+
+    _log_event(
+        ADMIN_ID,
+        BOT_CLOSE_CORRECTION_EVENT,
+        _bot_close_correction_marker(start_date, end_date),
+    )
+    logging.info("✅ Corrección única del cierre BOT 02/10/2026 enviada.")
     return True
 
 
@@ -14866,6 +14977,9 @@ async def post_init_app(application):
     schedule_daily_report(application)
     schedule_start_volume_report(application)
     _ensure_bot_close_feature_marker()
+    # Primero repara, si corresponde, el cierre incorrecto ya enviado del 02/10.
+    # Después recupera cualquier cierre realmente faltante.
+    await send_oct2_2026_corrected_close_if_needed(application)
     await recover_missed_bot_close_reports(application)
     schedule_bot_close_reports(application)
     schedule_promo_expiry_reminder(application)
