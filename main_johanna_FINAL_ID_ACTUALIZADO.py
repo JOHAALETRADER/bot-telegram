@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.93-20261005-ADMIN-REVIEW-CLEAR-FIX"
+BOT_VERSION = "v7.10.95-20261005-LIVE-DELIVERY-SPEED"
 # v7.10.91: corrige cierres BOT para que un fallo de una métrica no borre STARTS/únicos; re-emite una única corrección persistente del cierre 02/10/2026; cambia el reporte agregado de STARTS de 15 min a 1 hora. Conserva intactos los flujos previos.
 # v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
@@ -5739,65 +5739,101 @@ def _admin_review_bind(context, query):
         _ADMIN_REVIEW_TARGET.set(context.user_data["admin_review_target"])
 
 
-def _admin_review_pending(kind):
-    """Lee pendientes operativos; no incluye PRE que nunca enviaron ID."""
-    found = {}
+def _admin_review_legacy_stamp(history):
+    """Solo recupera anuncios automáticos explícitos del flujo antiguo, nunca respuestas IA."""
     try:
+        items = json.loads(history or "[]")
+        stamps = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("role") != "assistant" or item.get("source") != "auto":
+                continue
+            content = item.get("content", "")
+            if not ("Recibido. Estoy validando tu depósito ahora mismo." in content or "Received. I’m validating your deposit now." in content):
+                continue
+            stamp = datetime.fromisoformat(str(item.get("ts") or "").replace("Z", "+00:00"))
+            if stamp.tzinfo:
+                stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
+            stamps.append(stamp)
+        return max(stamps) if stamps else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _admin_review_pending(kind):
+    """Cola operativa; recupera anuncios antiguos sin alterar depósitos ni tracking."""
+    found = set()
+    with Session() as session:
+        if kind == "ID":
+            for row in session.query(BrokerAccountState).filter(BrokerAccountState.pending_trading_id.isnot(None), BrokerAccountState.pending_trading_id != "").all():
+                cid = int(row.telegram_id)
+                if cid != ADMIN_ID and _is_private_user_id(cid):
+                    found.add(cid)
+            for row in session.query(Usuario).filter(Usuario.stage == STAGE_PRE, Usuario.binomo_id.isnot(None), Usuario.binomo_id != "").all():
+                cid = int(row.telegram_id)
+                if cid != ADMIN_ID and _is_private_user_id(cid) and not _strict_validated_id_state(cid):
+                    found.add(cid)
+        else:
+            # La BD devuelve un evento por usuario; no cargamos todo el histórico.
+            latest = session.query(func.max(BotEvent.id).label("last_id")).filter(BotEvent.event_type.in_(["DEPOSIT_REPORTED", "DEPOSIT_VALIDATED"])).group_by(BotEvent.telegram_id).subquery()
+            events = session.query(BotEvent.telegram_id, BotEvent.event_type, BotEvent.created_at).join(latest, BotEvent.id == latest.c.last_id).all()
+            last_events = {}
+            for uid, event, stamp in events:
+                cid = int(uid)
+                last_events[cid] = (event, stamp)
+                if event == "DEPOSIT_REPORTED" and cid != ADMIN_ID and _is_private_user_id(cid):
+                    found.add(cid)
+            old_users = session.query(Usuario.telegram_id, Usuario.ai_history).filter(Usuario.telegram_id != str(ADMIN_ID), or_(Usuario.ai_history.contains("validando tu dep"), Usuario.ai_history.contains("validating your deposit now"))).all()
+            for uid, history in old_users:
+                cid = int(uid)
+                if not _is_private_user_id(cid):
+                    continue
+                old_stamp = _admin_review_legacy_stamp(history)
+                if not old_stamp:
+                    continue
+                previous = last_events.get(cid)
+                if not previous or (previous[0] != "DEPOSIT_VALIDATED" or not previous[1] or old_stamp > previous[1]):
+                    found.add(cid)
+    return sorted(found)
+
+
+def _admin_review_queue_data(kind):
+    ids = _admin_review_pending(kind)
+    names = {}
+    if ids:
         with Session() as session:
-            if kind == "ID":
-                for row in session.query(BrokerAccountState).filter(BrokerAccountState.pending_trading_id.isnot(None), BrokerAccountState.pending_trading_id != "").all():
-                    cid = int(row.telegram_id)
-                    if cid != ADMIN_ID and _is_private_user_id(cid):
-                        found[cid] = True
-                # Compatibilidad con IDs anteriores al flujo multi-broker.
-                for row in session.query(Usuario).filter(Usuario.stage == STAGE_PRE, Usuario.binomo_id.isnot(None), Usuario.binomo_id != "").all():
-                    cid = int(row.telegram_id)
-                    if cid != ADMIN_ID and _is_private_user_id(cid) and not _strict_validated_id_state(cid):
-                        found[cid] = True
-            else:
-                seen = set()
-                events = session.query(BotEvent.telegram_id, BotEvent.event_type).filter(BotEvent.event_type.in_(["DEPOSIT_REPORTED", "DEPOSIT_VALIDATED"])).order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).all()
-                for uid, event in events:
-                    cid = int(uid)
-                    if cid in seen:
-                        continue
-                    seen.add(cid)
-                    if event == "DEPOSIT_REPORTED" and cid != ADMIN_ID and _is_private_user_id(cid):
-                        found[cid] = True
-        return sorted(found)
-    except Exception as e:
-        logging.warning("No pude leer cola de revisión: %s", e)
-        return []
+            for uid, name in session.query(Usuario.telegram_id, Usuario.nombre).filter(Usuario.telegram_id.in_([str(cid) for cid in ids])).all():
+                names[int(uid)] = name
+    return ids, names
 
 
 async def _admin_review_queue(context, kind="ID", page=0):
     context.user_data["admin_review_kind"] = kind
-    ids = _admin_review_pending(kind)
-    page = max(0, min(int(page), max(0, (len(ids) - 1) // 15)))
-    rows = []
-    for cid in ids[page * 15:(page + 1) * 15]:
-        try:
-            with Session() as session:
-                user = session.query(Usuario.nombre).filter(Usuario.telegram_id == str(cid)).first()
-            name = user[0] if user else str(cid)
-        except Exception:
-            name = str(cid)
-        label = f"{str(name or 'Usuario')[:24]} · {cid}"
-        rows.append([InlineKeyboardButton(label, callback_data=f"admin_review_open:{kind}:{cid}")])
-    nav = []
-    if page:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"admin_review_queue:{kind}:{page-1}"))
-    if (page+1)*15 < len(ids):
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"admin_review_queue:{kind}:{page+1}"))
-    if nav:
-        rows.append(nav)
-    rows.extend([
+    switches = [
         [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
         [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")],
-        [InlineKeyboardButton("🔎 BUSCAR USUARIO / DEPÓSITO ANTIGUO", callback_data="admin_user_search")],
-    ])
-    label = "IDs por validar" if kind == "ID" else "Depósitos por confirmar"
-    await _admin_review_render(context, f"📋 REVISIÓN DE PENDIENTES\n\n{label}: {len(ids)}\nPágina {page+1}\nSelecciona un usuario. Las confirmaciones se actualizan en esta misma tarjeta.", reply_markup=InlineKeyboardMarkup(rows))
+    ]
+    try:
+        ids, names = await asyncio.to_thread(_admin_review_queue_data, kind)
+        page = max(0, min(int(page), max(0, (len(ids) - 1) // 15)))
+        rows = []
+        for cid in ids[page * 15:(page + 1) * 15]:
+            label = f"{str(names.get(cid) or 'Usuario')[:28]} · {cid}"
+            rows.append([InlineKeyboardButton(label, callback_data=f"admin_review_open:{kind}:{cid}")])
+        nav = []
+        if page:
+            nav.append(InlineKeyboardButton("⬅️", callback_data=f"admin_review_queue:{kind}:{page-1}"))
+        if (page+1)*15 < len(ids):
+            nav.append(InlineKeyboardButton("➡️", callback_data=f"admin_review_queue:{kind}:{page+1}"))
+        if nav:
+            rows.append(nav)
+        rows.extend(switches)
+        label = "IDs por validar" if kind == "ID" else "Depósitos por confirmar"
+        instruction = "Toca el nombre para abrir su ficha y revisar. No necesitas escribir ni copiar su ID." if ids else "No hay pendientes registrados en esta lista."
+        await _admin_review_render(context, f"📋 {label.upper()}\n\nPendientes: {len(ids)} · Página {page+1}\n\n{instruction}", reply_markup=InlineKeyboardMarkup(rows))
+    except Exception:
+        logging.exception("Error abriendo cola administrativa %s", kind)
+        await _admin_review_render(context, "⚠️ No pude cargar los pendientes. No se confirmó ningún depósito. Pulsa la lista para reintentar.", reply_markup=InlineKeyboardMarkup(switches))
+
 
 
 def _admin_review_proof_info(chat_id):
@@ -5943,6 +5979,8 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
         f"{'✅ ID VALIDADO' if _strict_validated_id_state(chat_id) else '⏳ ID NO VALIDADO'}\n"
         f"ID de trading: {trading}{vip_extra}"
     )
+    if context.user_data.get("admin_review_kind") == "DEP" and not _admin_review_proof_info(chat_id).get("file_id"):
+        text_value += "\n\n📷 No hay foto guardada para abrir desde esta ficha. No se recuperó ni se asignó una imagen de otro usuario. Confirma solo el monto que verificaste en el comprobante original."
     await _admin_review_render(context, 
         chat_id=ADMIN_ID,
         text=text_value,
@@ -6646,7 +6684,10 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     if not query:
         return
-    await query.answer()
+    try:
+        await query.answer("Abriendo pendientes…" if (query.data or "").startswith("admin_review_queue:") else None)
+    except Exception as e:
+        logging.warning("No pude responder aviso del botón administrativo: %s", e)
     if query.from_user.id != ADMIN_ID:
         return
     _admin_review_bind(context, query)
@@ -14721,6 +14762,69 @@ async def _send_live_to_private_user(context, chat_id: int, lang: str, photo_fil
         )
 
 
+# LIVE: concurrencia limitada y ritmo compartido entre difusiones.
+# Dejamos margen para los mensajes normales del bot bajo el límite de Telegram.
+_LIVE_SEND_GATE_LOCK = asyncio.Lock()
+_LIVE_SEND_NEXT = 0.0
+_LIVE_SEND_PAUSE_UNTIL = 0.0
+
+
+async def _live_wait_send_slot():
+    global _LIVE_SEND_NEXT
+    loop = asyncio.get_running_loop()
+    async with _LIVE_SEND_GATE_LOCK:
+        while True:
+            delay = max(_LIVE_SEND_NEXT, _LIVE_SEND_PAUSE_UNTIL) - loop.time()
+            if delay <= 0:
+                _LIVE_SEND_NEXT = loop.time() + 0.05  # máximo 20 intentos/s
+                return
+            await asyncio.sleep(min(delay, 1.0))
+
+
+def _live_pause_delivery(retry_after):
+    global _LIVE_SEND_PAUSE_UNTIL
+    seconds = retry_after.total_seconds() if isinstance(retry_after, timedelta) else float(retry_after)
+    _LIVE_SEND_PAUSE_UNTIL = max(_LIVE_SEND_PAUSE_UNTIL, asyncio.get_running_loop().time() + seconds + 1.0)
+
+
+async def _deliver_live_private_recipients(context, recipients, photo_file_id=None):
+    """Seis trabajadores; solo reintenta rechazos explícitos por límite (429)."""
+    pending = iter(recipients)
+    sent = 0
+    failed = 0
+
+    async def worker():
+        nonlocal sent, failed
+        for chat_id, lang, _stage in pending:
+            for attempt in range(3):
+                await _live_wait_send_slot()
+                try:
+                    await _send_live_to_private_user(context, chat_id, lang, photo_file_id)
+                    sent += 1
+                    break
+                except Exception as e:
+                    if _is_blocked_user_error(e):
+                        try:
+                            _cleanup_blocked_user_tasks(context, chat_id, source="live_broadcast")
+                        except Exception:
+                            logging.exception("No pude limpiar tareas de usuario bloqueado %s", chat_id)
+                        failed += 1
+                        logging.info("Aviso LIVE no entregado a %s: usuario bloqueó el bot", chat_id)
+                        break
+                    retry_after = getattr(e, "retry_after", None)
+                    if retry_after is not None:
+                        _live_pause_delivery(retry_after)
+                        if attempt < 2:
+                            continue
+                    # No repetimos timeouts: Telegram podría haber aceptado el envío.
+                    failed += 1
+                    logging.info("Aviso LIVE no entregado a %s: %s", chat_id, e)
+                    break
+
+    await asyncio.gather(*(worker() for _ in range(min(6, len(recipients)))))
+    return sent, failed
+
+
 async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -14767,37 +14871,9 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
         f"⏳ Enviando LIVE a {len(recipients)} usuarios...",
     )
 
-    sent = 0
-    failed = 0
-    for chat_id, lang, _stage in recipients:
-        try:
-            await _send_live_to_private_user(context, chat_id, lang, photo_file_id)
-            sent += 1
-        except Exception as e:
-            if _is_blocked_user_error(e):
-                _cleanup_blocked_user_tasks(context, chat_id, source="live_broadcast")
-                failed += 1
-                logging.info("Aviso LIVE no entregado a %s: usuario bloqueó el bot", chat_id)
-                await asyncio.sleep(0.06)
-                continue
-
-            retry_after = getattr(e, "retry_after", None)
-            if retry_after:
-                try:
-                    await asyncio.sleep(float(retry_after) + 1)
-                    await _send_live_to_private_user(context, chat_id, lang, photo_file_id)
-                    sent += 1
-                    continue
-                except Exception as retry_error:
-                    if _is_blocked_user_error(retry_error):
-                        _cleanup_blocked_user_tasks(context, chat_id, source="live_broadcast_retry")
-                        failed += 1
-                        logging.info("Aviso LIVE no entregado a %s: usuario bloqueó el bot", chat_id)
-                        await asyncio.sleep(0.06)
-                        continue
-            failed += 1
-            logging.info("Aviso LIVE no entregado a %s: %s", chat_id, e)
-        await asyncio.sleep(0.06)
+    delivery_started = asyncio.get_running_loop().time()
+    sent, failed = await _deliver_live_private_recipients(context, recipients, photo_file_id)
+    delivery_seconds = int(asyncio.get_running_loop().time() - delivery_started)
 
     channel_results = await _send_live_to_channels(context, photo_file_id=photo_file_id)
 
@@ -14836,6 +14912,7 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
             "✅ Aviso LIVE finalizado.\n\n"
             f"👥 Usuarios enviados: {sent}\n"
             f"🚫 No entregados: {failed}\n"
+            f"⏱ Entrega a usuarios: {delivery_seconds // 60} min {delivery_seconds % 60} s\n"
             f"📅 Ventana usada: últimos {LIVE_BROADCAST_DAYS} días\n"
             f"📢 Informativo: {'✅' if channel_results.get('info') else '❌'}\n"
             + vip_line
