@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.92-20261005-ADMIN-REVIEW-PENDING-FIX"
+BOT_VERSION = "v7.10.93-20261005-ADMIN-REVIEW-CLEAR-FIX"
 # v7.10.91: corrige cierres BOT para que un fallo de una métrica no borre STARTS/únicos; re-emite una única corrección persistente del cierre 02/10/2026; cambia el reporte agregado de STARTS de 15 min a 1 hora. Conserva intactos los flujos previos.
 # v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
@@ -5638,7 +5638,8 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📊 /reporte — Reporte del día", callback_data="admin_panel_report")],
         [InlineKeyboardButton("🎟 CÓDIGOS PROMO", callback_data="admin_panel_promos")],
         [InlineKeyboardButton("👤 GESTIONAR USUARIO", callback_data="admin_panel_users")],
-        [InlineKeyboardButton("📋 REVISAR PENDIENTES", callback_data="admin_review_queue:ID:0")],
+        [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
+        [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")],
         [InlineKeyboardButton("🏠 /start — Inicio", callback_data="admin_panel_start")],
     ])
 
@@ -5704,7 +5705,7 @@ def _admin_user_list_keyboard(rows, page: int = 0, total_count: int | None = Non
         [InlineKeyboardButton("🔎 BUSCAR USUARIO", callback_data="admin_user_search")],
         [InlineKeyboardButton("↩️ VOLVER AL PANEL", callback_data="admin_user_panel")],
     ])
-    buttons.append([InlineKeyboardButton("📋 REVISAR PENDIENTES", callback_data="admin_review_queue:ID:0")])
+    buttons.extend([[InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")], [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")]])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -5713,10 +5714,8 @@ _ADMIN_REVIEW_TARGET = ContextVar("admin_review_target", default=None)
 
 async def _admin_review_render(context, text, reply_markup=None, chat_id=ADMIN_ID, **kwargs):
     target = _ADMIN_REVIEW_TARGET.get()
-    if target and int(chat_id) == ADMIN_ID:
+    if target and not target.get("media") and int(chat_id) == ADMIN_ID:
         try:
-            if target.get("media"):
-                return await context.bot.edit_message_caption(chat_id=ADMIN_ID, message_id=target["message_id"], caption=text[:1024], reply_markup=reply_markup)
             return await context.bot.edit_message_text(chat_id=ADMIN_ID, message_id=target["message_id"], text=text, reply_markup=reply_markup, **kwargs)
         except Exception as e:
             if "not modified" in str(e).lower():
@@ -5748,12 +5747,12 @@ def _admin_review_pending(kind):
             if kind == "ID":
                 for row in session.query(BrokerAccountState).filter(BrokerAccountState.pending_trading_id.isnot(None), BrokerAccountState.pending_trading_id != "").all():
                     cid = int(row.telegram_id)
-                    if _is_private_user_id(cid):
+                    if cid != ADMIN_ID and _is_private_user_id(cid):
                         found[cid] = True
                 # Compatibilidad con IDs anteriores al flujo multi-broker.
                 for row in session.query(Usuario).filter(Usuario.stage == STAGE_PRE, Usuario.binomo_id.isnot(None), Usuario.binomo_id != "").all():
                     cid = int(row.telegram_id)
-                    if _is_private_user_id(cid) and not _strict_validated_id_state(cid):
+                    if cid != ADMIN_ID and _is_private_user_id(cid) and not _strict_validated_id_state(cid):
                         found[cid] = True
             else:
                 seen = set()
@@ -5763,7 +5762,7 @@ def _admin_review_pending(kind):
                     if cid in seen:
                         continue
                     seen.add(cid)
-                    if event == "DEPOSIT_REPORTED" and _is_private_user_id(cid):
+                    if event == "DEPOSIT_REPORTED" and cid != ADMIN_ID and _is_private_user_id(cid):
                         found[cid] = True
         return sorted(found)
     except Exception as e:
@@ -5783,7 +5782,7 @@ async def _admin_review_queue(context, kind="ID", page=0):
             name = user[0] if user else str(cid)
         except Exception:
             name = str(cid)
-        label = str(name or cid)[:30]
+        label = f"{str(name or 'Usuario')[:24]} · {cid}"
         rows.append([InlineKeyboardButton(label, callback_data=f"admin_review_open:{kind}:{cid}")])
     nav = []
     if page:
@@ -5793,12 +5792,25 @@ async def _admin_review_queue(context, kind="ID", page=0):
     if nav:
         rows.append(nav)
     rows.extend([
-        [InlineKeyboardButton("🆔 IDs PENDIENTES", callback_data="admin_review_queue:ID:0")],
-        [InlineKeyboardButton("💰 DEPÓSITOS PENDIENTES", callback_data="admin_review_queue:DEP:0")],
-        [InlineKeyboardButton("👥 GESTIONAR USUARIOS", callback_data="admin_user_list")],
+        [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
+        [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")],
+        [InlineKeyboardButton("🔎 BUSCAR USUARIO / DEPÓSITO ANTIGUO", callback_data="admin_user_search")],
     ])
-    label = "IDs por validar" if kind == "ID" else "Depósitos por revisar"
+    label = "IDs por validar" if kind == "ID" else "Depósitos por confirmar"
     await _admin_review_render(context, f"📋 REVISIÓN DE PENDIENTES\n\n{label}: {len(ids)}\nPágina {page+1}\nSelecciona un usuario. Las confirmaciones se actualizan en esta misma tarjeta.", reply_markup=InlineKeyboardMarkup(rows))
+
+
+def _admin_review_proof_info(chat_id):
+    try:
+        with Session() as session:
+            reported = session.query(BotEvent.created_at).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type == "DEPOSIT_REPORTED").order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).first()
+            photo = None
+            if reported:
+                photo = session.query(BotEvent.detail).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type == "DEPOSIT_REVIEW_PROOF", BotEvent.created_at <= reported[0], BotEvent.created_at >= reported[0] - timedelta(seconds=10)).order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).first()
+        return json.loads(photo[0]) if photo else {}
+    except Exception as e:
+        logging.warning("No pude leer comprobante de %s: %s", chat_id, e)
+        return {}
 
 
 def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
@@ -5807,8 +5819,6 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     buttons = []
     validated_brokers = [r for r in _broker_rows(chat_id, validated_only=True) if str(r.get("trading_id") or "").strip()]
     has_validated_id = bool(validated_brokers) or (stage in (STAGE_POST, STAGE_DEPOSITED) and bool((_get_saved_trading_id(chat_id) or "").strip()))
-    if has_validated_id:
-        buttons.append([InlineKeyboardButton("🆔 VER ID VALIDADO", callback_data=f"admin_user_ids:{chat_id}")])
     pending_brokers = [row for row in _broker_rows(chat_id) if row.get("pending_trading_id")]
     for row in pending_brokers:
         broker = row["broker"]
@@ -5820,18 +5830,17 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
             buttons.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
             buttons.append([InlineKeyboardButton("❌ ID ERRADO", callback_data=f"admin_user_reject:{chat_id}")])
     elif stage == STAGE_POST:
-        buttons.append([InlineKeyboardButton("💰 REVISAR DEPÓSITO", callback_data=f"admin_user_deposit:{chat_id}")])
+        buttons.append([InlineKeyboardButton("💰 CONFIRMAR DEPÓSITO", callback_data=f"admin_user_deposit:{chat_id}")])
     elif stage == STAGE_DEPOSITED:
         active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
         if active_level != VIP_LEVEL_PRESTIGE:
-            buttons.append([InlineKeyboardButton("💰 REVISAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
-    buttons.append([InlineKeyboardButton("📷 VER COMPROBANTE", callback_data=f"admin_review_proof:{chat_id}")])
-    buttons.append([InlineKeyboardButton("➡️ SIGUIENTE PENDIENTE", callback_data=f"admin_review_next:{chat_id}")])
+            buttons.append([InlineKeyboardButton("💰 CONFIRMAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
+    if _admin_review_proof_info(chat_id).get("file_id"):
+        buttons.append([InlineKeyboardButton("📷 VER COMPROBANTE", callback_data=f"admin_review_proof:{chat_id}")])
     buttons.extend([
-        [InlineKeyboardButton("🔎 BUSCAR OTRO", callback_data="admin_user_search")],
-        [InlineKeyboardButton("👥 PENDIENTES RECIENTES", callback_data="admin_user_list")],
+        [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
+        [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")],
     ])
-    buttons.append([InlineKeyboardButton("📋 REVISAR PENDIENTES", callback_data="admin_review_queue:ID:0")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -5931,6 +5940,7 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
         f"👤 {record['nombre']}\n"
         f"Telegram ID: {record['chat_id']}\n"
         f"Estado: {stage_label}\n"
+        f"{'✅ ID VALIDADO' if _strict_validated_id_state(chat_id) else '⏳ ID NO VALIDADO'}\n"
         f"ID de trading: {trading}{vip_extra}"
     )
     await _admin_review_render(context, 
@@ -6539,6 +6549,8 @@ async def _start_admin_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
             f"Ventana acumulable: {window}\n\n"
             "Escribe el monto NUEVO que acabas de confirmar en USD."
         )
+    record = _admin_user_record(chat_id) or {}
+    review_text = (f"👤 {record.get('nombre', str(chat_id))}\nTelegram ID: {chat_id}\n✅ ID VALIDADO: {state.get('trading_id') or '—'}\n\n" + review_text)
     await _admin_review_render(context, 
         chat_id=ADMIN_ID,
         text=review_text,
@@ -6657,21 +6669,17 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     if proof_match:
         cid = int(proof_match.group(1))
         try:
-            with Session() as session:
-                reported = session.query(BotEvent.created_at).filter(BotEvent.telegram_id == str(cid), BotEvent.event_type == "DEPOSIT_REPORTED").order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).first()
-                photo = None
-                if reported:
-                    photo = session.query(BotEvent.detail).filter(BotEvent.telegram_id == str(cid), BotEvent.event_type == "DEPOSIT_REVIEW_PROOF", BotEvent.created_at <= reported[0], BotEvent.created_at >= reported[0] - timedelta(seconds=10)).order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).first()
-            info = json.loads(photo[0]) if photo else {}
+            info = _admin_review_proof_info(cid)
             if not info.get("file_id"):
                 await _show_admin_user(context, cid, "📷 No hay un comprobante guardado para mostrar. Consulta la foto original; no se validó ningún depósito.")
                 return
-            await context.bot.edit_message_media(
-                chat_id=ADMIN_ID, message_id=query.message.message_id,
-                media=InputMediaPhoto(media=info["file_id"], caption=f"📷 COMPROBANTE · Usuario ID: {cid}\nRevisa visualmente el monto y el broker antes de confirmar."),
-                reply_markup=_admin_user_actions_keyboard(cid),
+            record = _admin_user_record(cid)
+            name = record["nombre"] if record else str(cid)
+            await context.bot.send_photo(
+                chat_id=ADMIN_ID, photo=info["file_id"],
+                caption=f"📷 COMPROBANTE · {name}\nTelegram ID: {cid}\nRevisa el monto y el broker antes de confirmar.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 ABRIR FICHA DE ESTE USUARIO", callback_data=f"admin_user_open:{cid}")]]),
             )
-            context.user_data["admin_review_target"]["media"] = True
         except Exception as e:
             logging.warning("No pude mostrar comprobante guardado %s: %s", cid, e)
             await _show_admin_user(context, cid, "⚠️ No pude abrir el comprobante. Consulta la foto original; el depósito sigue sin confirmar.")
