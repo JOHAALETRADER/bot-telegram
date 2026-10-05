@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.95-20261005-LIVE-DELIVERY-SPEED"
+BOT_VERSION = "v7.10.96-20261005-LIVE-OPTOUT-DEPOSIT-PROOF"
 # v7.10.91: corrige cierres BOT para que un fallo de una métrica no borre STARTS/únicos; re-emite una única corrección persistente del cierre 02/10/2026; cambia el reporte agregado de STARTS de 15 min a 1 hora. Conserva intactos los flujos previos.
 # v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
@@ -5837,16 +5837,51 @@ async def _admin_review_queue(context, kind="ID", page=0):
 
 
 def _admin_review_proof_info(chat_id):
+    """El comprobante pertenece al usuario y al ciclo de depósito sin confirmar."""
     try:
         with Session() as session:
-            reported = session.query(BotEvent.created_at).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type == "DEPOSIT_REPORTED").order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).first()
-            photo = None
-            if reported:
-                photo = session.query(BotEvent.detail).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type == "DEPOSIT_REVIEW_PROOF", BotEvent.created_at <= reported[0], BotEvent.created_at >= reported[0] - timedelta(seconds=10)).order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).first()
-        return json.loads(photo[0]) if photo else {}
+            reported = session.query(BotEvent).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type == "DEPOSIT_REPORTED").order_by(BotEvent.id.desc()).first()
+            validated = session.query(BotEvent).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type == "DEPOSIT_VALIDATED").order_by(BotEvent.id.desc()).first()
+            if not reported or (validated and validated.id >= reported.id):
+                return {}
+            query = session.query(BotEvent.detail).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type == "DEPOSIT_REVIEW_PROOF", BotEvent.id <= reported.id)
+            if validated:
+                query = query.filter(BotEvent.id > validated.id)
+            photo = query.order_by(BotEvent.id.desc()).first()
+        info = json.loads(photo[0]) if photo else {}
+        return info if isinstance(info, dict) else {}
     except Exception as e:
         logging.warning("No pude leer comprobante de %s: %s", chat_id, e)
         return {}
+
+
+async def _admin_review_show_proof(context, chat_id):
+    info = _admin_review_proof_info(chat_id)
+    if not info.get("file_id"):
+        return False
+    record = _admin_user_record(chat_id)
+    if not record:
+        return False
+    caption = (f"📷 COMPROBANTE · {record['nombre']}\nTelegram ID: {chat_id}\n"
+               f"{'✅ ID VALIDADO' if _strict_validated_id_state(chat_id) else '⏳ ID NO VALIDADO'}\n"
+               f"ID de trading: {record.get('trading_id') or '—'}\n\n"
+               f"{_broker_account_summary(chat_id)}\n\nRevisa la imagen, el monto y el broker antes de confirmar.")
+    keyboard = _admin_user_actions_keyboard(chat_id)
+    rows = [[button for button in row if not (button.callback_data or "").startswith("admin_review_proof:")] for row in keyboard.inline_keyboard]
+    try:
+        await context.bot.send_photo(chat_id=ADMIN_ID, photo=info["file_id"], caption=caption[:1024], reply_markup=InlineKeyboardMarkup([row for row in rows if row]))
+        return True
+    except Exception:
+        logging.exception("No pude abrir comprobante del usuario %s", chat_id)
+        return False
+
+
+
+def _admin_review_completed_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
+        [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")],
+    ])
 
 
 def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
@@ -5873,6 +5908,8 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
             buttons.append([InlineKeyboardButton("💰 CONFIRMAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
     if _admin_review_proof_info(chat_id).get("file_id"):
         buttons.append([InlineKeyboardButton("📷 VER COMPROBANTE", callback_data=f"admin_review_proof:{chat_id}")])
+    elif has_validated_id:
+        buttons.append([InlineKeyboardButton("📩 SOLICITAR COMPROBANTE", callback_data=f"admin_review_request_proof:{chat_id}")])
     buttons.extend([
         [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
         [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")],
@@ -5979,12 +6016,14 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
         f"{'✅ ID VALIDADO' if _strict_validated_id_state(chat_id) else '⏳ ID NO VALIDADO'}\n"
         f"ID de trading: {trading}{vip_extra}"
     )
+    markup = _admin_user_actions_keyboard(chat_id)
     if context.user_data.get("admin_review_kind") == "DEP" and not _admin_review_proof_info(chat_id).get("file_id"):
-        text_value += "\n\n📷 No hay foto guardada para abrir desde esta ficha. No se recuperó ni se asignó una imagen de otro usuario. Confirma solo el monto que verificaste en el comprobante original."
+        markup = InlineKeyboardMarkup([row for row in markup.inline_keyboard if not any((button.callback_data or "").startswith("admin_user_deposit:") for button in row)])
+        text_value += "\n\n📷 Este comprobante antiguo no quedó guardado. Pulsa SOLICITAR COMPROBANTE para pedir al usuario que lo reenvíe; cuando llegue podrás abrirlo aquí y confirmar."
     await _admin_review_render(context, 
         chat_id=ADMIN_ID,
         text=text_value,
-        reply_markup=_admin_user_actions_keyboard(chat_id),
+        reply_markup=markup,
     )
 
 
@@ -6672,11 +6711,11 @@ async def admin_broker_callback(update: Update, context: ContextTypes.DEFAULT_TY
             return
         context.user_data.pop("admin_pending_broker_deposit", None)
         context.user_data.pop("admin_user_action", None)
-        _, msg = await _admin_apply_broker_deposit(context, chat_id, broker, pending["preview"])
+        ok, msg = await _admin_apply_broker_deposit(context, chat_id, broker, pending["preview"])
         # Mantiene limpio el chat administrativo: reutiliza la misma tarjeta de
         # confirmación y NO despliega la lista de pendientes.
         # IMPORTANTE: este callback usa `q`; `query` no existe en esta función.
-        await _admin_review_render(context, msg, reply_markup=_admin_user_actions_keyboard(chat_id))
+        await _admin_review_render(context, msg, reply_markup=_admin_review_completed_keyboard() if ok else _admin_user_actions_keyboard(chat_id))
         return
 
 
@@ -6706,24 +6745,28 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             await _admin_review_queue(context, kind)
         return
+    request_match = re.fullmatch(r"admin_review_request_proof:(\d+)", data)
+    if request_match:
+        cid = int(request_match.group(1))
+        if not _is_private_user_id(cid) or cid == ADMIN_ID or not _admin_user_record(cid):
+            return
+        lang = get_user_lang(cid)
+        message = ("Para revisar tu depósito, vuelve a enviarme aquí la imagen del comprobante. Tu registro y el ID que ya validé se conservan; no necesitas repetirlos."
+                   if lang == "es" else "To review your deposit, please send the proof image here again. Your registration and validated ID are saved; you do not need to repeat them.")
+        try:
+            await context.bot.send_message(chat_id=cid, text=message)
+        except Exception:
+            logging.exception("No pude solicitar comprobante a %s", cid)
+            await _show_admin_user(context, cid, "⚠️ No pude entregar la solicitud de comprobante. No se confirmó el depósito.")
+            return
+        _log_event(cid, "ADMIN_DEPOSIT_PROOF_REQUESTED", "Solicitud explícita desde la ficha administrativa")
+        await _show_admin_user(context, cid, "📩 Solicitud enviada. Cuando el usuario reenvíe la imagen, estará disponible en DEPÓSITOS POR CONFIRMAR.")
+        return
     proof_match = re.fullmatch(r"admin_review_proof:(\d+)", data)
     if proof_match:
         cid = int(proof_match.group(1))
-        try:
-            info = _admin_review_proof_info(cid)
-            if not info.get("file_id"):
-                await _show_admin_user(context, cid, "📷 No hay un comprobante guardado para mostrar. Consulta la foto original; no se validó ningún depósito.")
-                return
-            record = _admin_user_record(cid)
-            name = record["nombre"] if record else str(cid)
-            await context.bot.send_photo(
-                chat_id=ADMIN_ID, photo=info["file_id"],
-                caption=f"📷 COMPROBANTE · {name}\nTelegram ID: {cid}\nRevisa el monto y el broker antes de confirmar.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 ABRIR FICHA DE ESTE USUARIO", callback_data=f"admin_user_open:{cid}")]]),
-            )
-        except Exception as e:
-            logging.warning("No pude mostrar comprobante guardado %s: %s", cid, e)
-            await _show_admin_user(context, cid, "⚠️ No pude abrir el comprobante. Consulta la foto original; el depósito sigue sin confirmar.")
+        if not await _admin_review_show_proof(context, cid):
+            await _show_admin_user(context, cid, "⚠️ No pude abrir el comprobante. Puedes solicitar que el usuario lo reenvíe; no se confirmó el depósito.")
         return
     queue_match = re.fullmatch(r"admin_review_queue:(ID|DEP):(\d+)", data)
     if queue_match:
@@ -6738,7 +6781,11 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["admin_review_kind"] = kind
         context.user_data.pop("admin_user_action", None)
         context.user_data.pop("admin_pending_broker_deposit", None)
-        await _show_admin_user(context, int(raw))
+        cid = int(raw)
+        await _show_admin_user(context, cid)
+        if kind == "DEP" and _admin_review_proof_info(cid).get("file_id"):
+            if not await _admin_review_show_proof(context, cid):
+                await _show_admin_user(context, cid, "⚠️ No pude abrir la imagen guardada. No se confirmó el depósito; pulsa VER COMPROBANTE para reintentar.")
         return
 
     if data in ("admin_user_list", "admin_user_panel"):
@@ -7090,7 +7137,7 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Compatibilidad con el flujo anterior: muestra únicamente el resultado de
         # la validación en el mismo mensaje. La lista de pendientes se abre SOLO
         # desde Gestión de Usuarios / el menú de administrador.
-        await _admin_review_render(context, msg, reply_markup=_admin_user_actions_keyboard(chat_id))
+        await _admin_review_render(context, msg, reply_markup=_admin_review_completed_keyboard() if ok else _admin_user_actions_keyboard(chat_id))
         return
 
     if action == "activate_confirm":
@@ -13637,7 +13684,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if current_stage in (STAGE_POST, STAGE_DEPOSITED):
             _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="comprobante de depósito recibido")
-            _log_event(chat_id, "DEPOSIT_REVIEW_PROOF", json.dumps({"file_id": update.message.photo[-1].file_id, "message_id": update.message.message_id}))
+            _log_event(chat_id, "DEPOSIT_REVIEW_PROOF", json.dumps({"file_id": update.message.photo[-1].file_id, "message_id": update.message.message_id, "telegram_id": chat_id}))
             _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
             _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
             brokers = _broker_validated_brokers(chat_id)
@@ -14320,6 +14367,57 @@ LIVE_BROADCAST_MESSAGE_EN = (
 )
 
 
+def _live_disabled_user_ids():
+    with Session() as session:
+        latest = session.query(func.max(BotEvent.id).label("last_id")).filter(BotEvent.event_type.in_(["LIVE_NOTICE_DISABLED", "LIVE_NOTICE_ENABLED"])).group_by(BotEvent.telegram_id).subquery()
+        rows = session.query(BotEvent.telegram_id).join(latest, BotEvent.id == latest.c.last_id).filter(BotEvent.event_type == "LIVE_NOTICE_DISABLED").all()
+    return {int(row[0]) for row in rows if str(row[0]).isdigit()}
+
+
+def _set_live_notice_preference(chat_id, enabled):
+    with Session() as session:
+        session.add(BotEvent(telegram_id=str(chat_id), event_type="LIVE_NOTICE_ENABLED" if enabled else "LIVE_NOTICE_DISABLED", detail="Preferencia explícita del usuario: solo avisos LIVE privados", created_at=utcnow_naive()))
+        session.commit()
+
+
+async def live_notice_preference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not update.effective_user or not update.effective_chat or update.effective_chat.type != "private":
+        return
+    cid = update.effective_user.id
+    if update.effective_chat.id != cid or not _is_private_user_id(cid):
+        return
+    if q.data not in ("live_notice_disable", "live_notice_enable"):
+        return
+    enabled = q.data == "live_notice_enable"
+    lang = get_user_lang(cid)
+    try:
+        await asyncio.to_thread(_set_live_notice_preference, cid, enabled)
+    except Exception:
+        logging.exception("No pude guardar preferencia LIVE de %s", cid)
+        await q.answer("No pude guardar el cambio. Inténtalo de nuevo." if lang == "es" else "Could not save the change. Please try again.", show_alert=True)
+        return
+    disabled = context.bot_data.setdefault("live_notice_disabled_now", set())
+    if enabled:
+        disabled.discard(cid)
+    else:
+        disabled.add(cid)
+    try:
+        await q.answer("Preferencia guardada" if lang == "es" else "Preference saved")
+    except Exception:
+        pass
+    if enabled:
+        text_value = "🔔 Volverás a recibir mis avisos LIVE." if lang == "es" else "🔔 You will receive my LIVE notifications again."
+        label = "🔕 No recibir avisos LIVE" if lang == "es" else "🔕 Stop LIVE notifications"
+        callback = "live_notice_disable"
+    else:
+        text_value = ("🔕 Dejaste de recibir avisos LIVE por este chat. Tu registro, nivel y accesos se conservan."
+                      if lang == "es" else "🔕 LIVE notifications are disabled in this chat. Your registration, level and access are saved.")
+        label = "🔔 Recibir avisos LIVE" if lang == "es" else "🔔 Receive LIVE notifications"
+        callback = "live_notice_enable"
+    await context.bot.send_message(chat_id=cid, text=text_value, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=callback)]]))
+
+
 def live_broadcast_keyboard(user_chat: bool = True, lang: str = "es", chat_id: int = None) -> InlineKeyboardMarkup:
     if lang == "en":
         rows = [
@@ -14333,6 +14431,7 @@ def live_broadcast_keyboard(user_chat: bool = True, lang: str = "es", chat_id: i
         ]
     if user_chat:
         rows.extend(support_rows(lang, chat_id))
+        rows.append([InlineKeyboardButton("🔕 No recibir avisos LIVE" if lang == "es" else "🔕 Stop LIVE notifications", callback_data="live_notice_disable")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -14369,7 +14468,8 @@ def _active_recipients(days: int, include_deposited: bool):
 
 def _recent_live_recipients(days: int = LIVE_BROADCAST_DAYS):
     # LIVE sí incluye a usuarios DEPOSITED.
-    return _active_recipients(days, include_deposited=True)
+    disabled = _live_disabled_user_ids()
+    return [row for row in _active_recipients(days, include_deposited=True) if row[0] not in disabled]
 
 
 def _recent_marketing_recipients(days: int = MARKETING_BROADCAST_DAYS):
@@ -14798,6 +14898,8 @@ async def _deliver_live_private_recipients(context, recipients, photo_file_id=No
         for chat_id, lang, _stage in pending:
             for attempt in range(3):
                 await _live_wait_send_slot()
+                if chat_id in context.bot_data.get("live_notice_disabled_now", set()):
+                    break
                 try:
                     await _send_live_to_private_user(context, chat_id, lang, photo_file_id)
                     sent += 1
@@ -15378,6 +15480,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(broker_user_callback, pattern="^broker_(?:id|deposit)_select:"))
 
     # Confirmación/cancelación LIVE y marketing (antes del callback general).
+    app.add_handler(CallbackQueryHandler(live_notice_preference_callback, pattern="^live_notice_(?:disable|enable)$"))
     app.add_handler(CallbackQueryHandler(live_broadcast_callback, pattern="^(live_broadcast_|live_no_image$)"))
     app.add_handler(CallbackQueryHandler(marketing_callback, pattern="^marketing_"))
 
