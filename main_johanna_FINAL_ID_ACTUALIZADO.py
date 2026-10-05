@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.96-20261005-LIVE-OPTOUT-DEPOSIT-PROOF"
+BOT_VERSION = "v7.10.97-20261005-DEPOSIT-QUEUE-VALIDATED-ID"
 # v7.10.91: corrige cierres BOT para que un fallo de una métrica no borre STARTS/únicos; re-emite una única corrección persistente del cierre 02/10/2026; cambia el reporte agregado de STARTS de 15 min a 1 hora. Conserva intactos los flujos previos.
 # v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
@@ -5793,6 +5793,8 @@ def _admin_review_pending(kind):
                 previous = last_events.get(cid)
                 if not previous or (previous[0] != "DEPOSIT_VALIDATED" or not previous[1] or old_stamp > previous[1]):
                     found.add(cid)
+    if kind == "DEP":
+        found = {cid for cid in found if _strict_validated_id_state(cid)}
     return sorted(found)
 
 
@@ -6782,6 +6784,10 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop("admin_user_action", None)
         context.user_data.pop("admin_pending_broker_deposit", None)
         cid = int(raw)
+        if kind == "DEP" and not _strict_validated_id_state(cid):
+            context.user_data["admin_review_kind"] = "ID"
+            await _show_admin_user(context, cid, "⏳ Este usuario no tiene un ID validado. Primero revisa su ID; el comprobante se conserva para cuando corresponda confirmar el depósito.")
+            return
         await _show_admin_user(context, cid)
         if kind == "DEP" and _admin_review_proof_info(cid).get("file_id"):
             if not await _admin_review_show_proof(context, cid):
