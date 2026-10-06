@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.97-20261005-DEPOSIT-QUEUE-VALIDATED-ID"
+BOT_VERSION = "v7.10.98-20261005-ADMIN-QUEUE-STATE-CHECKS"
 # v7.10.91: corrige cierres BOT para que un fallo de una métrica no borre STARTS/únicos; re-emite una única corrección persistente del cierre 02/10/2026; cambia el reporte agregado de STARTS de 15 min a 1 hora. Conserva intactos los flujos previos.
 # v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
@@ -5750,13 +5750,30 @@ def _admin_review_legacy_stamp(history):
             content = item.get("content", "")
             if not ("Recibido. Estoy validando tu depósito ahora mismo." in content or "Received. I’m validating your deposit now." in content):
                 continue
-            stamp = datetime.fromisoformat(str(item.get("ts") or "").replace("Z", "+00:00"))
+            try:
+                stamp = datetime.fromisoformat(str(item.get("ts") or "").replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
             if stamp.tzinfo:
                 stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
             stamps.append(stamp)
         return max(stamps) if stamps else None
     except (ValueError, TypeError, AttributeError):
         return None
+
+
+def _admin_deposit_review_eligible(chat_id):
+    """Elegibilidad para activación/upgrade; consulta sin modificar estados."""
+    if not _is_private_user_id(chat_id) or chat_id == ADMIN_ID:
+        return False
+    if not _strict_validated_id_state(chat_id):
+        return False
+    if ((_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE) == VIP_LEVEL_PRESTIGE:
+        return False
+    # El nivel más alto por broker también protege cuentas con estado global antiguo.
+    if any(row.get("id_validated") and row.get("level") == VIP_LEVEL_PRESTIGE for row in _broker_rows(chat_id)):
+        return False
+    return True
 
 
 def _admin_review_pending(kind):
@@ -5766,7 +5783,7 @@ def _admin_review_pending(kind):
         if kind == "ID":
             for row in session.query(BrokerAccountState).filter(BrokerAccountState.pending_trading_id.isnot(None), BrokerAccountState.pending_trading_id != "").all():
                 cid = int(row.telegram_id)
-                if cid != ADMIN_ID and _is_private_user_id(cid):
+                if cid != ADMIN_ID and _is_private_user_id(cid) and not (row.id_validated and str(row.trading_id or "").strip() == str(row.pending_trading_id or "").strip()):
                     found.add(cid)
             for row in session.query(Usuario).filter(Usuario.stage == STAGE_PRE, Usuario.binomo_id.isnot(None), Usuario.binomo_id != "").all():
                 cid = int(row.telegram_id)
@@ -5794,7 +5811,7 @@ def _admin_review_pending(kind):
                 if not previous or (previous[0] != "DEPOSIT_VALIDATED" or not previous[1] or old_stamp > previous[1]):
                     found.add(cid)
     if kind == "DEP":
-        found = {cid for cid in found if _strict_validated_id_state(cid)}
+        found = {cid for cid in found if _admin_deposit_review_eligible(cid)}
     return sorted(found)
 
 
@@ -5851,13 +5868,17 @@ def _admin_review_proof_info(chat_id):
                 query = query.filter(BotEvent.id > validated.id)
             photo = query.order_by(BotEvent.id.desc()).first()
         info = json.loads(photo[0]) if photo else {}
-        return info if isinstance(info, dict) else {}
+        if not isinstance(info, dict) or str(info.get("telegram_id", chat_id)) != str(chat_id):
+            return {}
+        return info
     except Exception as e:
         logging.warning("No pude leer comprobante de %s: %s", chat_id, e)
         return {}
 
 
 async def _admin_review_show_proof(context, chat_id):
+    if not _admin_deposit_review_eligible(chat_id):
+        return False
     info = _admin_review_proof_info(chat_id)
     if not info.get("file_id"):
         return False
@@ -5891,7 +5912,8 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     stage, _ = _repair_inconsistent_stage(chat_id)
     buttons = []
     validated_brokers = [r for r in _broker_rows(chat_id, validated_only=True) if str(r.get("trading_id") or "").strip()]
-    has_validated_id = bool(validated_brokers) or (stage in (STAGE_POST, STAGE_DEPOSITED) and bool((_get_saved_trading_id(chat_id) or "").strip()))
+    has_validated_id = _strict_validated_id_state(chat_id)
+    deposit_eligible = _admin_deposit_review_eligible(chat_id)
     pending_brokers = [row for row in _broker_rows(chat_id) if row.get("pending_trading_id")]
     for row in pending_brokers:
         broker = row["broker"]
@@ -5902,15 +5924,15 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
         if saved_id and not pending_brokers and not has_validated_id:
             buttons.append([InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_user_validate:{chat_id}")])
             buttons.append([InlineKeyboardButton("❌ ID ERRADO", callback_data=f"admin_user_reject:{chat_id}")])
-    elif stage == STAGE_POST:
+    elif stage == STAGE_POST and deposit_eligible:
         buttons.append([InlineKeyboardButton("💰 CONFIRMAR DEPÓSITO", callback_data=f"admin_user_deposit:{chat_id}")])
-    elif stage == STAGE_DEPOSITED:
+    elif stage == STAGE_DEPOSITED and deposit_eligible:
         active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
         if active_level != VIP_LEVEL_PRESTIGE:
             buttons.append([InlineKeyboardButton("💰 CONFIRMAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
-    if _admin_review_proof_info(chat_id).get("file_id"):
+    if deposit_eligible and _admin_review_proof_info(chat_id).get("file_id"):
         buttons.append([InlineKeyboardButton("📷 VER COMPROBANTE", callback_data=f"admin_review_proof:{chat_id}")])
-    elif has_validated_id:
+    elif deposit_eligible:
         buttons.append([InlineKeyboardButton("📩 SOLICITAR COMPROBANTE", callback_data=f"admin_review_request_proof:{chat_id}")])
     buttons.extend([
         [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
@@ -6019,7 +6041,7 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
         f"ID de trading: {trading}{vip_extra}"
     )
     markup = _admin_user_actions_keyboard(chat_id)
-    if context.user_data.get("admin_review_kind") == "DEP" and not _admin_review_proof_info(chat_id).get("file_id"):
+    if context.user_data.get("admin_review_kind") == "DEP" and _admin_deposit_review_eligible(chat_id) and not _admin_review_proof_info(chat_id).get("file_id"):
         markup = InlineKeyboardMarkup([row for row in markup.inline_keyboard if not any((button.callback_data or "").startswith("admin_user_deposit:") for button in row)])
         text_value += "\n\n📷 Este comprobante antiguo no quedó guardado. Pulsa SOLICITAR COMPROBANTE para pedir al usuario que lo reenvíe; cuando llegue podrás abrirlo aquí y confirmar."
     await _admin_review_render(context, 
@@ -6752,6 +6774,9 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         cid = int(request_match.group(1))
         if not _is_private_user_id(cid) or cid == ADMIN_ID or not _admin_user_record(cid):
             return
+        if not _admin_deposit_review_eligible(cid):
+            await _show_admin_user(context, cid, "ℹ️ Esta cuenta no requiere revisión de depósito para activar o subir de nivel. No se solicitó ningún comprobante.")
+            return
         lang = get_user_lang(cid)
         message = ("Para revisar tu depósito, vuelve a enviarme aquí la imagen del comprobante. Tu registro y el ID que ya validé se conservan; no necesitas repetirlos."
                    if lang == "es" else "To review your deposit, please send the proof image here again. Your registration and validated ID are saved; you do not need to repeat them.")
@@ -6787,6 +6812,9 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         if kind == "DEP" and not _strict_validated_id_state(cid):
             context.user_data["admin_review_kind"] = "ID"
             await _show_admin_user(context, cid, "⏳ Este usuario no tiene un ID validado. Primero revisa su ID; el comprobante se conserva para cuando corresponda confirmar el depósito.")
+            return
+        if kind == "DEP" and not _admin_deposit_review_eligible(cid):
+            await _show_admin_user(context, cid, "🏆 Esta cuenta ya tiene Prestige, el nivel máximo. No requiere depósito para activar o subir de nivel y no pertenece a esta lista.")
             return
         await _show_admin_user(context, cid)
         if kind == "DEP" and _admin_review_proof_info(cid).get("file_id"):
