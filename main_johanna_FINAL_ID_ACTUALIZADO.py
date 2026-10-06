@@ -57,7 +57,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.10.98-20261005-ADMIN-QUEUE-STATE-CHECKS"
+BOT_VERSION = "v7.10.99-20261006-TGADS-DIRECT-ENTRY"
+# v7.10.99: optimiza exclusivamente el deep-link TGADS_01 para publicidad directa al bot: entra en español sin selector de idioma, muestra bienvenida personalizada + imagen y un menú corto con Canal / Registro / Pregunta / Menú completo / English. La vuelta desde las bienvenidas del canal usa el menú corto de registro para evitar el bucle Canal→Bot→Canal. Añade evento TGADS_BOT_START sin tocar tracking, depósitos, VIP, IA, campañas ni reportes existentes.
 # v7.10.91: corrige cierres BOT para que un fallo de una métrica no borre STARTS/únicos; re-emite una única corrección persistente del cierre 02/10/2026; cambia el reporte agregado de STARTS de 15 min a 1 hora. Conserva intactos los flujos previos.
 # v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
@@ -8041,6 +8042,29 @@ def build_registration_entry_menu(lang: str = "es") -> InlineKeyboardMarkup:
     ])
 
 
+def build_tgads_entry_menu(lang: str = "es") -> InlineKeyboardMarkup:
+    """Entrada corta exclusiva para publicidad Telegram Ads directa al bot.
+
+    Mantiene TGADS_01 aislado del /start normal y evita obligar al usuario a
+    elegir idioma antes de ver las acciones principales.
+    """
+    if lang == "en":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📲 ENTER THE CHANNEL", url=CANAL_EN)],
+            [InlineKeyboardButton("🚀 CREATE MY ACCOUNT", callback_data="registrarme")],
+            [InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")],
+            [InlineKeyboardButton("🏠 VIEW FULL MENU", callback_data="back_main_menu")],
+            [InlineKeyboardButton("🇪🇸 Español", callback_data="set_lang_es")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📲 ENTRAR AL CANAL", url=CANAL_ES)],
+        [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
+        [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
+        [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")],
+        [InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_en")],
+    ])
+
+
 def build_lang_picker() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🇪🇸 Español", callback_data="set_lang_es"),
@@ -8082,6 +8106,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # v7.10.88: cada /start queda persistido; el ADMIN recibe solo cortes agregados.
     # detail conserva el deep-link/origen para auditoría sin alterar el tracking existente.
     _log_event(chat_id, "BOT_START", start_param or "normal")
+
+    # === ENTRADA TELEGRAM ADS DIRECTA AL BOT ===
+    # El enlace publicado puede seguir siendo exactamente:
+    # https://t.me/JOHAALETRADER_bot?start=TGADS_01
+    # Español es predeterminado y no se muestra el selector de idioma.
+    if start_param == "tgads_01":
+        active_level = _active_member_level(chat_id)
+        if active_level != VIP_LEVEL_NONE:
+            # Si un miembro activo vuelve a entrar desde un anuncio, no reinicia registro.
+            lang = get_user_lang(chat_id)
+            entry_keyboard = member_space_keyboard(chat_id, lang)
+            entry_caption = _personalized_welcome(update.effective_user, lang)
+        else:
+            set_user_lang(chat_id, nombre, "es")
+            lang = "es"
+            entry_keyboard = build_tgads_entry_menu("es")
+            entry_caption = _personalized_welcome(update.effective_user, "es")
+
+        _log_event(chat_id, "TGADS_BOT_START", "TGADS_01")
+        _tracking_fire_event(chat_id, "TGADS_BOT_START", "TGADS_01")
+        _tracking_fire_event(chat_id, "BOT_START", "tgads_01")
+
+        try:
+            with open(WELCOME_IMG, "rb") as img:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=InputFile(img),
+                    caption=entry_caption,
+                    reply_markup=entry_keyboard,
+                )
+        except FileNotFoundError:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=entry_caption,
+                reply_markup=entry_keyboard,
+            )
+
+        # Mantiene la campaña/etapa que ya corresponda sin reiniciar relojes.
+        _sync_menu_campaign_for_stage(chat_id, lang, context)
+        return
 
     # === PUERTA ADS LEGACY: compatibilidad con enlaces trk_ ya publicados ===
     # El flujo vigente desde v7.10.86 es /ads -> enlace source-ADS del canal -> bienvenida -> bot.
@@ -8222,7 +8286,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _log_event(chat_id, "CHANNEL_WELCOME_START", start_param)
         _tracking_fire_event(chat_id, "CHANNEL_WELCOME_START", start_param)
         active_level = _active_member_level(chat_id)
-        channel_menu = member_space_keyboard(chat_id, lang) if active_level != VIP_LEVEL_NONE else build_main_menu(lang)
+        # Al volver desde el canal, un usuario PRE/POST recibe un menú corto sin
+        # botón de canal. Así evitamos Canal → Bot → Canal en bucle.
+        channel_menu = (
+            member_space_keyboard(chat_id, lang)
+            if active_level != VIP_LEVEL_NONE
+            else build_registration_entry_menu(lang)
+        )
         await update.message.reply_text(
             texto_entrada,
             parse_mode=ParseMode.HTML,
