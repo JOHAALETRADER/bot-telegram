@@ -57,7 +57,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.01-20261006-PREMIUM100-COUNTDOWN"
+BOT_VERSION = "v7.11.02-20261007-ADS-JOIN-REQUEST-ATTRIBUTION-FIX"
+# v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
 # v7.11.00: añade promoción aislada PREMIUM100 (Stockity, 20 cupos, Premium desde USD 100 para cuentas nuevas) sin cambiar umbrales normales. Incluye deep-link propio, contador persistente, reserva de 90 min solo en últimos 5 cupos, bloqueo al recibir comprobante, panel admin, desaparición automática del botón al agotarse y registro del depósito REAL para upgrades posteriores.
 # v7.10.99: optimiza exclusivamente el deep-link TGADS_01 para publicidad directa al bot: entra en español sin selector de idioma, muestra bienvenida personalizada + imagen y un menú corto con Canal / Registro / Pregunta / Menú completo / English. La vuelta desde las bienvenidas del canal usa el menú corto de registro para evitar el bucle Canal→Bot→Canal. Añade evento TGADS_BOT_START sin tocar tracking, depósitos, VIP, IA, campañas ni reportes existentes.
@@ -3323,6 +3324,19 @@ def _record_source_attribution_only(chat_id: int, detected_source: str, authorit
         return detected_source
 
 
+def _known_channel_source(chat_id: int) -> str:
+    """Lee la atribución persistida sin modificarla; útil para carreras join_request -> chat_member."""
+    if not _is_private_user_id(chat_id):
+        return "UNATTRIBUTED"
+    try:
+        with Session() as session:
+            row = session.get(ChannelSourceAttribution, str(chat_id))
+            return _normalize_channel_source(row.source) if row else "UNATTRIBUTED"
+    except Exception as e:
+        logging.warning("No pude leer atribución previa del canal para %s: %s", chat_id, e)
+        return "UNATTRIBUTED"
+
+
 def _record_channel_join_source(chat_id: int, detected_source: str, invite_name: str = "", authoritative: bool = False) -> str:
     """Guarda origen del ingreso; ausencia de metadata queda SIN ATRIBUIR.
 
@@ -4117,6 +4131,13 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
     else:
         detected_source = "UNATTRIBUTED"
 
+    # Si el join_request ADS fue aprobado y Telegram dispara ChatMemberUpdated sin
+    # repetir invite_link/invite_name, conserva la atribución ADS que ya fijamos
+    # antes de aprobar. Esto evita que la actualización concurrente llegue al
+    # servicio de tracking como UNATTRIBUTED.
+    if detected_source == "UNATTRIBUTED" and _known_channel_source(member.id) == "ADS":
+        detected_source = "ADS"
+
     result = await _tracking_post(
         "/internal/channel-join",
         {
@@ -4142,7 +4163,7 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
 
 
 async def tracking_channel_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Aprueba solicitudes VIP; el flujo avanza al confirmar membresía real."""
+    """Aprueba solicitudes VIP y atribuye de forma autoritativa las solicitudes ADS del canal ES."""
     req = getattr(update, "chat_join_request", None)
     if not req:
         return
@@ -4151,8 +4172,30 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
     if not member or not _is_private_user_id(getattr(member, "id", None)):
         return
 
+    req_chat = getattr(req, "chat", None)
+    invite_obj = getattr(req, "invite_link", None)
+    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
+    invite_name = (getattr(invite_obj, "name", None) or "").strip()
+    is_ads_tracking_request = bool(
+        invite_name.upper().startswith("SOURCE-ADS")
+        or invite_name.startswith("track-JT-")
+    )
+
+    # SOURCE-ADS es una marca exclusiva del enlace publicitario del canal, no de
+    # los accesos VIP. La resolvemos antes del fallback por chat/título para que
+    # un ChatJoinRequest sin username del canal no pueda desviarse al flujo VIP.
+    if is_ads_tracking_request:
+        access_key = ""
+        _record_source_attribution_only(member.id, "ADS", authoritative=True)
+        logging.info(
+            "📣 Solicitud ADS canal detectada: Telegram %s | invite=%s | link=%s | chat_id=%s",
+            member.id, invite_name or "(sin marca)", "sí" if invite_link else "no",
+            getattr(req_chat, "id", None),
+        )
+    else:
+        access_key = _vip_access_key_from_request(req)
+
     # 1) ACCESOS VIP POR NIVEL
-    access_key = _vip_access_key_from_request(req)
     if access_key:
         chat_id = int(member.id)
         stage = get_user_stage(chat_id)
@@ -4264,9 +4307,10 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
                 logging.warning("Solicitud VIP aprobada para %s, pero no pude avisar al usuario: %s", chat_id, e)
         return
 
-    # 2) TRACKING DEL CANAL INFORMATIVO ES — comportamiento anterior intacto.
-    if not _is_tracking_info_channel(getattr(req, "chat", None)):
-        chat = getattr(req, "chat", None)
+    # 2) TRACKING DEL CANAL INFORMATIVO ES. Un invite SOURCE-ADS es evidencia
+    # suficiente aunque Telegram omita el username del Chat dentro del join_request.
+    if not (_is_tracking_info_channel(req_chat) or is_ads_tracking_request):
+        chat = req_chat
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
@@ -4283,10 +4327,7 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
         logging.warning("⚠️ Solicitud VIP no mapeada: chat=%s title=%s user=%s", getattr(chat, "id", None), getattr(chat, "title", None), member.id)
         return
 
-    invite_obj = getattr(req, "invite_link", None)
-    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
-    invite_name = (getattr(invite_obj, "name", None) or "").strip()
-    if invite_name.upper().startswith("SOURCE-ADS") or invite_name.startswith("track-JT-"):
+    if is_ads_tracking_request:
         detected_source = "ADS"
     elif invite_name or invite_link:
         detected_source = "ORGANIC_OTHER"
@@ -4314,8 +4355,12 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
     authoritative_source = _normalize_channel_source(
         result.get("source") if isinstance(result, dict) else detected_source
     )
-    _record_channel_join_source(
+    final_source = _record_channel_join_source(
         member.id, authoritative_source, invite_name, authoritative=bool(result)
+    )
+    logging.info(
+        "📣 Solicitud canal aprobada: Telegram %s | origen=%s | invite=%s | link=%s",
+        member.id, final_source, invite_name or "(sin marca)", "sí" if invite_link else "no",
     )
 
 
