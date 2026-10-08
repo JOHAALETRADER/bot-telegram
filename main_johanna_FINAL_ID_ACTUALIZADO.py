@@ -57,7 +57,8 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.02-20261007-ADS-JOIN-REQUEST-ATTRIBUTION-FIX"
+BOT_VERSION = "v7.11.03-20261008-PREMIUM100-ID-ADMIN-BUTTONS"
+# v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
 # v7.11.00: añade promoción aislada PREMIUM100 (Stockity, 20 cupos, Premium desde USD 100 para cuentas nuevas) sin cambiar umbrales normales. Incluye deep-link propio, contador persistente, reserva de 90 min solo en últimos 5 cupos, bloqueo al recibir comprobante, panel admin, desaparición automática del botón al agotarse y registro del depósito REAL para upgrades posteriores.
@@ -140,7 +141,24 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
         )
         if len(text) > 3900:
             text = text[:3900] + "\n\n...(recortado)"
-        await context.bot.send_message(chat_id=ADMIN_ID, text=text, disable_web_page_preview=True)
+
+        # PREMIUM100: el ID ya quedó guardado como Stockity pendiente antes de llegar aquí.
+        # Añadimos SOLO las acciones administrativas al mismo aviso, reutilizando
+        # los callbacks existentes de validación/rechazo para no duplicar lógica.
+        admin_reply_markup = None
+        if intent == "PREMIUM100_ID_PENDING":
+            admin_reply_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ VALIDAR ID · STOCKITY", callback_data=f"admin_broker_validate:{chat_id}:STOCKITY")],
+                [InlineKeyboardButton("❌ ID ERRADO · STOCKITY", callback_data=f"admin_broker_reject:{chat_id}:STOCKITY")],
+                [InlineKeyboardButton("👤 GESTIONAR USUARIO", callback_data=f"admin_user_open:{chat_id}")],
+            ])
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=text,
+            disable_web_page_preview=True,
+            reply_markup=admin_reply_markup,
+        )
         try:
             _append_ai_exchange(chat_id, pregunta, respuesta, assistant_source="auto")
         except Exception:
