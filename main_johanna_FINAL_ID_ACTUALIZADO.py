@@ -9050,6 +9050,38 @@ def _is_positive_id_validation(text_value: str, original_question: str = "", sav
 
 
 # === RESPUESTA DEL ADMIN (texto/audio) ===
+def _ai_channel_directory(lang="es", level=None, signals_only=False):
+    """Nombres y alcance tomados de la misma configuración que habilita accesos."""
+    levels = [level] if level in VIP_LEVEL_CHANNEL_KEYS and level != VIP_LEVEL_NONE else [VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE]
+    signal_keys = {"crypto_basic", "signals_premium", "ai_crypto", "fx_auto"}
+    rows = []
+    for item_level in levels:
+        entries = []
+        for key in VIP_LEVEL_CHANNEL_KEYS.get(item_level, []):
+            if signals_only and key not in signal_keys:
+                continue
+            cfg = VIP_ACCESS_CHANNELS.get(key, {})
+            name = cfg.get("name_en" if lang == "en" else "name_es", "")
+            desc = cfg.get("desc_en" if lang == "en" else "desc_es", "")
+            if name:
+                entries.append(f"{name}: {desc}")
+        rows.append(f"{_vip_level_label(item_level, lang)}: " + "; ".join(entries))
+    return "\n".join(rows)
+
+
+def _ai_signal_delivery_answer(question, lang, level):
+    """Resuelve consultas de ubicación sin inventar una interfaz entregable."""
+    q = _norm(question or "")
+    location = any(term in q for term in ("donde", "en cual grupo", "en que grupo", "nombre del grupo", "por donde", "no encuentro", "which group", "which channel", "where", "channel name", "group name"))
+    signal = any(term in q for term in ("senal", "signal"))
+    if not location or not signal or any(term in q for term in ("interfaz", "interface", "panel", "instalar", "install")):
+        return ""
+    directory = _ai_channel_directory(lang, level, signals_only=True)
+    if lang == "en":
+        return "Signals are delivered through Telegram in the channels assigned to your level:\n\n" + directory + "\n\nSearch for these names in Telegram. If a channel is missing, tell me which one so I can review your access."
+    return "Las señales se reciben por Telegram en los canales correspondientes a tu nivel:\n\n" + directory + "\n\nBusca esos nombres en Telegram. Si te falta alguno, dime cuál para revisar tu acceso."
+
+
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Puede ser respuesta a un mensaje del admin que contenía texto o media con caption.
     if update.message.reply_to_message:
@@ -9091,7 +9123,16 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                 learned_reply = ""
                 pending_cleared_early = False
 
-                if update.message.voice:
+                if update.message.photo:
+                    await context.bot.send_photo(
+                        chat_id=destinatario_id,
+                        photo=update.message.photo[-1].file_id,
+                        caption=_personalize_referral_links(update.message.caption or "", destinatario_id),
+                    )
+                    response_type = "photo"
+                    learned_reply = (update.message.caption or "").strip()
+                    manual_reply_text = learned_reply or "[Imagen enviada por Johanna]"
+                elif update.message.voice:
                     await context.bot.send_voice(
                         chat_id=destinatario_id,
                         voice=update.message.voice.file_id,
@@ -9136,7 +9177,7 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # Detectar mensajes gatillo con protección estricta del flujo:
                 # PRE -> ID enviado -> Johanna valida ESE ID -> POST -> depósito -> DEPOSITED.
                 try:
-                    txt = (learned_reply if response_type == "voice" else (update.message.text or ""))
+                    txt = (learned_reply if response_type in ("voice", "photo") else (update.message.text or ""))
                     txtn = _norm(txt)
                     saved_id = _get_saved_trading_id(destinatario_id)
 
@@ -9194,7 +9235,12 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                 except Exception as _e:
                     logging.info("No pude procesar gatillo de respuesta manual: %s", _e)
 
-                if response_type == "voice":
+                if response_type == "photo":
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="✅ Imagen enviada al usuario correctamente."
+                    )
+                elif response_type == "voice":
                     # La transcripción, si existe, queda en memoria interna; no se muestra
                     # en el chat administrativo para evitar ruido visual.
                     await context.bot.send_message(
@@ -12517,7 +12563,10 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                 else "(PROMOCIONES BLOQUEADAS: no fueron solicitadas en el mensaje pendiente)"
             )
 
-        decision_lines = []
+        decision_lines = [
+            "CHANNEL DIRECTORY FROM ACCESS CONFIG (names, descriptions and level eligibility; never invent names or imply access to an unassigned level):\n" + _ai_channel_directory(lang),
+            "Signal lists from Software Premium Anticipado are delivered through Telegram, in the configured signals_premium channel. Never direct a member to install or find the private LIVE interface to receive them. For channel-location questions, give the relevant configured names, respecting the real active level; do not share invite links or claim membership without evidence. Correct any earlier contradictory answer rather than treating it as a fact.",
+        ]
         if not bonus_topic and not allow_optional_recurring_bonus_offer:
             decision_lines.append(
                 "PROMO ISOLATION: Do not mention bonuses, promo codes, 70%, 100%, turnover or bonus withdrawal conditions."
@@ -13052,6 +13101,10 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                     answer = panel_block + (("\n\n" + "\n\n".join(kept_parts)) if kept_parts else "")
                 else:
                     answer = panel_block
+
+        delivery_answer = _ai_signal_delivery_answer(question, lang, current_active_level)
+        if delivery_answer and not panel_topic:
+            answer = delivery_answer
 
         # 2) ESTADO ACTIVO DURO UNIVERSAL: la base manda SIEMPRE, haya o no monto.
         # El historial y una respuesta IA anterior nunca pueden reclasificar a un miembro activo.
@@ -15538,7 +15591,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(botones))
 
     # Mensajes del admin (responder a usuarios con texto o audio deslizando)
-    app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & filters.User(ADMIN_ID), responder_a_usuario))
+    app.add_handler(MessageHandler((filters.TEXT | filters.VOICE | filters.PHOTO) & filters.User(ADMIN_ID), responder_a_usuario))
 
     # Mensajes normales de los usuarios (texto o media) — SOLO CHAT PRIVADO.
     # Excluye grupos, supergrupos, temas del VIP y canales para que nunca entren
@@ -15553,3 +15606,4 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
