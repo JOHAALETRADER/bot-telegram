@@ -6191,9 +6191,36 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE, 
     return t.strip() in {"basico", "básico", "premium", "prestige"}
 
 
+def _ai_entry_promo_available(question: str, chat_id: int) -> bool:
+    """Oferta de ingreso contextual; no inscribe ni modifica niveles/depósitos."""
+    if chat_id is None or not _is_min_50_intent(question):
+        return False
+    other = _is_hypothetical_other_person(question)
+    if not other and _active_member_level(chat_id) != VIP_LEVEL_NONE:
+        return False
+    part = None if other else _premium100_participant(chat_id)
+    protected = (part or {}).get("status") in {"RESERVED", "PROOF_PENDING"}
+    counts = _premium100_counts()
+    if not protected and (not counts.get("active") or counts.get("available", 0) <= 0):
+        return False
+    return bool(other or part or not _premium100_has_prior_account_history(chat_id))
+
+
+def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str:
+    if not _ai_entry_promo_available(question, chat_id):
+        return ""
+    if lang == "en":
+        return ("The normal community minimum is USD 50 for Basic; normal Premium starts at USD 200.\n\n"
+                "There is also a promotion to access Premium tools with USD 100 instead of USD 200, exclusively for new Stockity accounts enrolled in the promotion, subject to available slots or your existing reservation. See Premium and the promotion in the buttons below 👇\n\n"
+                "Wait for account ID validation and promotion eligibility confirmation before depositing. The money stays in your own trading account; trading involves a risk of loss.")
+    return ("El mínimo habitual de la comunidad es USD 50 para Básico; Premium normal comienza en USD 200.\n\n"
+            "También hay una promo para acceder a las herramientas Premium con USD 100 en vez de USD 200, exclusiva para cuentas nuevas Stockity inscritas en la promoción, según cupos disponibles o tu reserva vigente. Mira Premium y la promoción en los siguientes botones 👇\n\n"
+            "Antes de depositar, espera la validación del ID y la confirmación de que aplica la promoción. El dinero queda en tu propia cuenta de trading; operar implica riesgo de pérdida.")
+
+
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
-    if _premium100_question(question):
+    if _premium100_question(question) or _ai_entry_promo_available(question, chat_id):
         rows = [[InlineKeyboardButton("🔵 VIEW PREMIUM" if lang == "en" else "🔵 VER NIVEL PREMIUM", callback_data=f"level_detail:{VIP_LEVEL_PREMIUM}")],
                 [InlineKeyboardButton("🔥 VIEW PROMOTION" if lang == "en" else "🔥 VER PROMOCIÓN", callback_data="premium100_info")]]
         return InlineKeyboardMarkup(rows)
@@ -13341,6 +13368,9 @@ def _neutralize_ai_gender(answer: str, lang: str = "es") -> str:
         (r"\bdebes estar atent[oa]\b", "debes prestar atención"),
         (r"\bmantente atent[oa]\b", "presta atención"),
         (r"\best[aá] atento[oa]?\b", "presta atención"),
+        (r"\b(?:ya )?estar[aá]s (?:list[oa]|preparad[oa])\b", "podrás continuar"),
+        (r"\b(?:ya )?est[aá]s (?:list[oa]|preparad[oa])\b", "puedes continuar"),
+        (r"\bte sentir[aá]s segur[oa]\b", "sentirás mayor seguridad"),
         (r"\bcuando est[eé]s list[oa]\b", "cuando quieras continuar"),
         (r"\bsi est[aá]s list[oa]\b", "si quieres continuar"),
         (r"\bsi ya est[aá]s registrad[oa]\b", "si ya completaste el registro"),
@@ -13635,6 +13665,9 @@ async def openai_answer(question: str, chat_id: int, lang: str, stage: str, alre
     promo_answer = _premium100_answer(question, chat_id, lang)
     if promo_answer:
         return promo_answer
+    entry_promo_answer = _ai_entry_promo_answer(question, chat_id, lang)
+    if entry_promo_answer:
+        return entry_promo_answer
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
     try:
@@ -14764,7 +14797,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
 
             answer = _clean_ai_plain_text_format(answer)
 
-        return answer
+        return _neutralize_ai_gender(answer, lang)
     except Exception as e:
         logging.warning("Error generando respuesta IA: %s", e)
         return ""
@@ -14892,6 +14925,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         answer = _personalize_referral_links(answer, chat_id)
+        answer = _neutralize_ai_gender(answer, lang)
         base_markup = personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang, chat_id)
         # Para un miembro activo, si la respuesta no necesita un CTA más específico
         # (nivel/upgrade/live/etc.), mantenemos una salida mínima y útil: pregunta + MI ESPACIO JT.
