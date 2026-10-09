@@ -1579,7 +1579,9 @@ async def _premium100_admin_ids(context, page: int = 0):
                 if str(event.telegram_id or '').isdigit():
                     entries.setdefault(int(event.telegram_id), ('', 'REVISAR ENTRADA · SIN INSCRIPCIÓN'))
             users = {int(u.telegram_id): u.nombre for u in session.query(Usuario).filter(Usuario.telegram_id.in_([str(i) for i in entries])).all()}
-            ids = sorted(entries, reverse=True)
+            priority = {"PROOF_PENDING": 0, "RESERVED": 1, "ID_SUBMITTED": 2, "ID_VALIDATED": 3, "ENTERED": 4, "ACTIVATED": 6}
+            ids = sorted(entries, key=lambda cid: (priority.get(entries[cid][1], 5), -cid))
+            reservations = {int(p.telegram_id): p.reserved_until for p in participants}
             pages = max(1, (len(ids) + 11) // 12)
             page = min(max(0, page), pages - 1)
             rows = []
@@ -1588,6 +1590,11 @@ async def _premium100_admin_ids(context, page: int = 0):
                 account = session.get(BrokerAccountState, _broker_key(cid, BROKER_STOCKITY))
                 validated = bool(account and account.id_validated and account.trading_id)
                 label = f"{'✅' if validated else '⏳'} {users.get(cid) or cid} · ID {trading_id or (account.trading_id if account else '') or '—'}"
+                phase = {"ENTERED": "Registro iniciado", "ID_SUBMITTED": "ID pendiente", "ID_VALIDATED": "Espera depósito", "PROOF_PENDING": "Revisar depósito", "ACTIVATED": "Nivel activado"}.get(status, status)
+                if status == "RESERVED":
+                    until = reservations.get(cid)
+                    phase = ("Reserva " + _premium100_reservation_remaining_text(until)) if until and until > utcnow_naive() else "Reserva vencida"
+                label += " · " + phase
                 if status.startswith('REVISAR'):
                     label = f"🔎 REVISAR · {users.get(cid) or cid}"
                 rows.append([InlineKeyboardButton(label[:100], callback_data=f"admin_user_open:{cid}")])
@@ -2367,10 +2374,13 @@ def _vip_mark_access_approved(chat_id: int, access_key: str):
                 row.pending_access_keys = ",".join(pending)
                 row.updated_at = utcnow_naive()
             should_welcome = bool(not pending and level != VIP_LEVEL_NONE and (row.welcome_level or "") != level)
-            if should_welcome:
-                row.welcome_level = level
             session.commit()
-            return level, should_welcome
+        if should_welcome:
+            try:
+                _vip_completion_record(chat_id, "VIP_COMPLETION_PENDING", _vip_completion_token(chat_id, level))
+            except Exception as marker_error:
+                logging.warning("No pude guardar el cierre VIP pendiente para %s: %s", chat_id, marker_error)
+        return level, should_welcome
     except Exception as e:
         logging.warning("No pude marcar acceso VIP aprobado para %s/%s: %s", chat_id, access_key, e)
         return VIP_LEVEL_NONE, False
@@ -3828,6 +3838,7 @@ async def _vip_recover_pending_access_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def recover_pending_vip_access_flows(application):
     """Retoma tras redeploy cualquier entrega VIP pendiente, incluso sin pausa activa."""
+    await _vip_recover_completion_receipts(application)
     try:
         with Session() as session:
             rows = (
@@ -3920,6 +3931,189 @@ async def _vip_reconcile_known_memberships(context: ContextTypes.DEFAULT_TYPE, c
         )
 
 
+_VIP_COMPLETION_LOCKS = {}
+
+
+def _vip_completion_token(chat_id: int, level: str) -> str:
+    with Session() as session:
+        anchor = session.query(BotEvent.id).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type.in_(["ACCOUNT_ACTIVATED", "VIP_LEVEL_UPGRADED"])).order_by(BotEvent.id.desc()).first()
+    return f"{level}:{anchor[0] if anchor else 0}"
+
+
+def _vip_completion_seen(chat_id: int, event_type: str, token: str) -> bool:
+    with Session() as session:
+        return session.query(BotEvent.id).filter_by(telegram_id=str(chat_id), event_type=event_type, detail=token).first() is not None
+
+
+def _vip_completion_record(chat_id: int, event_type: str, token: str):
+    with Session() as session:
+        if not session.query(BotEvent.id).filter_by(telegram_id=str(chat_id), event_type=event_type, detail=token).first():
+            session.add(BotEvent(telegram_id=str(chat_id), event_type=event_type, detail=token, created_at=utcnow_naive()))
+        if event_type == "VIP_WELCOME_SENT":
+            row = session.get(VIPAccessState, str(chat_id))
+            if row:
+                row.welcome_level = token.split(":", 1)[0]
+        session.commit()
+
+
+def _vip_schedule_completion_retry(context, chat_id: int, attempt: int = 0):
+    if not context.job_queue:
+        return
+    name = f"VIP_COMPLETION_RETRY_{chat_id}"
+    if context.job_queue.get_jobs_by_name(name):
+        return
+    context.job_queue.run_once(_vip_completion_retry_job, when=min(3600, 60 * (2 ** min(attempt, 6))), data={"chat_id": chat_id, "attempt": attempt}, name=name)
+
+
+async def _vip_completion_retry_job(context):
+    data = context.job.data or {}
+    await _vip_finish_completion(context, int(data.get("chat_id") or 0), int(data.get("attempt") or 0) + 1)
+
+
+async def _vip_finish_completion(context, chat_id: int, attempt: int = 0):
+    """Cierre durable: bienvenida enviada y aviso admin son confirmaciones separadas."""
+    lock = _VIP_COMPLETION_LOCKS.setdefault(chat_id, asyncio.Lock())
+    async with lock:
+        try:
+            state = _vip_get_state(chat_id, create=False) or {}
+            level = state.get("level") or VIP_LEVEL_NONE
+            if level == VIP_LEVEL_NONE or not _vip_channel_keys_for_level(level):
+                return False
+            _vip_repair_current_batch_pending(chat_id, level)
+            state = _vip_get_state(chat_id, create=False) or {}
+            if state.get("pending_keys"):
+                return False
+            token = _vip_completion_token(chat_id, level)
+            if _vip_completion_seen(chat_id, "VIP_ADMIN_COMPLETED_SENT", token):
+                return True
+            _vip_completion_record(chat_id, "VIP_COMPLETION_PENDING", token)
+            if not _vip_completion_seen(chat_id, "VIP_WELCOME_SENT", token):
+                lang = get_user_lang(chat_id)
+                await context.bot.send_message(chat_id=chat_id, text=_vip_final_welcome_text(level, lang), reply_markup=support_keyboard(lang, chat_id), disable_web_page_preview=True)
+                _vip_completion_record(chat_id, "VIP_WELCOME_SENT", token)
+            if not await _vip_notify_admin_completed(context, chat_id, level):
+                _vip_schedule_completion_retry(context, chat_id, attempt)
+                return False
+            _vip_completion_record(chat_id, "VIP_ADMIN_COMPLETED_SENT", token)
+            return True
+        except Exception as e:
+            logging.warning("Cierre VIP pendiente para %s; se reintentará: %s", chat_id, e)
+            _vip_schedule_completion_retry(context, chat_id, attempt)
+            return False
+
+
+async def _vip_recover_completion_receipts(application):
+    """Recupera únicamente cierres fallidos registrados, sin anunciar usuarios antiguos en masa."""
+    try:
+        with Session() as session:
+            rows = session.query(BotEvent.telegram_id, BotEvent.detail).filter_by(event_type="VIP_COMPLETION_PENDING").all()
+            sent = set(session.query(BotEvent.telegram_id, BotEvent.detail).filter_by(event_type="VIP_ADMIN_COMPLETED_SENT").all())
+        seen = set()
+        for uid, token in rows:
+            if (uid, token) in sent or uid in seen or not str(uid).isdigit():
+                continue
+            cid = int(uid)
+            state = _vip_get_state(cid, create=False) or {}
+            if not _is_private_user_id(cid) or state.get("pending_keys") or token != _vip_completion_token(cid, state.get("level") or VIP_LEVEL_NONE):
+                continue
+            seen.add(uid)
+            _vip_schedule_completion_retry(application, cid)
+    except Exception as e:
+        logging.warning("No pude recuperar avisos de cierre VIP: %s", e)
+
+
+def _admin_local_stamp(value) -> str:
+    if not value:
+        return "Sin fecha registrada"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(COLOMBIA_TZ).strftime("%d/%m/%Y %I:%M %p") + " Colombia"
+
+
+def _admin_user_progress_text(chat_id: int) -> str:
+    """Ficha de consulta; nunca confirma depósitos ni modifica accesos."""
+    accounts = _broker_rows(chat_id)
+    with Session() as session:
+        events = session.query(BotEvent).filter(BotEvent.telegram_id == str(chat_id), BotEvent.event_type.in_(["ID_VALIDATED", "DEPOSIT_REPORTED", "DEPOSIT_VALIDATED", "PREMIUM100_RESERVED"])).order_by(BotEvent.id.desc()).all()
+    lines = ["📋 SEGUIMIENTO DEL USUARIO"]
+    for account in accounts:
+        broker = account.get('broker') or ''
+        trading = str(account.get('trading_id') or account.get('pending_trading_id') or '').strip()
+        validated = bool(account.get('id_validated') and account.get('trading_id'))
+        status = "✅ VALIDADO" if validated else ("⏳ POR VALIDAR" if trading else "Sin ID enviado")
+        lines.append(f"{_broker_label(broker)} · ID {trading or '—'} · {status}")
+        lines.append(f"Nivel cuenta: {_vip_level_label(account.get('level') or VIP_LEVEL_NONE, 'es')} · total USD {_usd(int(account.get('validated_total_cents') or 0))} · depósitos confirmados {int(account.get('deposit_count') or 0)}")
+        if validated:
+            event = next((e for e in events if e.event_type == 'ID_VALIDATED' and (re.search(r"\bID=" + re.escape(trading) + r"(?!\d)", e.detail or '') or (e.detail or '').strip() == trading) and ("BROKER=" not in (e.detail or '') or f"BROKER={broker}" in (e.detail or ''))), None)
+            lines.append("Validado: " + _admin_local_stamp(event.created_at if event else None))
+    reported = next((e for e in events if e.event_type == 'DEPOSIT_REPORTED'), None)
+    confirmed = next((e for e in events if e.event_type == 'DEPOSIT_VALIDATED'), None)
+    if reported and (not confirmed or reported.id > confirmed.id):
+        lines.append("💰 Depósito: pendiente de confirmar · " + _admin_local_stamp(reported.created_at))
+        lines.append("📷 Comprobante: " + ("disponible · VER COMPROBANTE" if _admin_review_proof_info(chat_id).get('file_id') else "no guardado; requiere reenvío"))
+    elif confirmed:
+        lines.append("💰 Último depósito confirmado: " + _admin_local_stamp(confirmed.created_at))
+    else:
+        lines.append("💰 Depósito: sin confirmación registrada")
+    part = _premium100_participant(chat_id)
+    if part:
+        status = part.get('status')
+        if status == 'RESERVED' and part.get('reserved_until'):
+            lines.append("⏳ Reserva vigente: " + _premium100_reservation_remaining_text(part['reserved_until']) + " · vence " + _admin_local_stamp(part['reserved_until']))
+        elif status == 'PROOF_PENDING':
+            lines.append("📷 Cupo protegido mientras se revisa el comprobante")
+        elif status == 'ACTIVATED':
+            lines.append("🔥 Promoción activada · ingreso a canales se comprueba abajo")
+        else:
+            lines.append("⏳ Sin reserva vigente. Los 90 minutos aplican solo a los últimos 5 cupos; validar el ID no inicia ese plazo por sí solo.")
+    state = _vip_get_state(chat_id, create=False) or {}
+    level = state.get('level') or VIP_LEVEL_NONE
+    if level != VIP_LEVEL_NONE:
+        keys = _vip_channel_keys_for_level(level)
+        pending = state.get('pending_keys') or []
+        done = sum(k not in pending for k in keys)
+        lines.append(f"👑 Nivel asignado: {_vip_level_label(level, 'es')}")
+        lines.append(f"🔑 Accesos confirmados en el flujo: {done}/{len(keys)}")
+        if pending:
+            names = [(VIP_ACCESS_CHANNELS.get(k) or {}).get('name_es') or k for k in pending]
+            lines.append("Pendientes: " + ", ".join(names))
+            pause = _vip_get_pause(chat_id)
+            if pause and pause.get('due_at'):
+                lines.append("Pausa hasta: " + _admin_local_stamp(pause['due_at']))
+        token = _vip_completion_token(chat_id, level)
+        welcome = _vip_completion_seen(chat_id, 'VIP_WELCOME_SENT', token)
+        admin = _vip_completion_seen(chat_id, 'VIP_ADMIN_COMPLETED_SENT', token)
+        lines.append("Bienvenida final: " + ("enviada ✅" if welcome else "sin constancia de envío; REVISAR ACCESOS"))
+        lines.append("Aviso de ingreso al administrador: " + ("enviado ✅" if admin else "pendiente / sin constancia anterior"))
+    else:
+        lines.append("🔑 Accesos: todavía sin nivel asignado")
+    return "\n".join(lines)
+
+
+async def _admin_access_progress_list(context, page: int = 0):
+    with Session() as session:
+        query = session.query(VIPAccessState, Usuario.nombre).outerjoin(Usuario, Usuario.telegram_id == VIPAccessState.telegram_id).filter(VIPAccessState.level != VIP_LEVEL_NONE)
+        total = query.count()
+        pages = max(1, (total + 11) // 12)
+        page = min(max(0, page), pages - 1)
+        users = query.order_by(VIPAccessState.updated_at.desc(), VIPAccessState.telegram_id).offset(page * 12).limit(12).all()
+        rows = []
+        for state, name in users:
+            keys = _vip_channel_keys_for_level(state.level)
+            pending = (state.pending_access_keys or '').split(',')
+            done = sum(k not in pending for k in keys)
+            rows.append([InlineKeyboardButton(f"{name or state.telegram_id} · {_vip_level_label(state.level, 'es')} · {done}/{len(keys)}"[:100], callback_data=f"admin_user_open:{state.telegram_id}")])
+        nav = []
+        if page:
+            nav.append(InlineKeyboardButton("⬅️", callback_data=f"admin_panel_access_progress:{page-1}"))
+        if page + 1 < pages:
+            nav.append(InlineKeyboardButton("➡️", callback_data=f"admin_panel_access_progress:{page+1}"))
+        if nav:
+            rows.append(nav)
+        rows.append([InlineKeyboardButton("↩️ PANEL", callback_data="admin_panel_premium100_back")])
+    await _admin_review_render(context, text=f"🔑 ESTADO DE ACCESOS · {page+1}/{pages}\n\nUsuarios con nivel asignado, del más reciente al más antiguo. Abre su ficha para ver canales pendientes y constancia del aviso final.\n\nNivel asignado no significa ingreso completado.", reply_markup=InlineKeyboardMarkup(rows))
+
+
 async def _vip_notify_admin_completed(context: ContextTypes.DEFAULT_TYPE, chat_id: int, level: str):
     """Avisa a Johanna cuando el usuario completó TODOS los accesos de su nivel."""
     try:
@@ -3946,6 +4140,8 @@ async def _vip_notify_admin_completed(context: ContextTypes.DEFAULT_TYPE, chat_i
         )
     except Exception as e:
         logging.warning("No pude avisar al admin del ingreso VIP completo de %s: %s", chat_id, e)
+        return False
+    return True
 
 
 async def _vip_send_next_or_welcome(
@@ -4052,16 +4248,7 @@ async def _vip_send_next_or_welcome(
     # Si acabamos de retirar el último pendiente, enviamos cierre aunque el
     # welcome_level hubiese quedado marcado en una prueba anterior.
     if just_completed or should_welcome:
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=_vip_final_welcome_text(level, lang),
-                reply_markup=support_keyboard(lang, chat_id),
-                disable_web_page_preview=True,
-            )
-            await _vip_notify_admin_completed(context, chat_id, level)
-        except Exception as e:
-            logging.warning("Accesos VIP completos para %s, pero no pude enviar bienvenida: %s", chat_id, e)
+        await _vip_finish_completion(context, chat_id)
 
 
 async def _vip_finalize_confirmed_membership(
@@ -6400,6 +6587,7 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🎟 CÓDIGOS PROMO", callback_data="admin_panel_promos")],
         [InlineKeyboardButton("🔥 PROMO PREMIUM USD 100", callback_data="admin_panel_premium100")],
         [InlineKeyboardButton("👤 GESTIONAR USUARIO", callback_data="admin_panel_users")],
+        [InlineKeyboardButton("🔑 ESTADO DE ACCESOS", callback_data="admin_panel_access_progress:0")],
         [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
         [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")],
         [InlineKeyboardButton("🏠 /start — Inicio", callback_data="admin_panel_start")],
@@ -6692,6 +6880,8 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
         active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
         if active_level != VIP_LEVEL_PRESTIGE:
             buttons.append([InlineKeyboardButton("💰 CONFIRMAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
+    if (_vip_get_state(chat_id, create=False) or {}).get("level", VIP_LEVEL_NONE) != VIP_LEVEL_NONE:
+        buttons.append([InlineKeyboardButton("🔑 REVISAR ACCESOS / AVISO FINAL", callback_data=f"admin_user_access_progress:{chat_id}")])
     promo100_part = _premium100_participant(chat_id)
     stockity_account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
     if stockity_account.get("id_validated") and _active_member_level(chat_id) == VIP_LEVEL_NONE and (not promo100_part or promo100_part.get("status") in {"ENTERED", "ID_SUBMITTED"}):
@@ -6789,7 +6979,7 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
     if not record:
         await _admin_review_render(context, chat_id=ADMIN_ID, text=f"⚠️ No encontré al usuario {chat_id} en la base del bot.")
         return
-    stage_label = {STAGE_PRE: "PRE — pendiente de validar ID", STAGE_POST: "POST — ID validado / esperando depósito", STAGE_DEPOSITED: "DEPOSITED — cuenta activa"}.get(record["stage"], record["stage"])
+    stage_label = {STAGE_PRE: "PRE — pendiente de validar ID", STAGE_POST: "POST — ID validado / esperando depósito", STAGE_DEPOSITED: "DEPOSITED — nivel asignado"}.get(record["stage"], record["stage"])
     trading = record["trading_id"] or "No registrado en el bot"
     vip_state = _vip_get_state(chat_id, create=False)
     vip_extra = ""
@@ -6799,8 +6989,6 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
             f"\nNivel VIP: {_vip_level_label(vip_state['level'], 'es')}"
             f"\nTotal referencia global: USD {_usd(vip_state['total_cents'])}"
         )
-    if broker_summary:
-        vip_extra += f"\n\n🏦 CUENTAS POR BROKER\n{broker_summary}"
     text_value = (prefix + "\n\n" if prefix else "") + (
         f"👤 {record['nombre']}\n"
         f"Telegram ID: {record['chat_id']}\n"
@@ -6809,6 +6997,7 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
         f"ID de trading: {trading}{vip_extra}"
     )
     text_value += _premium100_admin_user_text(chat_id)
+    text_value += "\n\n" + _admin_user_progress_text(chat_id)
     markup = _admin_user_actions_keyboard(chat_id)
     if context.user_data.get("admin_review_kind") == "DEP" and _admin_deposit_review_eligible(chat_id) and not _admin_review_proof_info(chat_id).get("file_id"):
         markup = InlineKeyboardMarkup([row for row in markup.inline_keyboard if not any((button.callback_data or "").startswith("admin_user_deposit:") for button in row)])
@@ -7663,6 +7852,15 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     _admin_review_bind(context, query)
     data = query.data or ""
 
+    progress = re.fullmatch(r"admin_user_access_progress:(\d+)", data)
+    if progress:
+        cid = int(progress.group(1))
+        state = _vip_get_state(cid, create=False) or {}
+        if state.get("level") and state["level"] != VIP_LEVEL_NONE:
+            await _vip_send_next_or_welcome(context, cid, state["level"], get_user_lang(cid), should_welcome=True)
+        await _show_admin_user(context, cid, "🔑 Estado revisado. El nivel se conserva; el cierre solo se envía cuando no quedan accesos pendientes.")
+        return
+
     recovery = re.fullmatch(r"admin_user_premium100_recover(_confirm)?:(\d+)", data)
     if recovery:
         cid = int(recovery.group(2))
@@ -8371,7 +8569,11 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.from_user.id != ADMIN_ID:
         return
 
-    if (query.data or "").startswith("admin_panel_premium100_ids:"):
+    if (query.data or "").startswith("admin_panel_access_progress:"):
+        _admin_review_bind(context, query)
+        value = query.data.rsplit(":", 1)[-1]
+        await _admin_access_progress_list(context, int(value) if value.isdigit() else 0)
+    elif (query.data or "").startswith("admin_panel_premium100_ids:"):
         _admin_review_bind(context, query)
         page_value = query.data.rsplit(":", 1)[-1]
         await _premium100_admin_ids(context, int(page_value) if page_value.isdigit() else 0)
