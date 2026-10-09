@@ -9937,7 +9937,7 @@ def _encode_pending_payload(messages, answered_topics, message_ids=None):
     )
 
 
-def _set_pending_ai(chat_id: int, text_value: str, message_id: int, answered_topics=None):
+def _set_pending_ai(chat_id: int, text_value: str, message_id: int, answered_topics=None, preserve_wait=False):
     due_at = utcnow_naive() + timedelta(seconds=AI_WAIT_SECONDS)
     answered_topics = answered_topics or []
     with Session() as session:
@@ -9945,7 +9945,7 @@ def _set_pending_ai(chat_id: int, text_value: str, message_id: int, answered_top
         if not u:
             return due_at
         payload = {"messages": [], "message_ids": [], "answered_topics": []}
-        if u.ai_pending_text and u.ai_pending_due_at and u.ai_pending_due_at >= utcnow_naive():
+        if u.ai_pending_text and u.ai_pending_due_at and (preserve_wait or u.ai_pending_due_at >= utcnow_naive()):
             payload = _decode_pending_payload(u.ai_pending_text)
         payload["messages"].append(text_value.strip())
         payload["message_ids"].append(str(message_id))
@@ -9953,8 +9953,11 @@ def _set_pending_ai(chat_id: int, text_value: str, message_id: int, answered_top
         u.ai_pending_text = _encode_pending_payload(
             payload["messages"], payload["answered_topics"], payload["message_ids"]
         )
-        u.ai_pending_message_id = str(message_id)
-        u.ai_pending_due_at = due_at
+        if preserve_wait and u.ai_pending_due_at:
+            due_at = u.ai_pending_due_at
+        else:
+            u.ai_pending_message_id = str(message_id)
+            u.ai_pending_due_at = due_at
         session.commit()
     return due_at
 
@@ -13481,6 +13484,12 @@ def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_v
         logging.info("⏱ IA conserva pregunta y plazo ante insistencia: %s", chat_id)
         return
     message_id = update.effective_message.message_id
+    pending = _get_pending_ai(chat_id)
+    if pending and len(pending.get("messages") or []) < 3:
+        # Acumula la segunda y tercera consulta sin cambiar el plazo ni el job.
+        _set_pending_ai(chat_id, text_value, message_id,
+                        answered_topics=answered_topics or [], preserve_wait=True)
+        return
     _cancel_ai_job(context, chat_id)
     _set_pending_ai(chat_id, text_value, message_id, answered_topics=answered_topics or [])
     if context.job_queue:
@@ -15611,5 +15620,3 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
