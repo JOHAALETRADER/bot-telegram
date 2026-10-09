@@ -1480,6 +1480,164 @@ def _premium100_status_text(chat_id: int, first_name: str = ""):
     return text_value, InlineKeyboardMarkup(rows)
 
 
+
+def _premium100_question(text: str) -> bool:
+    """El descuento de acceso Premium es distinto del bono de saldo del broker."""
+    t = _norm(text)
+    premium = "premium" in t or "premiun" in t
+    amount = bool(re.search(r"(?<!\d)100(?!\d)", t))
+    discount = "50%" in t or "50 %" in t or "descuento" in t or "discount" in t
+    campaign = "promo" in t or "cupo" in t or "slot" in t
+    return (premium and (amount or discount or campaign)) or (campaign and (amount or discount) and "bono" not in t and "bonus" not in t) or t.strip(" ?!.") in {"promo", "promocion", "promociones", "promos activas", "promociones activas"} or (amount and "200" in t and any(x in t for x in ("en lugar", "en vez", "instead")))
+
+
+def _premium100_entry_evidence(chat_id: int):
+    """La entrada registrada es evidencia de origen, no adjudica el beneficio."""
+    try:
+        with Session() as session:
+            rows = session.query(BotEvent).filter(
+                BotEvent.telegram_id == str(chat_id),
+                BotEvent.event_type.in_(["BOT_START", "PREMIUM100_ENTRY", "PREMIUM100_REGISTER_CLICK", "PREMIUM100_ADMIN_RECOVERY"]),
+            ).order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).all()
+            for row in rows:
+                if row.event_type == "BOT_START" and (row.detail or "").strip().lower() != "premium100":
+                    continue
+                origin = {"BOT_START": "Enlace PREMIUM100", "PREMIUM100_ENTRY": "Inscripción en la promoción", "PREMIUM100_REGISTER_CLICK": "Registro promocional Stockity", "PREMIUM100_ADMIN_RECOVERY": "Vinculación confirmada por administradora"}[row.event_type]
+                when = row.created_at.strftime("%d/%m/%Y %H:%M UTC") if row.created_at else "Sin fecha"
+                return {"origin": origin, "date": when}
+    except Exception:
+        logging.exception("No pude consultar origen PREMIUM100 %s", chat_id)
+        return {"origin": "No fue posible consultar el origen", "date": ""}
+    return {"origin": "Sin entrada promocional registrada", "date": ""}
+
+
+def _premium100_admin_user_text(chat_id: int):
+    part = _premium100_participant(chat_id)
+    evidence = _premium100_entry_evidence(chat_id)
+    status = (part or {}).get("status", "SIN INSCRIPCIÓN EN LA EDICIÓN ACTUAL")
+    label = {"ENTERED": "Entrada registrada", "ID_SUBMITTED": "ID por validar", "ID_VALIDATED": "ID validado", "RESERVED": "Cupo reservado", "PROOF_PENDING": "Comprobante por confirmar", "ACTIVATED": "Premium promocional activado"}.get(status, status)
+    account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+    validated = bool(account.get("id_validated") and account.get("trading_id"))
+    return (f"\n\n🔥 PROMOCIÓN PREMIUM USD 100\nEstado: {label}"
+            f"\nOrigen: {evidence['origin']} {evidence['date']}"
+            f"\nID Stockity: {account.get('trading_id') or (part or {}).get('stockity_id') or 'No enviado'}"
+            f" · {'VALIDADO' if validated else 'NO VALIDADO'}")
+
+
+def _premium100_recover_registration(chat_id: int):
+    """Solo se llama tras confirmación expresa de admin; no valida IDs ni depósitos."""
+    try:
+        with Session() as session:
+            cfg = session.query(Premium100Config).filter_by(config_key=PREMIUM100_CONFIG_KEY).with_for_update().first()
+            if not cfg or not cfg.active:
+                return False, "La promoción está pausada."
+            account = session.query(BrokerAccountState).filter_by(account_key=_broker_key(chat_id, BROKER_STOCKITY)).with_for_update().first()
+            if not account or not account.id_validated or not (account.trading_id or '').strip():
+                return False, "Primero debe estar validado el ID Stockity."
+            states = session.query(BrokerAccountState).filter_by(telegram_id=str(chat_id)).all()
+            vip = session.get(VIPAccessState, str(chat_id))
+            if any(int(r.validated_deposit_count or 0) or int(r.validated_total_cents or 0) or (r.level or VIP_LEVEL_NONE) != VIP_LEVEL_NONE for r in states) or (vip and ((vip.level or VIP_LEVEL_NONE) != VIP_LEVEL_NONE or int(vip.validated_total_cents or 0))):
+                return False, "Tiene depósitos confirmados o nivel activo; no se modifica."
+            if any(r.broker != BROKER_STOCKITY and (r.trading_id or r.pending_trading_id or r.id_validated) for r in states):
+                return False, "Tiene otra cuenta previa; revisa su elegibilidad antes de continuar."
+            key = _premium100_key(cfg.edition, chat_id)
+            part = session.get(Premium100Participant, key)
+            if part and part.status in {"ID_VALIDATED", "RESERVED", "PROOF_PENDING", "ACTIVATED"}:
+                return True, "Ya está vinculado; conservé el estado y el cupo."
+            counts = _premium100_counts_locked(session, cfg)
+            if counts['available'] <= 0:
+                session.commit()
+                return False, "No hay cupos disponibles."
+            if part and part.status not in {"ENTERED", "ID_SUBMITTED"}:
+                return False, "Este estado requiere revisión; no se modificó."
+            if not part:
+                part = Premium100Participant(participant_key=key, telegram_id=str(chat_id), edition=int(cfg.edition), entered_at=utcnow_naive())
+                session.add(part)
+            part.status = "ID_VALIDATED"
+            part.stockity_id = account.trading_id.strip()
+            part.updated_at = utcnow_naive()
+            session.commit()
+        _log_event(chat_id, "PREMIUM100_ADMIN_RECOVERY", "Cuenta nueva promocional confirmada por ADMIN; ID conservado")
+        return True, "Inscripción promocional vinculada. Conservé el ID validado, el broker y el nivel. No confirmé ningún depósito ni reservé cupo."
+    except Exception:
+        logging.exception("No pude recuperar inscripción PREMIUM100 %s", chat_id)
+        return False, "No pude guardar la vinculación; no se ha confirmado."
+
+
+async def _premium100_admin_ids(context, page: int = 0):
+    cfg = _premium100_get_config(create=False)
+    if not cfg:
+        await _admin_review_render(context, text="No hay una edición promocional configurada.", reply_markup=_premium100_admin_keyboard())
+        return
+    try:
+        with Session() as session:
+            participants = session.query(Premium100Participant).filter_by(edition=cfg['edition']).all()
+            entries = {int(p.telegram_id): (p.stockity_id or '', p.status or 'ENTERED') for p in participants}
+            # Detecta entradas antiguas que no llegaron a crear inscripción durante la interrupción.
+            starts = session.query(BotEvent).filter_by(event_type="BOT_START").filter(func.lower(BotEvent.detail) == "premium100").all()
+            for event in starts:
+                if str(event.telegram_id or '').isdigit():
+                    entries.setdefault(int(event.telegram_id), ('', 'REVISAR ENTRADA · SIN INSCRIPCIÓN'))
+            users = {int(u.telegram_id): u.nombre for u in session.query(Usuario).filter(Usuario.telegram_id.in_([str(i) for i in entries])).all()}
+            ids = sorted(entries, reverse=True)
+            pages = max(1, (len(ids) + 11) // 12)
+            page = min(max(0, page), pages - 1)
+            rows = []
+            for cid in ids[page * 12:(page + 1) * 12]:
+                trading_id, status = entries[cid]
+                account = session.get(BrokerAccountState, _broker_key(cid, BROKER_STOCKITY))
+                validated = bool(account and account.id_validated and account.trading_id)
+                label = f"{'✅' if validated else '⏳'} {users.get(cid) or cid} · ID {trading_id or (account.trading_id if account else '') or '—'}"
+                if status.startswith('REVISAR'):
+                    label = f"🔎 REVISAR · {users.get(cid) or cid}"
+                rows.append([InlineKeyboardButton(label[:100], callback_data=f"admin_user_open:{cid}")])
+            nav = []
+            if page:
+                nav.append(InlineKeyboardButton("⬅️", callback_data=f"admin_panel_premium100_ids:{page-1}"))
+            if page + 1 < pages:
+                nav.append(InlineKeyboardButton("➡️", callback_data=f"admin_panel_premium100_ids:{page+1}"))
+            if nav:
+                rows.append(nav)
+            rows.append([InlineKeyboardButton("↩️ PROMOCIÓN", callback_data="admin_panel_premium100")])
+        await _admin_review_render(context, text=f"🆔 IDS DE LA PROMOCIÓN · EDICIÓN {cfg['edition']}\nPágina {page+1}/{pages}\n\n✅ ID Stockity validado · ⏳ ID pendiente\n🔎 Entrada por enlace sin inscripción: requiere revisión, no tiene beneficio confirmado.\nAbre una ficha para ver estado, origen y vincular una inscripción afectada.\n\n" + ("No hay entradas registradas." if not ids else f"Registros: {len(ids)}"), reply_markup=InlineKeyboardMarkup(rows))
+    except Exception:
+        logging.exception("No pude listar IDs PREMIUM100")
+        await _admin_review_render(context, text="No pude consultar el listado. Intenta nuevamente.", reply_markup=_premium100_admin_keyboard())
+
+
+def _premium100_answer(question: str, chat_id: int, lang: str = "es") -> str:
+    part = _premium100_participant(chat_id)
+    if not _premium100_question(question) and not (part and _is_min_50_intent(question)):
+        return ""
+    counts = _premium100_counts()
+    account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+    en = lang == "en"
+    status = (part or {}).get('status')
+    if status == 'ACTIVATED':
+        return ("Your promotional Premium access was activated. Your real validated deposit is used for future upgrades under the normal upgrade rules." if en else "Tu acceso Premium promocional ya fue activado. Para futuros upgrades se cuenta tu depósito real validado y se aplican las reglas normales de upgrade.")
+    if _active_member_level(chat_id) != VIP_LEVEL_NONE:
+        return ("This promotion is exclusively for new Stockity accounts without an active community level. It does not replace your current level or the normal upgrade rules." if en else "Esta promoción es exclusiva para cuentas nuevas Stockity sin nivel activo en la comunidad. No reemplaza tu nivel actual ni las reglas normales de upgrade.")
+    protected = status in {'RESERVED', 'PROOF_PENDING'}
+    available = counts.get('available', 0)
+    if not counts.get('active') and not protected:
+        return ("The Premium USD 100 promotion is paused. I cannot promise this benefit while it is paused. The normal Premium minimum remains USD 200." if en else "La promoción Premium por USD 100 está pausada. No puedo prometer ese beneficio mientras esté pausada. El mínimo normal de Premium sigue siendo USD 200.")
+    if available <= 0 and not protected:
+        return ("There are no available Premium USD 100 slots. The normal levels remain unchanged." if en else "No quedan cupos disponibles de Premium por USD 100. Los niveles habituales conservan sus condiciones.")
+    msg = (f"The promotion grants Premium from USD 100 and below USD 200, exclusively for new Stockity accounts enrolled in this campaign. Available slots: {available}/{counts['total']}. This is a community access promotion, separate from the broker's 100% balance bonus." if en else f"La promoción permite acceder a Premium desde USD 100 y menos de USD 200, exclusivamente con una cuenta nueva Stockity inscrita en esta campaña. Cupos disponibles: {available}/{counts['total']}. Es una promoción de acceso a la comunidad, distinta del bono del 100 % de saldo del broker.")
+    if status == 'PROOF_PENDING':
+        msg += "\n\nYour receipt was received and your slot is protected while Johanna reviews it." if en else "\n\nTu comprobante ya fue recibido y tu cupo está protegido mientras Johanna lo revisa."
+    elif status == 'RESERVED':
+        msg += ("\n\nYour ID is validated. Complete the deposit and send the receipt before your existing reservation expires: " if en else "\n\nTu ID está validado. Realiza el depósito y envía el comprobante antes del vencimiento de tu reserva: ") + _premium100_reservation_remaining_text(part.get('reserved_until'))
+    elif part and account.get('id_validated'):
+        msg += "\n\nYour ID is already validated and you are enrolled. You do not need to register again. Continue with the deposit in your validated Stockity account and send its receipt. Enrollment alone does not reserve a slot." if en else "\n\nTu ID ya está validado y tienes inscripción promocional. No necesitas registrarte nuevamente. Continúa con el depósito en tu cuenta Stockity validada y envía el comprobante. La inscripción por sí sola no reserva un cupo."
+    elif not part and account.get('id_validated'):
+        msg += "\n\nYour Stockity ID is already validated; do not repeat registration. Your promotional enrollment is not confirmed in the system. Johanna must review and link it before I can confirm this benefit. Do not deposit expecting the promotion until she confirms it." if en else "\n\nTu ID Stockity ya está validado; no repitas el registro. Tu inscripción promocional no está confirmada en el sistema. Johanna debe revisarla y vincularla antes de que pueda confirmarte este beneficio. No deposites esperando la promoción hasta tener esa confirmación."
+    else:
+        msg += "\n\nUse the official promotion entry, send your new Stockity account ID and wait for validation before depositing." if en else "\n\nEntra por la promoción oficial, envía el ID de tu cuenta nueva Stockity y espera su validación antes de depositar."
+    msg += "\n\nA 90-minute reservation is available only for the last 5 slots, after ID validation. Outside this promotion, Basic/Premium/Prestige keep their normal thresholds." if en else "\n\nLa reserva de 90 minutos aplica solo en los últimos 5 cupos, después de validar el ID. Fuera de esta promoción, Básico/Premium/Prestige mantienen sus mínimos normales."
+    return msg
+
+
 def _premium100_admin_text():
     counts = _premium100_counts()
     status = "🟢 ACTIVA" if counts.get("active") else "⏸ PAUSADA"
@@ -1492,6 +1650,7 @@ def _premium100_admin_text():
         f"📷 Comprobantes pendientes: {counts.get('proof_pending', 0)}\n"
         f"⏳ Reservados: {counts.get('reserved', 0)}\n"
         f"🔥 Disponibles: {counts.get('available', 0)}\n\n"
+        "Enlace oficial: https://t.me/JOHAALETRADER_bot?start=PREMIUM100\n\n"
         "Reglas: Stockity · cuenta nueva · Premium desde USD 100 y < USD 200. "
         "Si deposita USD 200 o más, aplica el nivel normal y se libera el cupo promocional."
     )
@@ -1502,6 +1661,7 @@ def _premium100_admin_keyboard():
     toggle = "⏸ PAUSAR PROMOCIÓN" if counts.get("active") else "▶️ ACTIVAR PROMOCIÓN"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(toggle, callback_data="admin_panel_premium100_toggle")],
+        [InlineKeyboardButton("🆔 IDS DE LA PROMOCIÓN", callback_data="admin_panel_premium100_ids:0")],
         [InlineKeyboardButton("🔢 CAMBIAR CUPOS TOTALES", callback_data="admin_panel_premium100_slots")],
         [InlineKeyboardButton("♻️ NUEVA EDICIÓN", callback_data="admin_panel_premium100_new")],
         [InlineKeyboardButton("↩️ VOLVER AL PANEL", callback_data="admin_panel_premium100_back")],
@@ -5841,6 +6001,11 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE, 
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
+    if _premium100_question(question):
+        rows = [[InlineKeyboardButton("📚 VIEW LEVELS" if lang == "en" else "📚 VER NIVELES", url=TELEGRAPH_LEVELS_URL)]]
+        if chat_id is not None and _premium100_participant(chat_id):
+            rows.insert(0, [InlineKeyboardButton("🔥 MY PROMOTION" if lang == "en" else "🔥 MI PROMOCIÓN", callback_data="premium100_open")])
+        return InlineKeyboardMarkup(rows)
     current_level = VIP_LEVEL_NONE
     current_stage = None
     if chat_id is not None:
@@ -5937,6 +6102,8 @@ def _is_bonus_or_promo_mention(texto: str) -> bool:
 
 def _is_simple_bonus_lookup(texto: str) -> bool:
     """Solo códigos/bonos activos; recomendaciones y condiciones pasan a IA."""
+    if _premium100_question(texto):
+        return False
     t = _norm(texto or "")
     nuanced = (
         "recomiend", "conviene", "deberia", "debería", "condicion", "condición", "requisito", "volumen",
@@ -6183,6 +6350,7 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                     "Se guarda el depósito REAL validado y cuenta para un futuro Prestige bajo las reglas vigentes de upgrade. "
                     "No aplica a usuarios con un nivel ya activo."
                 )
+            lines.append("IMPORTANT: Premium USD 100 access promotion is NOT the broker balance bonus. Never replace a question about discounted Premium access with a 100% bonus code. Never claim promotional enrollment from the user's words alone. A validated Stockity ID does not automatically prove promotional enrollment. If a validated ID lacks a participant record, refer enrollment review to Johanna; do not request registration again. For a USD 100 level question, normal Basic applies unless eligible promotional enrollment is confirmed; mention the active promotion conditionally. No separate Stockity community groups exist: access channels are determined by community level. Do not invent broker-specific signal incompatibility or portray CRYPTO IDX as a generic cryptocurrency market.")
             if p100_part:
                 lines.append(("User PREMIUM100 status: " if lang == "en" else "Estado PREMIUM100 del usuario: ") + str(p100_part.get("status") or ""))
     except Exception as e:
@@ -6519,6 +6687,9 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
         if active_level != VIP_LEVEL_PRESTIGE:
             buttons.append([InlineKeyboardButton("💰 CONFIRMAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
     promo100_part = _premium100_participant(chat_id)
+    stockity_account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+    if stockity_account.get("id_validated") and _active_member_level(chat_id) == VIP_LEVEL_NONE and (not promo100_part or promo100_part.get("status") in {"ENTERED", "ID_SUBMITTED"}):
+        buttons.append([InlineKeyboardButton("🔥 REVISAR INSCRIPCIÓN PROMO", callback_data=f"admin_user_premium100_recover:{chat_id}")])
     if promo100_part and promo100_part.get("status") in {"RESERVED", "PROOF_PENDING"}:
         buttons.append([InlineKeyboardButton("🧹 LIBERAR CUPO PREMIUM100", callback_data=f"admin_user_premium100_release:{chat_id}")])
     if deposit_eligible and _admin_review_proof_info(chat_id).get("file_id"):
@@ -6631,6 +6802,7 @@ async def _show_admin_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pre
         f"{'✅ ID VALIDADO' if _strict_validated_id_state(chat_id) else '⏳ ID NO VALIDADO'}\n"
         f"ID de trading: {trading}{vip_extra}"
     )
+    text_value += _premium100_admin_user_text(chat_id)
     markup = _admin_user_actions_keyboard(chat_id)
     if context.user_data.get("admin_review_kind") == "DEP" and _admin_deposit_review_eligible(chat_id) and not _admin_review_proof_info(chat_id).get("file_id"):
         markup = InlineKeyboardMarkup([row for row in markup.inline_keyboard if not any((button.callback_data or "").startswith("admin_user_deposit:") for button in row)])
@@ -7485,6 +7657,19 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     _admin_review_bind(context, query)
     data = query.data or ""
 
+    recovery = re.fullmatch(r"admin_user_premium100_recover(_confirm)?:(\d+)", data)
+    if recovery:
+        cid = int(recovery.group(2))
+        if recovery.group(1):
+            ok, message = _premium100_recover_registration(cid)
+            await _show_admin_user(context, cid, ("✅ " if ok else "⚠️ ") + message)
+        else:
+            await _admin_review_render(context, text="🔥 REVISAR INSCRIPCIÓN PROMOCIONAL\n\n" + _premium100_admin_user_text(cid).strip() + "\n\nConfirma únicamente si verificaste que esta cuenta nueva corresponde a la campaña. Una entrada por enlace no garantiza elegibilidad. Se conservará el ID validado; no se confirma depósito ni se activa nivel.", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ CONFIRMO CUENTA NUEVA DE LA CAMPAÑA", callback_data=f"admin_user_premium100_recover_confirm:{cid}")],
+                [InlineKeyboardButton("↩️ CANCELAR", callback_data=f"admin_user_open:{cid}")],
+            ]))
+        return
+
     promo_release = re.fullmatch(r"admin_user_premium100_release:(\d+)", data)
     if promo_release:
         cid = int(promo_release.group(1))
@@ -8180,7 +8365,11 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.from_user.id != ADMIN_ID:
         return
 
-    if query.data == "admin_panel_live":
+    if (query.data or "").startswith("admin_panel_premium100_ids:"):
+        _admin_review_bind(context, query)
+        page_value = query.data.rsplit(":", 1)[-1]
+        await _premium100_admin_ids(context, int(page_value) if page_value.isdigit() else 0)
+    elif query.data == "admin_panel_live":
         await live_command(update, context)
     elif query.data == "admin_panel_marketing":
         await marketing_command(update, context)
@@ -9169,6 +9358,11 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if q.data == "premium100_register":
+        account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+        if account.get("id_validated"):
+            msg = _premium100_answer("Premium promo 100", chat_id, get_user_lang(chat_id))
+            await q.message.reply_text(msg, reply_markup=ai_context_keyboard("Premium promo 100", get_user_lang(chat_id), chat_id))
+            return
         ok, reason, _ = _premium100_begin(chat_id)
         if not ok:
             txt, kb = _premium100_status_text(chat_id, getattr(q.from_user, "first_name", ""))
@@ -13129,6 +13323,9 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
 
 
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    promo_answer = _premium100_answer(question, chat_id, lang)
+    if promo_answer:
+        return promo_answer
     if not (HAS_HTTPX and OPENAI_API_KEY):
         return ""
     try:
@@ -14815,6 +15012,10 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     texto = update.message.text or update.message.caption or user_audio_transcript or ""
     if not texto.strip():
+        return
+
+    if _premium100_question(texto) and not _extract_candidate_trading_id(texto):
+        schedule_ai_reply(update, context, texto)
         return
 
     # v7.10.73 — ROUTER CONVERSACIONAL PREVIO A INTENCIONES COMERCIALES.
