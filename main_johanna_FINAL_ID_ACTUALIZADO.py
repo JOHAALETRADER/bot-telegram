@@ -6209,12 +6209,17 @@ def _ai_entry_promo_available(question: str, chat_id: int) -> bool:
 def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str:
     if not _ai_entry_promo_available(question, chat_id):
         return ""
+    counts = _premium100_counts()
+    slots = counts.get("available", 0)
+    total = counts.get("total", PREMIUM100_DEFAULT_SLOTS)
     if lang == "en":
-        return ("The normal community minimum is USD 50 for Basic; normal Premium starts at USD 200.\n\n"
-                "There is also a promotion to access Premium tools with USD 100 instead of USD 200, exclusively for new Stockity accounts enrolled in the promotion, subject to available slots or your existing reservation. See Premium and the promotion in the buttons below 👇\n\n"
+        return ("The community minimum is USD 50 for Basic. USD 200 is recommended for normal Premium.\n\n"
+                "There is also a promotion to access Premium tools with USD 100 instead of USD 200, exclusively for new Stockity accounts enrolled in the promotion, subject to available slots or your existing reservation. "
+                f"Available slots: {slots}/{total}. See Premium and the promotion in the buttons below 👇\n\n"
                 "Wait for account ID validation and promotion eligibility confirmation before depositing. The money stays in your own trading account; trading involves a risk of loss.")
-    return ("El mínimo habitual de la comunidad es USD 50 para Básico; Premium normal comienza en USD 200.\n\n"
-            "También hay una promo para acceder a las herramientas Premium con USD 100 en vez de USD 200, exclusiva para cuentas nuevas Stockity inscritas en la promoción, según cupos disponibles o tu reserva vigente. Mira Premium y la promoción en los siguientes botones 👇\n\n"
+    return ("El mínimo de la comunidad es USD 50 para Básico. Lo recomendado es USD 200 para Premium normal.\n\n"
+            "También hay una promo para acceder a las herramientas Premium con USD 100 en vez de USD 200, exclusiva para cuentas nuevas Stockity inscritas en la promoción, según cupos disponibles o tu reserva vigente. "
+            f"Cupos disponibles: {slots}/{total}. Mira Premium y la promoción en los siguientes botones 👇\n\n"
             "Antes de depositar, espera la validación del ID y la confirmación de que aplica la promoción. El dinero queda en tu propia cuenta de trading; operar implica riesgo de pérdida.")
 
 
