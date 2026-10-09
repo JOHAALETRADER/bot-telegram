@@ -13475,6 +13475,11 @@ def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_v
     chat_id = update.effective_chat.id
     if not _is_private_user_id(chat_id):
         return
+    # Una insistencia sin contenido nuevo no reemplaza la pregunta ni reinicia
+    # su espera; conserva también el ID que verifica el trabajo ya programado.
+    if re.fullmatch(r"[\s¿?]+", text_value) and _get_pending_ai(chat_id):
+        logging.info("⏱ IA conserva pregunta y plazo ante insistencia: %s", chat_id)
+        return
     message_id = update.effective_message.message_id
     _cancel_ai_job(context, chat_id)
     _set_pending_ai(chat_id, text_value, message_id, answered_topics=answered_topics or [])
@@ -15606,4 +15611,5 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
