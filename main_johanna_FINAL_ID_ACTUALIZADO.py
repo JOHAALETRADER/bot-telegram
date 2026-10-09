@@ -16918,8 +16918,116 @@ async def _lock_signals_premium_general_topic(bot, *, notify_admin: bool = False
     return ok_any
 
 
+# Vigilancia administrativa independiente de depósitos y entrega de accesos.
+_VIP_CHANNEL_WATCH_LOCKS = {}
+
+
+def _vip_channel_watch_last(key):
+    with Session() as session:
+        row = session.query(BotEvent).filter(BotEvent.telegram_id == str(ADMIN_ID), BotEvent.event_type == "VIP_CHANNEL_WATCH", BotEvent.detail.like(f'{key}|%')).order_by(BotEvent.id.desc()).first()
+        if not row:
+            return None
+        return json.loads(row.detail.split("|", 1)[1])
+
+
+def _vip_channel_watch_store(key, state):
+    with Session() as session:
+        session.add(BotEvent(telegram_id=str(ADMIN_ID), event_type="VIP_CHANNEL_WATCH", detail=key + "|" + json.dumps(state, ensure_ascii=False), created_at=utcnow_naive()))
+        session.commit()
+
+
+def _vip_channel_watch_member(member):
+    status = str(getattr(member, "status", "") or "").lower()
+    if status not in {"administrator", "creator"}:
+        return "NOT_ADMIN", f"Estado del bot: {status or 'desconocido'}. No tiene administración."
+    if status == "creator":
+        return "OK", "Administrador operativo."
+    missing = [label for attr, label in [("can_invite_users", "aprobar solicitudes"), ("can_restrict_members", "gestionar accesos de usuarios")] if not getattr(member, attr, False)]
+    if missing:
+        return "MISSING_RIGHTS:" + ",".join(missing), "Faltan permisos para: " + ", ".join(missing) + "."
+    return "OK", "Administrador operativo."
+
+
+async def _vip_channel_watch_publish(context, key, channel_id, code, reason, *, actor="", stamp=None):
+    lock = _VIP_CHANNEL_WATCH_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        previous = _vip_channel_watch_last(key)
+        fingerprint = f"{channel_id}:{code}"
+        if previous and previous.get("fingerprint") == fingerprint and previous.get("notified"):
+            return
+        if not previous and code == "OK":
+            _vip_channel_watch_store(key, {"fingerprint": fingerprint, "code": code, "notified": True})
+            return
+        same = bool(previous and previous.get("fingerprint") == fingerprint)
+        state = dict(previous) if same else {"fingerprint": fingerprint, "code": code, "notified": False, "reason": reason, "actor": actor, "stamp": (stamp or utcnow_naive()).isoformat()}
+        if not same:
+            _vip_channel_watch_store(key, state)
+        info = VIP_ACCESS_CHANNELS[key]
+        levels = ", ".join(_vip_level_label(level, "es") for level in info.get("levels", ()))
+        title = "✅ CANAL RECUPERADO" if code == "OK" else "🚨 ALERTA DE ACCESO DEL BOT"
+        message = (f"{title}\n\nCanal: {info.get('name_es') or key}\nNiveles: {levels}\nChat ID: {channel_id if channel_id is not None else 'NO IDENTIFICADO'}\nBot: @{context.bot.username}\n\n{state.get('reason') or reason}\nFecha: {_admin_local_stamp(datetime.fromisoformat(state['stamp']))}")
+        if state.get("actor"):
+            message += "\nCambio informado por Telegram: " + state["actor"]
+        if code != "OK":
+            message += "\n\nRevisa la administración y los permisos del bot en este canal. Los niveles y depósitos de los usuarios se conservan."
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=message)
+        except Exception as e:
+            logging.warning("No pude entregar alerta de canal %s; se reintentará: %s", key, e)
+            return
+        state["notified"] = True
+        _vip_channel_watch_store(key, state)
+
+
+async def vip_channel_bot_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    change = getattr(update, "my_chat_member", None)
+    if not change or not getattr(change, "chat", None):
+        return
+    try:
+        key = _vip_access_key_from_chat(change.chat)
+        if not key:
+            return
+        code, reason = _vip_channel_watch_member(change.new_chat_member)
+        actor_user = getattr(change, "from_user", None)
+        actor = (f"{getattr(actor_user, 'full_name', '')} (@{actor_user.username})" if getattr(actor_user, "username", None) else f"{getattr(actor_user, 'full_name', '')} (ID: {getattr(actor_user, 'id', '')})") if actor_user else ""
+        await _vip_channel_watch_publish(context, key, change.chat.id, code, reason, actor=actor, stamp=getattr(change, "date", None))
+    except Exception as e:
+        logging.warning("No pude registrar cambio de administración VIP: %s", e)
+
+
+async def vip_channel_watch_job(context: ContextTypes.DEFAULT_TYPE):
+    # Todos los accesos definidos en cualquier nivel; una consulta por canal.
+    keys = list(dict.fromkeys(key for keys in VIP_LEVEL_CHANNEL_KEYS.values() for key in keys))
+    for key in keys:
+        if key not in VIP_ACCESS_CHANNELS:
+            continue
+        channel_id = _vip_mapped_chat_id(key)
+        code, reason = "NO_CHAT_ID", "No hay un identificador de canal disponible para verificar al bot."
+        if channel_id is not None:
+            try:
+                await context.bot.get_chat(channel_id)
+                member = await context.bot.get_chat_member(chat_id=channel_id, user_id=context.bot.id)
+                code, reason = _vip_channel_watch_member(member)
+            except Exception as e:
+                from telegram.error import Forbidden, BadRequest, NetworkError
+                if isinstance(e, Forbidden):
+                    code, reason = "FORBIDDEN", "Telegram rechaza el acceso del bot al canal."
+                elif isinstance(e, BadRequest):
+                    code, reason = "BAD_REQUEST", "Telegram no permite consultar este canal: " + str(e)[:300]
+                elif isinstance(e, NetworkError):
+                    code, reason = "NETWORK", "No se pudo comprobar el canal por un fallo de conexión con Telegram."
+                else:
+                    code, reason = "CHECK_FAILED", "No se pudo verificar el canal: " + str(e)[:300]
+        try:
+            await _vip_channel_watch_publish(context, key, channel_id, code, reason)
+        except Exception as e:
+            logging.warning("Vigilancia VIP falló para %s sin detener el bot: %s", key, e)
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
+    if application.job_queue and not application.job_queue.get_jobs_by_name("VIP_CHANNEL_WATCH"):
+        application.job_queue.run_repeating(vip_channel_watch_job, interval=300, first=10, name="VIP_CHANNEL_WATCH", job_kwargs={"max_instances": 1, "coalesce": True})
     _cleanup_non_private_artifacts()
     await recover_pending_ai_jobs(application)
     await recover_pending_campaign_jobs(application)
@@ -16961,6 +17069,9 @@ if __name__ == "__main__":
         .post_init(post_init_app)
         .build()
     )
+
+    # Cambios del propio bot: observar sin tocar flujos ni detener otros handlers.
+    app.add_handler(ChatMemberHandler(vip_channel_bot_member_update, ChatMemberHandler.MY_CHAT_MEMBER), group=-99)
 
     # Tracking de altas al canal ES. El enlace especial ADS es permanente;
     # el enlace público normal del canal continúa funcionando como Orgánico/Otros.
