@@ -6003,8 +6003,14 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
     if _premium100_question(question):
         rows = [[InlineKeyboardButton("📚 VIEW LEVELS" if lang == "en" else "📚 VER NIVELES", url=TELEGRAPH_LEVELS_URL)]]
-        if chat_id is not None and _premium100_participant(chat_id):
-            rows.insert(0, [InlineKeyboardButton("🔥 MY PROMOTION" if lang == "en" else "🔥 MI PROMOCIÓN", callback_data="premium100_open")])
+        if chat_id is not None:
+            part = _premium100_participant(chat_id)
+            if part:
+                rows.insert(0, [InlineKeyboardButton("🔥 MY PROMOTION" if lang == "en" else "🔥 MI PROMOCIÓN", callback_data="premium100_open")])
+            else:
+                counts = _premium100_counts()
+                if counts.get("active") and counts.get("available", 0) > 0 and _active_member_level(chat_id) == VIP_LEVEL_NONE and not _premium100_has_prior_account_history(chat_id):
+                    rows.insert(0, [InlineKeyboardButton("🔥 REGISTER FOR THE PROMOTION" if lang == "en" else "🔥 REGISTRARME EN LA PROMOCIÓN", callback_data="premium100_register")])
         return InlineKeyboardMarkup(rows)
     current_level = VIP_LEVEL_NONE
     current_stage = None
