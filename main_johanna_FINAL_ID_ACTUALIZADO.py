@@ -818,6 +818,7 @@ VIP_ACCESS_CHANNELS = {
         "desc_en": "300+ signals PER DAY Monday to Saturday across CRYPTO IDX, currency pairs, synthetic indices and Forex. Enter at the exact indicated minute, 1-minute expiry, with optional Martingale up to level 2.",
     },
     "ai_crypto": {
+        "chat_id": -1002166892026,
         "name_es": "IA Premium Automática CRYPTO IDX 24/7",
         "name_en": "Premium AI Automatic CRYPTO IDX 24/7",
         "url": "https://t.me/+flQSWX86gc45M2Rh",
@@ -8061,7 +8062,7 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop("admin_pending_deposit", None)
         await _admin_review_render(context, 
             chat_id=ADMIN_ID,
-            text="🔎 Escribe el nombre visible de Telegram o el Telegram ID de la persona.",
+            text="🔎 Escribe el @usuario, el nombre visible de Telegram o el Telegram ID de la persona.",
         )
         return
 
@@ -8310,6 +8311,56 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
 
+def _admin_remember_username(user):
+    """Índice de alias separado del nombre; no modifica nivel, ID ni tracking."""
+    if not user or not _is_private_user_id(int(user.id)) or int(user.id) == ADMIN_ID:
+        return
+    alias = str(getattr(user, "username", None) or "").strip().lstrip("@").lower()
+    try:
+        with Session() as session:
+            previous = session.query(BotEvent).filter(BotEvent.telegram_id == str(user.id), BotEvent.event_type == "ADMIN_USERNAME_INDEX").order_by(BotEvent.id.desc()).first()
+            if previous and (previous.detail or "") == alias:
+                return
+            session.add(BotEvent(telegram_id=str(user.id), event_type="ADMIN_USERNAME_INDEX", detail=alias, created_at=utcnow_naive()))
+            session.commit()
+    except Exception as e:
+        logging.warning("No pude guardar alias administrativo para %s: %s", user.id, e)
+
+
+async def _admin_username_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat and update.effective_chat.type == "private":
+        _admin_remember_username(update.effective_user)
+
+
+async def _admin_lookup_users(context, raw):
+    query_text = raw.lstrip("@").strip()
+    with Session() as session:
+        if re.fullmatch(r"\d+", query_text):
+            return session.query(Usuario).filter(Usuario.telegram_id == query_text).limit(12).all()
+        latest = session.query(func.max(BotEvent.id).label("last_id")).filter(BotEvent.event_type == "ADMIN_USERNAME_INDEX").group_by(BotEvent.telegram_id).subquery()
+        aliases = [uid for (uid,) in session.query(BotEvent.telegram_id).join(latest, BotEvent.id == latest.c.last_id).filter(func.lower(BotEvent.detail) == query_text.lower()).all()]
+        users = session.query(Usuario).filter(or_(Usuario.nombre.ilike(f"%{query_text}%"), Usuario.telegram_id.in_(aliases))).order_by(Usuario.fecha_registro.desc()).limit(12).all()
+        if users or not re.fullmatch(r"[A-Za-z0-9_]{5,32}", query_text):
+            return users
+        # Recupera alias de usuarios antiguos con accesos pendientes sin recorrer
+        # toda la audiencia ni pedir al administrador que memorice IDs.
+        pending_ids = [uid for (uid,) in session.query(VIPAccessState.telegram_id).filter(VIPAccessState.pending_access_keys.isnot(None), VIPAccessState.pending_access_keys != "").order_by(VIPAccessState.updated_at.desc()).limit(50).all()]
+    semaphore = asyncio.Semaphore(3)
+    async def inspect(uid):
+        try:
+            async with semaphore:
+                chat = await asyncio.wait_for(context.bot.get_chat(int(uid)), timeout=4)
+            _admin_remember_username(chat)
+            if (getattr(chat, "username", None) or "").lower() == query_text.lower():
+                return str(uid)
+        except Exception:
+            pass
+        return None
+    matched = [uid for uid in await asyncio.gather(*(inspect(uid) for uid in pending_ids)) if uid]
+    with Session() as session:
+        return session.query(Usuario).filter(Usuario.telegram_id.in_(matched)).order_by(Usuario.fecha_registro.desc()).limit(12).all()
+
+
 async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Procesa búsqueda/ID manual solo cuando el panel de gestión lo está esperando."""
     if not update.effective_user or update.effective_user.id != ADMIN_ID or not update.effective_message:
@@ -8505,14 +8556,9 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop("admin_user_lookup_mode", None)
         query_text = raw.lstrip("@").strip()
         rows = []
+        lookup_failed = False
         try:
-            with Session() as session:
-                q = session.query(Usuario)
-                if re.fullmatch(r"\d+", query_text):
-                    q = q.filter(Usuario.telegram_id == query_text)
-                else:
-                    q = q.filter(Usuario.nombre.ilike(f"%{query_text}%"))
-                users = q.order_by(Usuario.fecha_registro.desc()).limit(12).all()
+            users = await _admin_lookup_users(context, raw)
             for u in users:
                 try:
                     cid = int(u.telegram_id)
@@ -8522,20 +8568,24 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
                     continue
                 rows.append((cid, u.nombre or f"Usuario {cid}", u.stage or STAGE_PRE, u.binomo_id or "", None))
         except Exception as e:
+            lookup_failed = True
             logging.warning("No pude buscar usuario desde panel admin: %s", e)
 
         if rows:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"🔎 Resultados para: {raw}",
-                reply_markup=_admin_user_list_keyboard(rows),
-            )
+            response_text = f"🔎 Resultados para: {raw}"
+            keyboard = _admin_user_list_keyboard(rows)
         else:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"⚠️ No encontré coincidencias para: {raw}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔎 INTENTAR OTRA VEZ", callback_data="admin_user_search")]]),
-            )
+            response_text = ("⚠️ No pude consultar los usuarios. Puedes reintentar la búsqueda." if lookup_failed else f"⚠️ No encontré coincidencias para: {raw}")
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔎 INTENTAR OTRA VEZ", callback_data="admin_user_search")]])
+        from telegram.error import TimedOut, NetworkError
+        for attempt in range(2):
+            try:
+                await context.bot.send_message(chat_id=ADMIN_ID, text=response_text, reply_markup=keyboard)
+                break
+            except (TimedOut, NetworkError) as e:
+                if attempt == 1:
+                    context.user_data["admin_user_lookup_mode"] = True
+                    logging.warning("Búsqueda admin pendiente de respuesta por conexión: %s", e)
         from telegram.ext import ApplicationHandlerStop
         raise ApplicationHandlerStop
 
@@ -16979,6 +17029,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("reporte", daily_report_command))
     app.add_handler(CommandHandler("reportegrupo", report_group_test_command))
     app.add_handler(CommandHandler("version", version_command))
+
+    # Índice administrativo de @usuario: observador pasivo, sin detener handlers.
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, _admin_username_capture), group=-6)
 
     # Gestión manual de usuarios: solo intercepta texto cuando el panel está esperando
     # una búsqueda o un ID de trading. Tiene prioridad sobre borradores y respuestas genéricas.
