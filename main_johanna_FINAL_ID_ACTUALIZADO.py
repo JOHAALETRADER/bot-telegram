@@ -1489,6 +1489,8 @@ def _premium100_question(text: str) -> bool:
     amount = bool(re.search(r"(?<!\d)100(?!\d)", t))
     discount = "50%" in t or "50 %" in t or "descuento" in t or "discount" in t
     campaign = "promo" in t or "cupo" in t or "slot" in t
+    if campaign and not any(x in t for x in ("bono", "bonus", "codigo", "code", "saldo", "balance")):
+        return True
     return (premium and (amount or discount or campaign)) or (campaign and (amount or discount) and "bono" not in t and "bonus" not in t) or t.strip(" ?!.") in {"promo", "promocion", "promociones", "promos activas", "promociones activas"} or (amount and "200" in t and any(x in t for x in ("en lugar", "en vez", "instead")))
 
 
@@ -1614,24 +1616,26 @@ async def _premium100_admin_ids(context, page: int = 0):
 
 
 def _premium100_answer(question: str, chat_id: int, lang: str = "es") -> str:
-    part = _premium100_participant(chat_id)
+    for_other = _is_hypothetical_other_person(question)
+    part = None if for_other else _premium100_participant(chat_id)
     if not _premium100_question(question) and not (part and _is_min_50_intent(question)):
         return ""
     counts = _premium100_counts()
-    account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+    account = {} if for_other else (_broker_get(chat_id, BROKER_STOCKITY, create=False) or {})
     en = lang == "en"
+    offer = ("This promotion gives access to Premium tools with a USD 100 deposit instead of the normal USD 200, exclusively for new Stockity accounts enrolled in the promotion. See Premium and the promotion in the buttons below 👇" if en else "Esta promo te permite acceder a las herramientas del nivel Premium con un depósito de USD 100 en vez de los USD 200 habituales, exclusivamente con una cuenta nueva Stockity inscrita en la promoción. Mira el nivel Premium y la promoción en los siguientes botones 👇")
     status = (part or {}).get('status')
     if status == 'ACTIVATED':
         return ("Your promotional Premium access was activated. Your real validated deposit is used for future upgrades under the normal upgrade rules." if en else "Tu acceso Premium promocional ya fue activado. Para futuros upgrades se cuenta tu depósito real validado y se aplican las reglas normales de upgrade.")
-    if _active_member_level(chat_id) != VIP_LEVEL_NONE:
-        return ("This promotion is exclusively for new Stockity accounts without an active community level. It does not replace your current level or the normal upgrade rules." if en else "Esta promoción es exclusiva para cuentas nuevas Stockity sin nivel activo en la comunidad. No reemplaza tu nivel actual ni las reglas normales de upgrade.")
+    if not for_other and _active_member_level(chat_id) != VIP_LEVEL_NONE:
+        return offer + "\n\n" + ("This promotion is exclusively for new Stockity accounts without an active community level. It does not replace your current level or the normal upgrade rules." if en else "Esta promoción es exclusiva para cuentas nuevas Stockity sin nivel activo en la comunidad. No reemplaza tu nivel actual ni las reglas normales de upgrade.")
     protected = status in {'RESERVED', 'PROOF_PENDING'}
     available = counts.get('available', 0)
     if not counts.get('active') and not protected:
         return ("The Premium USD 100 promotion is paused. I cannot promise this benefit while it is paused. The normal Premium minimum remains USD 200." if en else "La promoción Premium por USD 100 está pausada. No puedo prometer ese beneficio mientras esté pausada. El mínimo normal de Premium sigue siendo USD 200.")
     if available <= 0 and not protected:
         return ("There are no available Premium USD 100 slots. The normal levels remain unchanged." if en else "No quedan cupos disponibles de Premium por USD 100. Los niveles habituales conservan sus condiciones.")
-    msg = (f"The promotion grants Premium from USD 100 and below USD 200, exclusively for new Stockity accounts enrolled in this campaign. Available slots: {available}/{counts['total']}. This is a community access promotion, separate from the broker's 100% balance bonus." if en else f"La promoción permite acceder a Premium desde USD 100 y menos de USD 200, exclusivamente con una cuenta nueva Stockity inscrita en esta campaña. Cupos disponibles: {available}/{counts['total']}. Es una promoción de acceso a la comunidad, distinta del bono del 100 % de saldo del broker.")
+    msg = offer + (f"\n\nAvailable slots: {available}/{counts['total']}." if en else f"\n\nCupos disponibles: {available}/{counts['total']}.")
     if status == 'PROOF_PENDING':
         msg += "\n\nYour receipt was received and your slot is protected while Johanna reviews it." if en else "\n\nTu comprobante ya fue recibido y tu cupo está protegido mientras Johanna lo revisa."
     elif status == 'RESERVED':
@@ -6190,15 +6194,8 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE, 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
     if _premium100_question(question):
-        rows = [[InlineKeyboardButton("📚 VIEW LEVELS" if lang == "en" else "📚 VER NIVELES", url=TELEGRAPH_LEVELS_URL)]]
-        if chat_id is not None:
-            part = _premium100_participant(chat_id)
-            if part:
-                rows.insert(0, [InlineKeyboardButton("🔥 MY PROMOTION" if lang == "en" else "🔥 MI PROMOCIÓN", callback_data="premium100_open")])
-            else:
-                counts = _premium100_counts()
-                if counts.get("active") and counts.get("available", 0) > 0 and _active_member_level(chat_id) == VIP_LEVEL_NONE and not _premium100_has_prior_account_history(chat_id):
-                    rows.insert(0, [InlineKeyboardButton("🔥 REGISTER FOR THE PROMOTION" if lang == "en" else "🔥 REGISTRARME EN LA PROMOCIÓN", callback_data="premium100_register")])
+        rows = [[InlineKeyboardButton("🔵 VIEW PREMIUM" if lang == "en" else "🔵 VER NIVEL PREMIUM", callback_data=f"level_detail:{VIP_LEVEL_PREMIUM}")],
+                [InlineKeyboardButton("🔥 VIEW PROMOTION" if lang == "en" else "🔥 VER PROMOCIÓN", callback_data="premium100_info")]]
         return InlineKeyboardMarkup(rows)
     current_level = VIP_LEVEL_NONE
     current_stage = None
@@ -6532,7 +6529,7 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                 lines.append(
                     "PREMIUM100 promotion: isolated exception for NEW Stockity accounts only; normal Premium remains USD 200. "
                     f"Current available slots: {p100_counts.get('available', 0)}/{p100_counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. "
-                    "Eligible promotional deposits are USD 100 to 199.99; Premium has no expiration after activation. "
+                    "Describe the offer as Premium with USD 100 instead of the normal USD 200, never as a deposit range. Refer to Premium tools and its button; do not enumerate signal counts unless asked. Premium has no expiration after activation. "
                     "The REAL validated deposit is stored and counts toward future Prestige under the current upgrade rules. "
                     "It does not apply to users who already have an active level."
                 )
@@ -6540,7 +6537,7 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                 lines.append(
                     "PROMOCIÓN PREMIUM100: excepción aislada solo para cuentas NUEVAS Stockity; Premium normal sigue desde USD 200. "
                     f"Cupos disponibles actuales: {p100_counts.get('available', 0)}/{p100_counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. "
-                    "El depósito promocional válido es desde USD 100 y menor de USD 200; Premium queda sin fecha de vencimiento. "
+                    "Presenta la oferta como Premium con USD 100 en vez de USD 200 habituales, nunca como un rango. Menciona herramientas Premium y su botón; no enumeres cantidades de señales salvo que pregunten. Premium queda sin fecha de vencimiento. "
                     "Se guarda el depósito REAL validado y cuenta para un futuro Prestige bajo las reglas vigentes de upgrade. "
                     "No aplica a usuarios con un nivel ya activo."
                 )
@@ -9602,6 +9599,18 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await q.answer()
     _touch_user_activity(chat_id)
+
+    if q.data == "premium100_info":
+        # Consulta de solo lectura: no inscribe ni reinicia el proceso del usuario.
+        msg = _premium100_answer("Premium promo 100", chat_id, get_user_lang(chat_id))
+        rows = [[InlineKeyboardButton("🔵 VIEW PREMIUM" if get_user_lang(chat_id) == "en" else "🔵 VER NIVEL PREMIUM", callback_data=f"level_detail:{VIP_LEVEL_PREMIUM}")]]
+        part = _premium100_participant(chat_id)
+        if part:
+            rows.append([InlineKeyboardButton("🔥 MY PROMOTION" if get_user_lang(chat_id) == "en" else "🔥 MI PROMOCIÓN", callback_data="premium100_open")])
+        elif _premium100_counts().get("active") and _premium100_counts().get("available", 0) > 0 and _active_member_level(chat_id) == VIP_LEVEL_NONE and not _premium100_has_prior_account_history(chat_id):
+            rows.append([InlineKeyboardButton("📝 REGISTER FOR THE PROMOTION" if get_user_lang(chat_id) == "en" else "📝 REGISTRARME EN LA PROMOCIÓN", callback_data="premium100_register")])
+        await q.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(rows))
+        return
 
     if q.data == "premium100_open":
         ok, reason, _ = _premium100_begin(chat_id)
@@ -13608,7 +13617,18 @@ def _id_validation_guidance(question: str, chat_id: int, lang: str = "es") -> st
     return (f"Send me your{label} account's numeric ID here so I can verify that your registration is correctly linked ✅" if lang == "en" else f"Envíame aquí el ID numérico de tu cuenta{label} para verificar que tu registro haya quedado correctamente vinculado ✅")
 
 
+def _copied_live_notice_answer(question: str, lang: str = "es") -> str:
+    """Un aviso LIVE copiado no es una consulta de registro ni de depósitos."""
+    compact = lambda value: re.sub(r"[\W_]+", "", _norm(value))
+    if compact(question) not in {compact(LIVE_BROADCAST_MESSAGE_ES), compact(LIVE_BROADCAST_MESSAGE_EN)}:
+        return ""
+    return ("You shared the LIVE notice 😊 Use its buttons to open TikTok or YouTube." if lang == "en" else "Me compartiste el aviso del LIVE 😊 Puedes abrir TikTok o YouTube desde sus botones.")
+
+
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    live_notice_answer = _copied_live_notice_answer(question, lang)
+    if live_notice_answer:
+        return live_notice_answer
     id_guidance = _id_validation_guidance(question, chat_id, lang)
     if id_guidance:
         return id_guidance
@@ -15301,6 +15321,12 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     texto = update.message.text or update.message.caption or user_audio_transcript or ""
     if not texto.strip():
+        return
+
+    copied_live_answer = _copied_live_notice_answer(texto, lang)
+    if copied_live_answer:
+        await update.message.reply_text(copied_live_answer, reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang, chat_id=chat_id))
+        await send_admin_auto_log(context, update, "COPIED_LIVE_NOTICE", copied_live_answer)
         return
 
     if _premium100_question(texto) and not _extract_candidate_trading_id(texto):
