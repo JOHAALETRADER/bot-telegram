@@ -57,12 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.03-20261008-PREMIUM100-ID-ADMIN-BUTTONS"
-# v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
-# v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
-# v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
-# v7.11.00: añade promoción aislada PREMIUM100 (Stockity, 20 cupos, Premium desde USD 100 para cuentas nuevas) sin cambiar umbrales normales. Incluye deep-link propio, contador persistente, reserva de 90 min solo en últimos 5 cupos, bloqueo al recibir comprobante, panel admin, desaparición automática del botón al agotarse y registro del depósito REAL para upgrades posteriores.
-# v7.10.99: optimiza exclusivamente el deep-link TGADS_01 para publicidad directa al bot: entra en español sin selector de idioma, muestra bienvenida personalizada + imagen y un menú corto con Canal / Registro / Pregunta / Menú completo / English. La vuelta desde las bienvenidas del canal usa el menú corto de registro para evitar el bucle Canal→Bot→Canal. Añade evento TGADS_BOT_START sin tocar tracking, depósitos, VIP, IA, campañas ni reportes existentes.
+BOT_VERSION = "v7.10.99-20261009-LIVE-CHANNELS-FIRST"
 # v7.10.91: corrige cierres BOT para que un fallo de una métrica no borre STARTS/únicos; re-emite una única corrección persistente del cierre 02/10/2026; cambia el reporte agregado de STARTS de 15 min a 1 hora. Conserva intactos los flujos previos.
 # v7.10.90: incorpora 190 STARTS históricos previos al contador exclusivamente al 02/10/2026. El ajuste entra solo en cierres diario/semanal/mensual cuyo rango incluya esa fecha; no altera cortes de 15 min y desaparece automáticamente en periodos posteriores. Cambia la etiqueta del acumulado de 15 min para no depender de versión. Todo lo demás de v7.10.89 queda intacto.
 # v7.10.89: añade cierres BOT independientes en JOHAALETRADER · ADS REPORTS: diario 00:05 (día anterior), semanal lunes 00:10 (lunes-domingo anterior) y mensual día 1 00:15 (mes anterior), con comparación vs periodo previo, recuperación tras reinicio y marca anti-duplicados. Conserva intacto el reporte ADS 18:58, STARTS cada 15 min, tráfico masivo, IA, campañas A/B, registro, multi-broker, depósitos, upgrades, VIP y privacidad.
@@ -141,24 +136,7 @@ async def send_admin_auto_log(context: ContextTypes.DEFAULT_TYPE, update: Update
         )
         if len(text) > 3900:
             text = text[:3900] + "\n\n...(recortado)"
-
-        # PREMIUM100: el ID ya quedó guardado como Stockity pendiente antes de llegar aquí.
-        # Añadimos SOLO las acciones administrativas al mismo aviso, reutilizando
-        # los callbacks existentes de validación/rechazo para no duplicar lógica.
-        admin_reply_markup = None
-        if intent == "PREMIUM100_ID_PENDING":
-            admin_reply_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ VALIDAR ID · STOCKITY", callback_data=f"admin_broker_validate:{chat_id}:STOCKITY")],
-                [InlineKeyboardButton("❌ ID ERRADO · STOCKITY", callback_data=f"admin_broker_reject:{chat_id}:STOCKITY")],
-                [InlineKeyboardButton("👤 GESTIONAR USUARIO", callback_data=f"admin_user_open:{chat_id}")],
-            ])
-
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=text,
-            disable_web_page_preview=True,
-            reply_markup=admin_reply_markup,
-        )
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text, disable_web_page_preview=True)
         try:
             _append_ai_exchange(chat_id, pregunta, respuesta, assistant_source="auto")
         except Exception:
@@ -416,35 +394,6 @@ class VIPAccessPause(Base):
     level       = Column(String, default="NONE", index=True)
     due_at      = Column(DateTime, index=True)
     updated_at  = Column(DateTime, default=utcnow_naive, index=True)
-
-
-class Premium100Config(Base):
-    """Configuración persistente de la promoción Premium USD 100.
-
-    Tabla separada: no modifica los umbrales ni el esquema operativo histórico.
-    """
-    __tablename__ = "premium100_config"
-    config_key  = Column(String, primary_key=True)
-    active      = Column(Integer, default=0, index=True)
-    total_slots = Column(Integer, default=20)
-    edition     = Column(Integer, default=1, index=True)
-    updated_at  = Column(DateTime, default=utcnow_naive, index=True)
-
-
-class Premium100Participant(Base):
-    """Participación por edición; permite conservar histórico y reutilizar la promo."""
-    __tablename__ = "premium100_participants"
-    participant_key = Column(String, primary_key=True)
-    telegram_id     = Column(String, index=True)
-    edition         = Column(Integer, index=True)
-    status          = Column(String, default="ENTERED", index=True)
-    stockity_id     = Column(String)
-    entered_at      = Column(DateTime, default=utcnow_naive, index=True)
-    reserved_until  = Column(DateTime, nullable=True, index=True)
-    proof_at        = Column(DateTime, nullable=True, index=True)
-    activated_at    = Column(DateTime, nullable=True, index=True)
-    deposit_cents   = Column(Integer, default=0)
-    updated_at      = Column(DateTime, default=utcnow_naive, index=True)
 
 
 class PromoCodeConfig(Base):
@@ -1051,513 +1000,6 @@ def _broker_rows(chat_id: int, validated_only: bool = False):
 
 def _broker_validated_brokers(chat_id: int):
     return [state["broker"] for state in _broker_rows(chat_id, validated_only=True)]
-
-
-# === PROMOCIÓN PREMIUM USD 100 · SISTEMA AISLADO ===
-PREMIUM100_CONFIG_KEY = "ACTIVE"
-PREMIUM100_DEFAULT_SLOTS = 20
-PREMIUM100_MIN_CENTS = 10000
-PREMIUM100_NORMAL_PREMIUM_CENTS = 20000
-PREMIUM100_RESERVE_LAST_SLOTS = 5
-PREMIUM100_RESERVE_MINUTES = 90
-PREMIUM100_OCCUPYING_STATUSES = {"RESERVED", "PROOF_PENDING", "ACTIVATED"}
-
-
-def _premium100_key(edition: int, chat_id: int) -> str:
-    return f"{int(edition)}:{int(chat_id)}"
-
-
-def _premium100_get_config(create: bool = True):
-    try:
-        with Session() as session:
-            row = session.get(Premium100Config, PREMIUM100_CONFIG_KEY)
-            if not row and create:
-                row = Premium100Config(
-                    config_key=PREMIUM100_CONFIG_KEY,
-                    active=0,
-                    total_slots=PREMIUM100_DEFAULT_SLOTS,
-                    edition=1,
-                    updated_at=utcnow_naive(),
-                )
-                session.add(row); session.commit(); session.refresh(row)
-            if not row:
-                return None
-            return {
-                "active": bool(row.active),
-                "total_slots": max(1, int(row.total_slots or PREMIUM100_DEFAULT_SLOTS)),
-                "edition": max(1, int(row.edition or 1)),
-                "updated_at": row.updated_at,
-            }
-    except Exception as e:
-        logging.warning("No pude leer configuración PREMIUM100: %s", e)
-        return None
-
-
-def _premium100_cleanup_expired_locked(session, edition: int, now=None):
-    now = now or utcnow_naive()
-    rows = (
-        session.query(Premium100Participant)
-        .filter(
-            Premium100Participant.edition == int(edition),
-            Premium100Participant.status == "RESERVED",
-            Premium100Participant.reserved_until.isnot(None),
-            Premium100Participant.reserved_until <= now,
-        )
-        .all()
-    )
-    for row in rows:
-        row.status = "ID_VALIDATED"
-        row.reserved_until = None
-        row.updated_at = now
-    return len(rows)
-
-
-def _premium100_counts_locked(session, cfg_row, now=None):
-    now = now or utcnow_naive()
-    _premium100_cleanup_expired_locked(session, cfg_row.edition, now)
-    rows = session.query(Premium100Participant.status).filter(
-        Premium100Participant.edition == int(cfg_row.edition)
-    ).all()
-    statuses = [r[0] for r in rows]
-    activated = statuses.count("ACTIVATED")
-    proof_pending = statuses.count("PROOF_PENDING")
-    reserved = statuses.count("RESERVED")
-    occupied = activated + proof_pending + reserved
-    total = max(1, int(cfg_row.total_slots or PREMIUM100_DEFAULT_SLOTS))
-    return {
-        "total": total,
-        "activated": activated,
-        "proof_pending": proof_pending,
-        "reserved": reserved,
-        "occupied": occupied,
-        "available": max(0, total - occupied),
-    }
-
-
-def _premium100_counts():
-    try:
-        with Session() as session:
-            cfg = session.get(Premium100Config, PREMIUM100_CONFIG_KEY)
-            if not cfg:
-                return {"total": PREMIUM100_DEFAULT_SLOTS, "activated": 0, "proof_pending": 0, "reserved": 0, "occupied": 0, "available": PREMIUM100_DEFAULT_SLOTS, "active": False, "edition": 1}
-            counts = _premium100_counts_locked(session, cfg)
-            session.commit()
-            counts.update({"active": bool(cfg.active), "edition": int(cfg.edition or 1)})
-            return counts
-    except Exception as e:
-        logging.warning("No pude calcular cupos PREMIUM100: %s", e)
-        return {"total": PREMIUM100_DEFAULT_SLOTS, "activated": 0, "proof_pending": 0, "reserved": 0, "occupied": 0, "available": 0, "active": False, "edition": 1}
-
-
-def _premium100_participant(chat_id: int):
-    cfg = _premium100_get_config(create=False)
-    if not cfg:
-        return None
-    try:
-        with Session() as session:
-            row = session.get(Premium100Participant, _premium100_key(cfg["edition"], chat_id))
-            if not row:
-                return None
-            # Expira una reserva vencida al consultar, sin tocar activados/comprobantes.
-            if row.status == "RESERVED" and row.reserved_until and row.reserved_until <= utcnow_naive():
-                row.status = "ID_VALIDATED"; row.reserved_until = None; row.updated_at = utcnow_naive(); session.commit()
-            return {
-                "telegram_id": int(chat_id),
-                "edition": int(row.edition),
-                "status": row.status or "ENTERED",
-                "stockity_id": (row.stockity_id or "").strip(),
-                "reserved_until": row.reserved_until,
-                "proof_at": row.proof_at,
-                "activated_at": row.activated_at,
-                "deposit_cents": int(row.deposit_cents or 0),
-            }
-    except Exception as e:
-        logging.warning("No pude leer participante PREMIUM100 %s: %s", chat_id, e)
-        return None
-
-
-def _premium100_reservation_remaining_text(reserved_until) -> str:
-    """Tiempo restante REAL de una reserva, calculado contra su vencimiento original.
-
-    No crea ni prolonga reservas. Solo formatea el tiempo que queda en el instante
-    de la consulta, de modo que salir y volver al bot nunca reinicie los 90 minutos.
-    """
-    if not reserved_until:
-        return "0 s"
-    remaining_seconds = int((reserved_until - utcnow_naive()).total_seconds())
-    if remaining_seconds <= 0:
-        return "0 s"
-
-    hours, remainder = divmod(remaining_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    parts = []
-    if hours:
-        parts.append(f"{hours} h")
-    if minutes or hours:
-        parts.append(f"{minutes} min")
-    parts.append(f"{seconds} s")
-    return " ".join(parts)
-
-
-def _premium100_has_prior_account_history(chat_id: int) -> bool:
-    # La promo es únicamente para cuenta NUEVA: no debe existir ID previo/pendiente
-    # ni depósito validado en Binomo/Stockity al iniciar esta edición.
-    if (_get_saved_trading_id(chat_id) or "").strip():
-        return True
-    if (_broker_flow_get(chat_id).get("pending_trading_id") or "").strip():
-        return True
-    for state in _broker_rows(chat_id):
-        if (
-            (state.get("trading_id") or "").strip()
-            or (state.get("pending_trading_id") or "").strip()
-            or state.get("id_validated")
-            or int(state.get("validated_total_cents") or 0) > 0
-            or int(state.get("deposit_count") or 0) > 0
-        ):
-            return True
-    return False
-
-
-def _premium100_begin(chat_id: int):
-    """Registra entrada promocional sin consumir cupo."""
-    if _active_member_level(chat_id) != VIP_LEVEL_NONE:
-        return False, "ACTIVE_LEVEL", None
-    cfg = _premium100_get_config(create=True)
-    if not cfg or not cfg["active"]:
-        return False, "INACTIVE", None
-    current = _premium100_participant(chat_id)
-    if current:
-        return True, "EXISTING", current
-    if _premium100_has_prior_account_history(chat_id):
-        return False, "NOT_NEW", None
-    counts = _premium100_counts()
-    if counts["available"] <= 0:
-        return False, "SOLD_OUT", None
-    try:
-        with Session() as session:
-            cfg_row = session.query(Premium100Config).filter_by(config_key=PREMIUM100_CONFIG_KEY).with_for_update().first()
-            if not cfg_row or not cfg_row.active:
-                return False, "INACTIVE", None
-            counts = _premium100_counts_locked(session, cfg_row)
-            if counts["available"] <= 0:
-                session.commit(); return False, "SOLD_OUT", None
-            key = _premium100_key(cfg_row.edition, chat_id)
-            row = session.get(Premium100Participant, key)
-            if not row:
-                row = Premium100Participant(
-                    participant_key=key, telegram_id=str(chat_id), edition=int(cfg_row.edition),
-                    status="ENTERED", entered_at=utcnow_naive(), updated_at=utcnow_naive(),
-                )
-                session.add(row)
-            session.commit()
-        _log_event(chat_id, "PREMIUM100_ENTRY", f"EDITION={cfg['edition']}")
-        _tracking_fire_event(chat_id, "PREMIUM100_ENTRY", f"EDITION={cfg['edition']}")
-        return True, "CREATED", _premium100_participant(chat_id)
-    except Exception as e:
-        logging.exception("No pude iniciar PREMIUM100")
-        return False, "ERROR", None
-
-
-def _premium100_set_status(chat_id: int, status: str, *, stockity_id=None, reserved_until=None, proof_at=None, deposit_cents=None):
-    cfg = _premium100_get_config(create=False)
-    if not cfg:
-        return False
-    try:
-        with Session() as session:
-            row = session.get(Premium100Participant, _premium100_key(cfg["edition"], chat_id))
-            if not row:
-                return False
-            row.status = status
-            if stockity_id is not None:
-                row.stockity_id = str(stockity_id or "")
-            if reserved_until is not None or status != "RESERVED":
-                row.reserved_until = reserved_until
-            if proof_at is not None:
-                row.proof_at = proof_at
-            if deposit_cents is not None:
-                row.deposit_cents = int(deposit_cents or 0)
-            if status == "ACTIVATED":
-                row.activated_at = utcnow_naive()
-            row.updated_at = utcnow_naive(); session.commit()
-        return True
-    except Exception as e:
-        logging.warning("No pude actualizar estado PREMIUM100 de %s: %s", chat_id, e)
-        return False
-
-
-def _premium100_attach_stockity_id(chat_id: int, trading_id: str) -> bool:
-    part = _premium100_participant(chat_id)
-    if not part or part["status"] not in {"ENTERED", "ID_SUBMITTED"}:
-        return False
-    if not re.fullmatch(r"\d{6,12}", str(trading_id or "")):
-        return False
-    try:
-        with Session() as session:
-            row = session.get(BrokerAccountState, _broker_key(chat_id, BROKER_STOCKITY))
-            if not row:
-                row = BrokerAccountState(account_key=_broker_key(chat_id, BROKER_STOCKITY), telegram_id=str(chat_id), broker=BROKER_STOCKITY)
-                session.add(row)
-            # Nunca sobreescribe una cuenta ya validada: la promo exige cuenta nueva.
-            if row.id_validated or (row.trading_id or "").strip() or int(row.validated_deposit_count or 0) > 0:
-                return False
-            row.pending_trading_id = str(trading_id)
-            row.updated_at = utcnow_naive()
-            session.commit()
-        _broker_flow_set(chat_id, pending_trading_id="")
-        _premium100_set_status(chat_id, "ID_SUBMITTED", stockity_id=trading_id)
-        _log_event(chat_id, "ID_SUBMITTED", f"BROKER=STOCKITY | ID={trading_id} | PREMIUM100")
-        _tracking_fire_event(chat_id, "ID_SUBMITTED", f"BROKER=STOCKITY | ID={trading_id} | PREMIUM100")
-        return True
-    except Exception as e:
-        logging.exception("No pude asociar ID Stockity a PREMIUM100")
-        return False
-
-
-def _premium100_mark_id_validated(chat_id: int, trading_id: str) -> bool:
-    part = _premium100_participant(chat_id)
-    if not part or part["status"] not in {"ID_SUBMITTED", "ID_VALIDATED", "RESERVED"}:
-        return False
-    return _premium100_set_status(chat_id, "ID_VALIDATED", stockity_id=trading_id)
-
-
-def _premium100_mark_id_rejected(chat_id: int):
-    part = _premium100_participant(chat_id)
-    if not part or part["status"] == "ACTIVATED":
-        return False
-    return _premium100_set_status(chat_id, "ENTERED", stockity_id="")
-
-
-def _premium100_reserve(chat_id: int):
-    """Reserva 90 min SOLO cuando quedan 5 cupos o menos y el ID ya está validado."""
-    cfg = _premium100_get_config(create=False)
-    if not cfg or not cfg["active"]:
-        return False, "INACTIVE", None
-    try:
-        with Session() as session:
-            cfg_row = session.query(Premium100Config).filter_by(config_key=PREMIUM100_CONFIG_KEY).with_for_update().first()
-            if not cfg_row or not cfg_row.active:
-                return False, "INACTIVE", None
-            counts = _premium100_counts_locked(session, cfg_row)
-            row = session.get(Premium100Participant, _premium100_key(cfg_row.edition, chat_id))
-            if not row:
-                session.commit(); return False, "NO_PARTICIPANT", counts
-            if row.status == "RESERVED":
-                # Una reserva vigente conserva SIEMPRE su vencimiento original.
-                # Reabrir el bot o pulsar de nuevo no crea otros 90 minutos.
-                session.commit(); return True, "RESERVED_EXISTING", counts
-            if row.status in {"PROOF_PENDING", "ACTIVATED"}:
-                session.commit(); return True, row.status, counts
-            if row.status != "ID_VALIDATED":
-                session.commit(); return False, "NEED_ID", counts
-            if counts["available"] <= 0:
-                session.commit(); return False, "SOLD_OUT", counts
-            if counts["available"] > PREMIUM100_RESERVE_LAST_SLOTS:
-                session.commit(); return False, "NOT_LAST", counts
-            row.status = "RESERVED"
-            row.reserved_until = utcnow_naive() + timedelta(minutes=PREMIUM100_RESERVE_MINUTES)
-            row.updated_at = utcnow_naive()
-            session.commit()
-            until = row.reserved_until
-        _log_event(chat_id, "PREMIUM100_RESERVED", f"UNTIL={until.isoformat()}")
-        return True, "RESERVED", _premium100_counts()
-    except Exception:
-        logging.exception("No pude reservar cupo PREMIUM100")
-        return False, "ERROR", None
-
-
-def _premium100_claim_proof(chat_id: int):
-    """Bloquea un cupo al recibirse el comprobante; operación serializada por config."""
-    cfg = _premium100_get_config(create=False)
-    if not cfg:
-        return False, "INACTIVE", None
-    try:
-        with Session() as session:
-            cfg_row = session.query(Premium100Config).filter_by(config_key=PREMIUM100_CONFIG_KEY).with_for_update().first()
-            if not cfg_row:
-                return False, "INACTIVE", None
-            counts = _premium100_counts_locked(session, cfg_row)
-            row = session.get(Premium100Participant, _premium100_key(cfg_row.edition, chat_id))
-            if not row:
-                session.commit(); return False, "NO_PARTICIPANT", counts
-            if row.status == "PROOF_PENDING":
-                session.commit(); return True, "PROOF_PENDING", counts
-            if row.status == "ACTIVATED":
-                session.commit(); return False, "ACTIVATED", counts
-            if row.status not in {"ID_VALIDATED", "RESERVED"}:
-                session.commit(); return False, "NEED_ID", counts
-            # Una reserva vigente ya ocupa cupo. Sin reserva, debe existir disponibilidad.
-            if row.status != "RESERVED":
-                if not cfg_row.active:
-                    session.commit(); return False, "INACTIVE", counts
-                if counts["available"] <= 0:
-                    session.commit(); return False, "SOLD_OUT", counts
-            row.status = "PROOF_PENDING"
-            row.reserved_until = None
-            row.proof_at = utcnow_naive()
-            row.updated_at = utcnow_naive()
-            session.commit()
-        _log_event(chat_id, "PREMIUM100_PROOF_PENDING", "STOCKITY")
-        return True, "PROOF_PENDING", _premium100_counts()
-    except Exception:
-        logging.exception("No pude bloquear cupo PREMIUM100 al recibir comprobante")
-        return False, "ERROR", None
-
-
-def _premium100_release_claim(chat_id: int, reason: str = ""):
-    part = _premium100_participant(chat_id)
-    if not part or part["status"] not in {"RESERVED", "PROOF_PENDING"}:
-        return False
-    ok = _premium100_set_status(chat_id, "ID_VALIDATED")
-    if ok:
-        _log_event(chat_id, "PREMIUM100_SLOT_RELEASED", reason or "ADMIN")
-    return ok
-
-
-def _premium100_global_button_available() -> bool:
-    counts = _premium100_counts()
-    return bool(counts.get("active") and counts.get("available", 0) > 0)
-
-
-def _premium100_status_text(chat_id: int, first_name: str = ""):
-    counts = _premium100_counts()
-    part = _premium100_participant(chat_id)
-    safe_name = html.escape((first_name or "").strip() or "✨")
-    if part and part.get("status") == "ACTIVATED":
-        return (
-            f"💎 <b>{safe_name}, tu promoción ya fue activada.</b>\n\n"
-            "Tu nivel <b>Premium</b> está habilitado sin fecha de vencimiento."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("🏠 VER MI ESPACIO JT", callback_data="member_space")]])
-    if not counts.get("active") and not (part and part.get("status") in {"RESERVED", "PROOF_PENDING"}):
-        return (
-            "🔒 <b>PROMOCIÓN NO DISPONIBLE</b>\n\n"
-            "La promoción Premium USD 100 no está activa en este momento. Puedes consultar los niveles habituales de JT TRADERS TEAMS."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("📚 VER NIVELES", url=TELEGRAPH_LEVELS_URL)], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
-    if counts.get("available", 0) <= 0 and not (part and part.get("status") in {"RESERVED", "PROOF_PENDING"}):
-        return (
-            "🔒 <b>PROMOCIÓN COMPLETADA</b>\n\n"
-            f"Los {counts.get('total', PREMIUM100_DEFAULT_SLOTS)} cupos Premium USD 100 ya fueron asignados. Puedes continuar con los niveles habituales."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("📚 VER NIVELES", url=TELEGRAPH_LEVELS_URL)], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
-    if part and part.get("status") == "PROOF_PENDING":
-        return (
-            f"🔥 <b>PREMIUM USD 100</b>\n\n{safe_name}, tu comprobante ya fue recibido y <b>tu cupo está protegido mientras lo reviso</b>.\n\n"
-            "No necesitas enviar otro depósito. Te confirmaré por este chat cuando termine la validación."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
-    if part and part.get("status") == "RESERVED":
-        remaining = _premium100_reservation_remaining_text(part.get("reserved_until"))
-        return (
-            f"🔥 <b>PREMIUM USD 100</b>\n\n{safe_name}, ya tienes un cupo reservado.\n"
-            f"⏳ <b>Tiempo restante ahora: {remaining}</b>\n\n"
-            "Realiza el depósito de USD 100 en tu cuenta Stockity validada y envía aquí el comprobante antes de que venza la reserva.\n\n"
-            "⚠️ Salir del bot y volver a entrar <b>no reinicia el contador</b>; siempre conserva la hora original de vencimiento."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
-
-    available = int(counts.get("available") or 0)
-    status = (part or {}).get("status")
-    rows = []
-    if status in {"ID_VALIDATED"}:
-        if 0 < available <= PREMIUM100_RESERVE_LAST_SLOTS:
-            rows.append([InlineKeyboardButton(f"⏳ RESERVAR 1 DE LOS ÚLTIMOS {available} CUPOS", callback_data="premium100_reserve")])
-        rows.append([InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")])
-    else:
-        rows.append([InlineKeyboardButton("🚀 INICIAR REGISTRO STOCKITY", callback_data="premium100_register")])
-        rows.append([InlineKeyboardButton("📚 VER BENEFICIOS PREMIUM", url=TELEGRAPH_LEVELS_URL)])
-        rows.append([InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")])
-    rows.append([InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")])
-
-    next_text = (
-        "Tu ID de Stockity ya está validado. Ahora realiza el depósito de USD 100 en esa misma cuenta y envía aquí la captura."
-        if status == "ID_VALIDATED" else
-        "Registra una cuenta NUEVA en Stockity con mi enlace oficial, envíame el ID y espera mi validación antes de depositar."
-    )
-    text_value = (
-        f"🔥 <b>PREMIUM USD 100</b>\n\n"
-        f"¡Hola, {safe_name}! Esta promoción te permite activar <b>Premium con un depósito desde USD 100</b> en tu propia cuenta Stockity.\n\n"
-        f"💎 Premium queda habilitado <b>sin fecha de vencimiento</b>.\n"
-        f"🔥 <b>Cupos disponibles: {available} de {counts.get('total', PREMIUM100_DEFAULT_SLOTS)}</b>\n\n"
-        f"{next_text}\n\n"
-        "⚠️ Promoción exclusiva para cuentas nuevas y únicamente para quienes inicien el proceso desde la promoción."
-    )
-    return text_value, InlineKeyboardMarkup(rows)
-
-
-def _premium100_admin_text():
-    counts = _premium100_counts()
-    status = "🟢 ACTIVA" if counts.get("active") else "⏸ PAUSADA"
-    return (
-        "🔥 PROMO PREMIUM USD 100\n\n"
-        f"Estado: {status}\n"
-        f"Edición: {counts.get('edition', 1)}\n"
-        f"Cupos totales: {counts.get('total', PREMIUM100_DEFAULT_SLOTS)}\n"
-        f"✅ Activados: {counts.get('activated', 0)}\n"
-        f"📷 Comprobantes pendientes: {counts.get('proof_pending', 0)}\n"
-        f"⏳ Reservados: {counts.get('reserved', 0)}\n"
-        f"🔥 Disponibles: {counts.get('available', 0)}\n\n"
-        "Reglas: Stockity · cuenta nueva · Premium desde USD 100 y < USD 200. "
-        "Si deposita USD 200 o más, aplica el nivel normal y se libera el cupo promocional."
-    )
-
-
-def _premium100_admin_keyboard():
-    counts = _premium100_counts()
-    toggle = "⏸ PAUSAR PROMOCIÓN" if counts.get("active") else "▶️ ACTIVAR PROMOCIÓN"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(toggle, callback_data="admin_panel_premium100_toggle")],
-        [InlineKeyboardButton("🔢 CAMBIAR CUPOS TOTALES", callback_data="admin_panel_premium100_slots")],
-        [InlineKeyboardButton("♻️ NUEVA EDICIÓN", callback_data="admin_panel_premium100_new")],
-        [InlineKeyboardButton("↩️ VOLVER AL PANEL", callback_data="admin_panel_premium100_back")],
-    ])
-
-
-def _premium100_set_active(active: bool):
-    try:
-        with Session() as session:
-            row = session.get(Premium100Config, PREMIUM100_CONFIG_KEY)
-            if not row:
-                row = Premium100Config(config_key=PREMIUM100_CONFIG_KEY, active=0, total_slots=PREMIUM100_DEFAULT_SLOTS, edition=1)
-                session.add(row)
-            row.active = 1 if active else 0
-            row.updated_at = utcnow_naive(); session.commit()
-        return True
-    except Exception as e:
-        logging.warning("No pude cambiar estado PREMIUM100: %s", e)
-        return False
-
-
-def _premium100_set_slots(total_slots: int):
-    total_slots = max(1, int(total_slots))
-    try:
-        with Session() as session:
-            row = session.get(Premium100Config, PREMIUM100_CONFIG_KEY)
-            if not row:
-                row = Premium100Config(config_key=PREMIUM100_CONFIG_KEY, active=0, total_slots=total_slots, edition=1)
-                session.add(row)
-            counts = _premium100_counts_locked(session, row)
-            if total_slots < counts["occupied"]:
-                return False, counts["occupied"]
-            row.total_slots = total_slots; row.updated_at = utcnow_naive(); session.commit()
-        return True, total_slots
-    except Exception as e:
-        logging.warning("No pude cambiar cupos PREMIUM100: %s", e)
-        return False, 0
-
-
-def _premium100_new_edition(total_slots: int = PREMIUM100_DEFAULT_SLOTS):
-    try:
-        with Session() as session:
-            row = session.get(Premium100Config, PREMIUM100_CONFIG_KEY)
-            if not row:
-                row = Premium100Config(config_key=PREMIUM100_CONFIG_KEY, active=0, total_slots=total_slots, edition=1)
-                session.add(row)
-            else:
-                row.edition = int(row.edition or 1) + 1
-                row.total_slots = max(1, int(total_slots))
-                row.active = 0
-                row.updated_at = utcnow_naive()
-            session.commit()
-        return True
-    except Exception as e:
-        logging.warning("No pude crear nueva edición PREMIUM100: %s", e)
-        return False
 
 
 def _broker_flow_get(chat_id: int):
@@ -3342,19 +2784,6 @@ def _record_source_attribution_only(chat_id: int, detected_source: str, authorit
         return detected_source
 
 
-def _known_channel_source(chat_id: int) -> str:
-    """Lee la atribución persistida sin modificarla; útil para carreras join_request -> chat_member."""
-    if not _is_private_user_id(chat_id):
-        return "UNATTRIBUTED"
-    try:
-        with Session() as session:
-            row = session.get(ChannelSourceAttribution, str(chat_id))
-            return _normalize_channel_source(row.source) if row else "UNATTRIBUTED"
-    except Exception as e:
-        logging.warning("No pude leer atribución previa del canal para %s: %s", chat_id, e)
-        return "UNATTRIBUTED"
-
-
 def _record_channel_join_source(chat_id: int, detected_source: str, invite_name: str = "", authoritative: bool = False) -> str:
     """Guarda origen del ingreso; ausencia de metadata queda SIN ATRIBUIR.
 
@@ -4149,13 +3578,6 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
     else:
         detected_source = "UNATTRIBUTED"
 
-    # Si el join_request ADS fue aprobado y Telegram dispara ChatMemberUpdated sin
-    # repetir invite_link/invite_name, conserva la atribución ADS que ya fijamos
-    # antes de aprobar. Esto evita que la actualización concurrente llegue al
-    # servicio de tracking como UNATTRIBUTED.
-    if detected_source == "UNATTRIBUTED" and _known_channel_source(member.id) == "ADS":
-        detected_source = "ADS"
-
     result = await _tracking_post(
         "/internal/channel-join",
         {
@@ -4181,7 +3603,7 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
 
 
 async def tracking_channel_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Aprueba solicitudes VIP y atribuye de forma autoritativa las solicitudes ADS del canal ES."""
+    """Aprueba solicitudes VIP; el flujo avanza al confirmar membresía real."""
     req = getattr(update, "chat_join_request", None)
     if not req:
         return
@@ -4190,30 +3612,8 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
     if not member or not _is_private_user_id(getattr(member, "id", None)):
         return
 
-    req_chat = getattr(req, "chat", None)
-    invite_obj = getattr(req, "invite_link", None)
-    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
-    invite_name = (getattr(invite_obj, "name", None) or "").strip()
-    is_ads_tracking_request = bool(
-        invite_name.upper().startswith("SOURCE-ADS")
-        or invite_name.startswith("track-JT-")
-    )
-
-    # SOURCE-ADS es una marca exclusiva del enlace publicitario del canal, no de
-    # los accesos VIP. La resolvemos antes del fallback por chat/título para que
-    # un ChatJoinRequest sin username del canal no pueda desviarse al flujo VIP.
-    if is_ads_tracking_request:
-        access_key = ""
-        _record_source_attribution_only(member.id, "ADS", authoritative=True)
-        logging.info(
-            "📣 Solicitud ADS canal detectada: Telegram %s | invite=%s | link=%s | chat_id=%s",
-            member.id, invite_name or "(sin marca)", "sí" if invite_link else "no",
-            getattr(req_chat, "id", None),
-        )
-    else:
-        access_key = _vip_access_key_from_request(req)
-
     # 1) ACCESOS VIP POR NIVEL
+    access_key = _vip_access_key_from_request(req)
     if access_key:
         chat_id = int(member.id)
         stage = get_user_stage(chat_id)
@@ -4325,10 +3725,9 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
                 logging.warning("Solicitud VIP aprobada para %s, pero no pude avisar al usuario: %s", chat_id, e)
         return
 
-    # 2) TRACKING DEL CANAL INFORMATIVO ES. Un invite SOURCE-ADS es evidencia
-    # suficiente aunque Telegram omita el username del Chat dentro del join_request.
-    if not (_is_tracking_info_channel(req_chat) or is_ads_tracking_request):
-        chat = req_chat
+    # 2) TRACKING DEL CANAL INFORMATIVO ES — comportamiento anterior intacto.
+    if not _is_tracking_info_channel(getattr(req, "chat", None)):
+        chat = getattr(req, "chat", None)
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
@@ -4345,7 +3744,10 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
         logging.warning("⚠️ Solicitud VIP no mapeada: chat=%s title=%s user=%s", getattr(chat, "id", None), getattr(chat, "title", None), member.id)
         return
 
-    if is_ads_tracking_request:
+    invite_obj = getattr(req, "invite_link", None)
+    invite_link = (getattr(invite_obj, "invite_link", None) or "").strip()
+    invite_name = (getattr(invite_obj, "name", None) or "").strip()
+    if invite_name.upper().startswith("SOURCE-ADS") or invite_name.startswith("track-JT-"):
         detected_source = "ADS"
     elif invite_name or invite_link:
         detected_source = "ORGANIC_OTHER"
@@ -4373,12 +3775,8 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
     authoritative_source = _normalize_channel_source(
         result.get("source") if isinstance(result, dict) else detected_source
     )
-    final_source = _record_channel_join_source(
+    _record_channel_join_source(
         member.id, authoritative_source, invite_name, authoritative=bool(result)
-    )
-    logging.info(
-        "📣 Solicitud canal aprobada: Telegram %s | origen=%s | invite=%s | link=%s",
-        member.id, final_source, invite_name or "(sin marca)", "sí" if invite_link else "no",
     )
 
 
@@ -6202,33 +5600,6 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                 )
     except Exception as e:
         logging.info("No pude construir contexto operativo IA para %s: %s", chat_id, e)
-
-    # Contexto autoritativo de la promoción aislada PREMIUM100. No cambia el precio
-    # normal de Premium (USD 200) ni permite presentarla como upgrade.
-    try:
-        p100_counts = _premium100_counts()
-        p100_part = _premium100_participant(chat_id)
-        if p100_counts.get("active") or p100_part:
-            if lang == "en":
-                lines.append(
-                    "PREMIUM100 promotion: isolated exception for NEW Stockity accounts only; normal Premium remains USD 200. "
-                    f"Current available slots: {p100_counts.get('available', 0)}/{p100_counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. "
-                    "Eligible promotional deposits are USD 100 to 199.99; Premium has no expiration after activation. "
-                    "The REAL validated deposit is stored and counts toward future Prestige under the current upgrade rules. "
-                    "It does not apply to users who already have an active level."
-                )
-            else:
-                lines.append(
-                    "PROMOCIÓN PREMIUM100: excepción aislada solo para cuentas NUEVAS Stockity; Premium normal sigue desde USD 200. "
-                    f"Cupos disponibles actuales: {p100_counts.get('available', 0)}/{p100_counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. "
-                    "El depósito promocional válido es desde USD 100 y menor de USD 200; Premium queda sin fecha de vencimiento. "
-                    "Se guarda el depósito REAL validado y cuenta para un futuro Prestige bajo las reglas vigentes de upgrade. "
-                    "No aplica a usuarios con un nivel ya activo."
-                )
-            if p100_part:
-                lines.append(("User PREMIUM100 status: " if lang == "en" else "Estado PREMIUM100 del usuario: ") + str(p100_part.get("status") or ""))
-    except Exception as e:
-        logging.info("No pude añadir contexto PREMIUM100 para %s: %s", chat_id, e)
     return "\n".join(lines)
 
 def remarketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
@@ -6266,7 +5637,6 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📣 /marketing — Marketing manual", callback_data="admin_panel_marketing")],
         [InlineKeyboardButton("📊 /reporte — Reporte del día", callback_data="admin_panel_report")],
         [InlineKeyboardButton("🎟 CÓDIGOS PROMO", callback_data="admin_panel_promos")],
-        [InlineKeyboardButton("🔥 PROMO PREMIUM USD 100", callback_data="admin_panel_premium100")],
         [InlineKeyboardButton("👤 GESTIONAR USUARIO", callback_data="admin_panel_users")],
         [InlineKeyboardButton("🆔 IDs POR VALIDAR", callback_data="admin_review_queue:ID:0")],
         [InlineKeyboardButton("💰 DEPÓSITOS POR CONFIRMAR", callback_data="admin_review_queue:DEP:0")],
@@ -6560,9 +5930,6 @@ def _admin_user_actions_keyboard(chat_id: int) -> InlineKeyboardMarkup:
         active_level = (_vip_get_state(chat_id, create=False) or {}).get("level") or VIP_LEVEL_NONE
         if active_level != VIP_LEVEL_PRESTIGE:
             buttons.append([InlineKeyboardButton("💰 CONFIRMAR DEPÓSITO / SUBIR NIVEL", callback_data=f"admin_user_deposit:{chat_id}")])
-    promo100_part = _premium100_participant(chat_id)
-    if promo100_part and promo100_part.get("status") in {"RESERVED", "PROOF_PENDING"}:
-        buttons.append([InlineKeyboardButton("🧹 LIBERAR CUPO PREMIUM100", callback_data=f"admin_user_premium100_release:{chat_id}")])
     if deposit_eligible and _admin_review_proof_info(chat_id).get("file_id"):
         buttons.append([InlineKeyboardButton("📷 VER COMPROBANTE", callback_data=f"admin_review_proof:{chat_id}")])
     elif deposit_eligible:
@@ -7030,40 +6397,20 @@ async def _admin_finalize_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id:
         _prune_pending_ai_after_operation(
             context, chat_id, ["ID_SUBMIT"], reason=f"ID {broker} validado"
         )
-        promo100_user = bool(broker == BROKER_STOCKITY and _premium100_mark_id_validated(chat_id, pending_id))
         stage = get_user_stage(chat_id)
         if stage == STAGE_PRE:
             set_user_stage(chat_id, STAGE_POST)
             _cancel_jobs_prefix(context, "A", chat_id)
-            if promo100_user:
-                _cancel_jobs_prefix(context, "B", chat_id)
-            else:
-                schedule_series_b(chat_id, context)
+            schedule_series_b(chat_id, context)
         elif stage == STAGE_POST and not previous_validated:
             _cancel_jobs_prefix(context, "A", chat_id)
-            if promo100_user:
-                _cancel_jobs_prefix(context, "B", chat_id)
-            else:
-                schedule_series_b(chat_id, context)
+            schedule_series_b(chat_id, context)
         lang = get_user_lang(chat_id)
-        if promo100_user:
-            counts = _premium100_counts()
-            rows = []
-            if counts.get("active") and 0 < counts.get("available", 0) <= PREMIUM100_RESERVE_LAST_SLOTS:
-                rows.append([InlineKeyboardButton(f"⏳ RESERVAR 1 DE LOS ÚLTIMOS {counts.get('available', 0)} CUPOS", callback_data="premium100_reserve")])
-            rows.append([InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")])
-            msg = (
-                f"✅ Tu ID de Stockity fue validado correctamente para la promoción Premium USD 100.\n\n"
-                f"🔥 Cupos disponibles ahora: {counts.get('available', 0)} de {counts.get('total', PREMIUM100_DEFAULT_SLOTS)}.\n\n"
-                "Ya puedes realizar el depósito de USD 100 en esa misma cuenta. Cuando lo hagas, envíame aquí el comprobante. Tu Premium, una vez activado, queda sin fecha de vencimiento."
-            )
-            await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=InlineKeyboardMarkup(rows))
-        elif lang == "en":
+        if lang == "en":
             msg = f"✅ Your {_broker_label(broker)} ID has been successfully validated.\n\nYou can now make the deposit in that same trading account. When done, send me the proof here."
-            await context.bot.send_message(chat_id=chat_id, text=msg)
         else:
             msg = f"✅ Tu ID de {_broker_label(broker)} fue validado correctamente.\n\nYa puedes realizar el depósito en esa misma cuenta de trading. Cuando lo hagas, envíame aquí el comprobante."
-            await context.bot.send_message(chat_id=chat_id, text=msg)
+        await context.bot.send_message(chat_id=chat_id, text=msg)
         return True, f"✅ ID {_broker_label(broker)} validado: {pending_id}."
     except Exception as e:
         logging.exception("Error validando ID por broker")
@@ -7081,8 +6428,6 @@ async def _admin_reject_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id: i
             row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
             row.pending_trading_id = None; row.updated_at = utcnow_naive(); session.commit()
         _log_event(chat_id, "ID_REJECTED", f"BROKER={broker} | ID={pending_id}")
-        if broker == BROKER_STOCKITY:
-            _premium100_mark_id_rejected(chat_id)
         _tracking_fire_event(chat_id, "ID_REJECTED", f"BROKER={broker} | ID={pending_id}")
         _prune_pending_ai_after_operation(
             context, chat_id, ["ID_SUBMIT"], reason=f"ID {broker} rechazado"
@@ -7139,121 +6484,7 @@ def _broker_deposit_preview_text(chat_id: int, broker: str, preview: dict) -> st
         "¿Confirmas este depósito validado?"
     )
 
-def _premium100_deposit_preview_text(chat_id: int, amount_cents: int, normal_preview: dict) -> str:
-    if PREMIUM100_MIN_CENTS <= amount_cents < PREMIUM100_NORMAL_PREMIUM_CENTS:
-        missing = max(0, VIP_LEVEL_THRESHOLDS_CENTS[VIP_LEVEL_PRESTIGE] - amount_cents)
-        return (
-            "🔥 CONFIRMAR PROMO PREMIUM USD 100 · STOCKITY\n\n"
-            f"Monto REAL validado: USD {_usd(amount_cents)}\n"
-            "Nivel promocional resultante: Premium\n"
-            f"Capital real que quedará contabilizado para upgrade: USD {_usd(amount_cents)}\n"
-            f"Referencia hasta Prestige: USD {_usd(missing)}\n\n"
-            "El sistema NO fingirá USD 200: guardará exactamente el monto validado.\n\n"
-            "¿Confirmas este depósito promocional?"
-        )
-    standard = _broker_deposit_preview_text(chat_id, BROKER_STOCKITY, normal_preview)
-    if amount_cents < PREMIUM100_MIN_CENTS:
-        note = "⚠️ El monto es menor a USD 100: NO activa Premium promocional. Al confirmar se liberará el cupo y se aplicarán las reglas normales.\n\n"
-    else:
-        note = "ℹ️ El monto es USD 200 o superior: ya alcanza Premium/Prestige por reglas normales. Al confirmar se liberará el cupo promocional.\n\n"
-    return note + standard
-
-
-async def _premium100_apply_promotional_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, amount_cents: int):
-    """Activa Premium promocional guardando el monto REAL. No altera los umbrales normales."""
-    if not (PREMIUM100_MIN_CENTS <= int(amount_cents) < PREMIUM100_NORMAL_PREMIUM_CENTS):
-        return False, "⚠️ Ese monto no corresponde a la ventana promocional USD 100–199.99."
-    part = _premium100_participant(chat_id)
-    if not part or part.get("status") != "PROOF_PENDING":
-        return False, "⚠️ No existe un cupo promocional protegido para este usuario."
-    stockity = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
-    if not stockity.get("id_validated") or not (stockity.get("trading_id") or "").strip():
-        return False, "⚠️ Stockity no tiene un ID validado. No se activó la promoción."
-    if int(stockity.get("deposit_count") or 0) != 0 or int(stockity.get("validated_total_cents") or 0) != 0:
-        return False, "⚠️ La promoción exige cuenta nueva sin depósitos validados previos."
-    old_global_state = _vip_get_state(chat_id, create=False) or {}
-    if (old_global_state.get("level") or VIP_LEVEL_NONE) != VIP_LEVEL_NONE:
-        return False, "⚠️ El usuario ya tiene un nivel activo; la promoción no aplica como upgrade."
-
-    now = utcnow_naive()
-    new_keys = _vip_new_channel_keys(VIP_LEVEL_NONE, VIP_LEVEL_PREMIUM)
-    try:
-        with Session() as session:
-            cfg = session.query(Premium100Config).filter_by(config_key=PREMIUM100_CONFIG_KEY).with_for_update().first()
-            if not cfg:
-                return False, "⚠️ Configuración promocional no disponible."
-            p = session.get(Premium100Participant, _premium100_key(cfg.edition, chat_id))
-            if not p or p.status != "PROOF_PENDING":
-                return False, "⚠️ El cupo promocional ya no está protegido."
-            b = session.get(BrokerAccountState, _broker_key(chat_id, BROKER_STOCKITY))
-            if not b or not b.id_validated or int(b.validated_deposit_count or 0) != 0:
-                return False, "⚠️ El estado Stockity cambió; no se aplicó la promoción."
-            b.validated_total_cents = int(amount_cents)
-            b.upgrade_accum_cents = int(amount_cents)
-            b.validated_deposit_count = 1
-            b.first_validated_deposit_at = now
-            b.level = VIP_LEVEL_PREMIUM
-            b.updated_at = now
-
-            v = session.get(VIPAccessState, str(chat_id))
-            if not v:
-                v = VIPAccessState(telegram_id=str(chat_id)); session.add(v)
-            v.validated_total_cents = int(amount_cents)  # monto REAL, no USD 200 ficticios
-            v.level = VIP_LEVEL_PREMIUM
-            v.pending_access_keys = ",".join(new_keys)
-            v.welcome_level = None
-            v.updated_at = now
-
-            p.status = "ACTIVATED"
-            p.deposit_cents = int(amount_cents)
-            p.activated_at = now
-            p.reserved_until = None
-            p.updated_at = now
-            session.commit()
-    except Exception as e:
-        logging.exception("No pude aplicar activación PREMIUM100")
-        return False, f"❌ No pude guardar la activación promocional: {e}"
-
-    set_user_stage(chat_id, STAGE_DEPOSITED)
-    _cancel_jobs_prefix(context, "A", chat_id)
-    _cancel_jobs_prefix(context, "B", chat_id)
-    _broker_flow_set(chat_id, pending_deposit_broker="")
-    detail = f"PROMO=PREMIUM100 | BROKER=STOCKITY | USD={amount_cents/100:.2f} | LEVEL=PREMIUM"
-    _log_event(chat_id, "DEPOSIT_VALIDATED", detail)
-    _tracking_fire_event(chat_id, "DEPOSIT_VALIDATED", detail)
-    _log_event(chat_id, "ACCOUNT_ACTIVATED", detail)
-    _tracking_fire_event(chat_id, "ACCOUNT_ACTIVATED", detail)
-    _log_event(chat_id, "PREMIUM100_ACTIVATED", detail)
-    _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="PREMIUM100 validado")
-
-    lang = get_user_lang(chat_id)
-    missing = max(0, VIP_LEVEL_THRESHOLDS_CENTS[VIP_LEVEL_PRESTIGE] - int(amount_cents))
-    user_msg = (
-        f"🔥 ¡PROMOCIÓN ACTIVADA!\n\n"
-        f"✅ Depósito Stockity validado: USD {_usd(amount_cents)}.\n"
-        "💎 Tu nivel Premium dentro de JT TRADERS TEAMS quedó habilitado sin fecha de vencimiento.\n\n"
-        f"Tu capital validado real queda registrado en USD {_usd(amount_cents)}. Como referencia, para Prestige te faltan USD {_usd(missing)}, sujeto a las condiciones vigentes de upgrade."
-    )
-    await context.bot.send_message(chat_id=chat_id, text=user_msg, disable_web_page_preview=True)
-    if new_keys:
-        await context.bot.send_message(chat_id=chat_id, text=_vip_access_intro(VIP_LEVEL_PREMIUM, lang, upgrade=False), reply_markup=_vip_access_keyboard(VIP_LEVEL_PREMIUM, lang, keys=new_keys), disable_web_page_preview=True)
-    return True, (
-        "✅ PREMIUM100 ACTIVADO\n\n"
-        f"Monto REAL guardado: USD {_usd(amount_cents)}\n"
-        "Nivel concedido: Premium\n"
-        f"Referencia restante hasta Prestige: USD {_usd(missing)}\n"
-        f"Cupos disponibles ahora: {_premium100_counts().get('available', 0)}"
-    )
-
-
 async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str, preview: dict):
-    broker = _broker_norm(broker)
-    if broker == BROKER_STOCKITY and preview.get("promo_premium100"):
-        amount_cents = int(preview.get("amount_cents") or 0)
-        if PREMIUM100_MIN_CENTS <= amount_cents < PREMIUM100_NORMAL_PREMIUM_CENTS:
-            return await _premium100_apply_promotional_deposit(context, chat_id, amount_cents)
-        # Fuera de la ventana promocional se procesa por reglas normales y el cupo vuelve al pool.
-        _premium100_release_claim(chat_id, "Monto fuera de ventana promocional; reglas normales")
     broker = _broker_norm(broker)
     current = _broker_get(chat_id, broker, create=False)
     if not current or not current.get("id_validated"):
@@ -7485,13 +6716,11 @@ async def admin_broker_callback(update: Update, context: ContextTypes.DEFAULT_TY
             return
         timely = action == "timely"
         preview = _broker_preview_deposit(chat_id, broker, int(pending["amount_cents"]), timely)
-        if broker == BROKER_STOCKITY and ((_premium100_participant(chat_id) or {}).get("status") == "PROOF_PENDING"):
-            preview["promo_premium100"] = True
         pending.update({"timely": timely, "preview": preview})
         context.user_data["admin_pending_broker_deposit"] = pending
         await _admin_review_render(context, 
             chat_id=ADMIN_ID,
-            text=_premium100_deposit_preview_text(chat_id, int(pending["amount_cents"]), preview) if preview.get("promo_premium100") else _broker_deposit_preview_text(chat_id, broker, preview),
+            text=_broker_deposit_preview_text(chat_id, broker, preview),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ CONFIRMAR DEPÓSITO", callback_data=f"admin_broker_deposit_confirm:{chat_id}:{broker}")],
                 [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
@@ -7526,15 +6755,6 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     _admin_review_bind(context, query)
     data = query.data or ""
-
-    promo_release = re.fullmatch(r"admin_user_premium100_release:(\d+)", data)
-    if promo_release:
-        cid = int(promo_release.group(1))
-        if _premium100_release_claim(cid, "Liberado manualmente por admin"):
-            await _show_admin_user(context, cid, "✅ Cupo PREMIUM100 liberado. El usuario conserva el ID validado, pero ya no ocupa un cupo.")
-        else:
-            await _show_admin_user(context, cid, "ℹ️ Este usuario no tenía una reserva/comprobante PREMIUM100 ocupando cupo.")
-        return
 
     next_match = re.fullmatch(r"admin_review_next:(\d+)", data)
     if next_match:
@@ -7975,20 +7195,6 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
 
     promo_edit = context.user_data.get("admin_promo_edit")
     if promo_edit:
-        if promo_edit == "premium100_slots":
-            if not re.fullmatch(r"\d{1,4}", raw):
-                await update.effective_message.reply_text("⚠️ Escribe solo un número entero de cupos. Ejemplo: 20")
-                from telegram.ext import ApplicationHandlerStop
-                raise ApplicationHandlerStop
-            ok, value = _premium100_set_slots(int(raw))
-            if not ok:
-                await update.effective_message.reply_text(f"⚠️ No puedes bajar el total por debajo de los {value} cupos que ya están ocupados/activados.")
-                from telegram.ext import ApplicationHandlerStop
-                raise ApplicationHandlerStop
-            context.user_data.pop("admin_promo_edit", None)
-            await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Cupos actualizados.\n\n" + _premium100_admin_text(), reply_markup=_premium100_admin_keyboard())
-            from telegram.ext import ApplicationHandlerStop
-            raise ApplicationHandlerStop
         if promo_edit in ("code100", "code70"):
             if not re.fullmatch(r"[A-Za-z0-9_-]{3,64}", raw):
                 await update.effective_message.reply_text("⚠️ Código inválido. Usa solo letras, números, guion o guion bajo, sin espacios.")
@@ -8036,16 +7242,13 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
             or account_level == VIP_LEVEL_PRESTIGE
             or amount_cents >= VIP_LEVEL_THRESHOLDS_CENTS[VIP_LEVEL_PRESTIGE]
         )
-        promo100_pending = bool(broker == BROKER_STOCKITY and ((_premium100_participant(chat_id) or {}).get("status") == "PROOF_PENDING"))
         if skip_72h:
             preview = _broker_preview_deposit(chat_id, broker, amount_cents, True)
-            if promo100_pending:
-                preview["promo_premium100"] = True
             pending_dep.update({"timely": True, "preview": preview})
             context.user_data["admin_pending_broker_deposit"] = pending_dep
             await _admin_review_render(context, 
                 chat_id=ADMIN_ID,
-                text=_premium100_deposit_preview_text(chat_id, amount_cents, preview) if promo100_pending else _broker_deposit_preview_text(chat_id, broker, preview),
+                text=_broker_deposit_preview_text(chat_id, broker, preview),
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ CONFIRMAR DEPÓSITO", callback_data=f"admin_broker_deposit_confirm:{chat_id}:{broker}")],
                     [InlineKeyboardButton("❌ CANCELAR", callback_data=f"admin_user_open:{chat_id}")],
@@ -8241,29 +7444,6 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data["admin_promo_edit"] = "expiry"
         await context.bot.send_message(chat_id=ADMIN_ID, text="📅 Escribe la nueva fecha de vencimiento. Formato: DD/MM/AAAA (ejemplo 30/09/2026).")
     elif query.data == "admin_panel_promo_back":
-        context.user_data.pop("admin_promo_edit", None)
-        await context.bot.send_message(chat_id=ADMIN_ID, text="🔐 PANEL ADMINISTRADOR\n\nElige una opción:", reply_markup=admin_panel_keyboard())
-    elif query.data == "admin_panel_premium100":
-        context.user_data.pop("admin_promo_edit", None)
-        _premium100_get_config(create=True)
-        await context.bot.send_message(chat_id=ADMIN_ID, text=_premium100_admin_text(), reply_markup=_premium100_admin_keyboard())
-    elif query.data == "admin_panel_premium100_toggle":
-        counts = _premium100_counts()
-        _premium100_set_active(not bool(counts.get("active")))
-        await context.bot.send_message(chat_id=ADMIN_ID, text=_premium100_admin_text(), reply_markup=_premium100_admin_keyboard())
-    elif query.data == "admin_panel_premium100_slots":
-        context.user_data["admin_promo_edit"] = "premium100_slots"
-        await context.bot.send_message(chat_id=ADMIN_ID, text="🔢 Escribe la cantidad TOTAL de cupos para la edición actual. Ejemplo: 20")
-    elif query.data == "admin_panel_premium100_new":
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text="♻️ ¿Crear una NUEVA edición de PREMIUM USD 100?\n\nLa edición actual queda en histórico. La nueva iniciará PAUSADA con 20 cupos.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ SÍ, NUEVA EDICIÓN", callback_data="admin_panel_premium100_new_confirm")], [InlineKeyboardButton("❌ CANCELAR", callback_data="admin_panel_premium100")]]),
-        )
-    elif query.data == "admin_panel_premium100_new_confirm":
-        _premium100_new_edition(PREMIUM100_DEFAULT_SLOTS)
-        await context.bot.send_message(chat_id=ADMIN_ID, text="✅ Nueva edición creada y dejada PAUSADA.\n\n" + _premium100_admin_text(), reply_markup=_premium100_admin_keyboard())
-    elif query.data == "admin_panel_premium100_back":
         context.user_data.pop("admin_promo_edit", None)
         await context.bot.send_message(chat_id=ADMIN_ID, text="🔐 PANEL ADMINISTRADOR\n\nElige una opción:", reply_markup=admin_panel_keyboard())
     elif query.data == "admin_panel_users":
@@ -8827,11 +8007,7 @@ def build_main_menu(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🇪🇸 Cambiar a Español", callback_data="set_lang_es")],
         ]
     else:
-        kb = []
-        if _premium100_global_button_available():
-            _p100 = _premium100_counts()
-            kb.append([InlineKeyboardButton(f"🔥 PREMIUM USD 100 · {_p100.get('available', 0)} CUPOS", callback_data="premium100_open")])
-        kb += [
+        kb = [
             [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
             [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
             [InlineKeyboardButton("✅ Ya tengo cuenta", callback_data="ya_tengo_cuenta")],
@@ -8858,29 +8034,6 @@ def build_registration_entry_menu(lang: str = "es") -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🏠 VIEW FULL MENU", callback_data="back_main_menu")],
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
-        [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
-        [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")],
-        [InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_en")],
-    ])
-
-
-def build_tgads_entry_menu(lang: str = "es") -> InlineKeyboardMarkup:
-    """Entrada corta exclusiva para publicidad Telegram Ads directa al bot.
-
-    Mantiene TGADS_01 aislado del /start normal y evita obligar al usuario a
-    elegir idioma antes de ver las acciones principales.
-    """
-    if lang == "en":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📲 ENTER THE CHANNEL", url=CANAL_EN)],
-            [InlineKeyboardButton("🚀 CREATE MY ACCOUNT", callback_data="registrarme")],
-            [InlineKeyboardButton("💬 I HAVE A QUESTION", callback_data="ask_here")],
-            [InlineKeyboardButton("🏠 VIEW FULL MENU", callback_data="back_main_menu")],
-            [InlineKeyboardButton("🇪🇸 Español", callback_data="set_lang_es")],
-        ])
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📲 ENTRAR AL CANAL", url=CANAL_ES)],
         [InlineKeyboardButton("🚀 QUIERO REGISTRARME", callback_data="registrarme")],
         [InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")],
         [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")],
@@ -8929,69 +8082,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # v7.10.88: cada /start queda persistido; el ADMIN recibe solo cortes agregados.
     # detail conserva el deep-link/origen para auditoría sin alterar el tracking existente.
     _log_event(chat_id, "BOT_START", start_param or "normal")
-
-    # === PROMOCIÓN PREMIUM USD 100 · DEEP LINK EXCLUSIVO ===
-    # Enlace oficial: https://t.me/JOHAALETRADER_bot?start=PREMIUM100
-    if start_param == "premium100":
-        set_user_lang(chat_id, nombre, "es")
-        lang = "es"
-        ok, reason, _ = _premium100_begin(chat_id)
-        if not ok and reason == "ACTIVE_LEVEL":
-            promo_text = "ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica como upgrade a usuarios que ya tengan un nivel activo."
-            promo_keyboard = member_space_keyboard(chat_id, lang)
-        elif not ok and reason == "NOT_NEW":
-            promo_text = "ℹ️ Esta promoción es exclusiva para cuentas nuevas registradas durante la campaña. Detecté una cuenta/ID previo en tu proceso, por lo que no puedo asignarte uno de estos cupos automáticamente."
-            promo_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
-        else:
-            promo_text, promo_keyboard = _premium100_status_text(chat_id, getattr(update.effective_user, "first_name", "") or nombre)
-        _log_event(chat_id, "PREMIUM100_START", reason)
-        _tracking_fire_event(chat_id, "PREMIUM100_START", reason)
-        try:
-            with open(WELCOME_IMG, "rb") as img:
-                await context.bot.send_photo(chat_id=chat_id, photo=InputFile(img), caption=promo_text, parse_mode=ParseMode.HTML, reply_markup=promo_keyboard)
-        except FileNotFoundError:
-            await context.bot.send_message(chat_id=chat_id, text=promo_text, parse_mode=ParseMode.HTML, reply_markup=promo_keyboard)
-        return
-
-    # === ENTRADA TELEGRAM ADS DIRECTA AL BOT ===
-    # El enlace publicado puede seguir siendo exactamente:
-    # https://t.me/JOHAALETRADER_bot?start=TGADS_01
-    # Español es predeterminado y no se muestra el selector de idioma.
-    if start_param == "tgads_01":
-        active_level = _active_member_level(chat_id)
-        if active_level != VIP_LEVEL_NONE:
-            # Si un miembro activo vuelve a entrar desde un anuncio, no reinicia registro.
-            lang = get_user_lang(chat_id)
-            entry_keyboard = member_space_keyboard(chat_id, lang)
-            entry_caption = _personalized_welcome(update.effective_user, lang)
-        else:
-            set_user_lang(chat_id, nombre, "es")
-            lang = "es"
-            entry_keyboard = build_tgads_entry_menu("es")
-            entry_caption = _personalized_welcome(update.effective_user, "es")
-
-        _log_event(chat_id, "TGADS_BOT_START", "TGADS_01")
-        _tracking_fire_event(chat_id, "TGADS_BOT_START", "TGADS_01")
-        _tracking_fire_event(chat_id, "BOT_START", "tgads_01")
-
-        try:
-            with open(WELCOME_IMG, "rb") as img:
-                await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=InputFile(img),
-                    caption=entry_caption,
-                    reply_markup=entry_keyboard,
-                )
-        except FileNotFoundError:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=entry_caption,
-                reply_markup=entry_keyboard,
-            )
-
-        # Mantiene la campaña/etapa que ya corresponda sin reiniciar relojes.
-        _sync_menu_campaign_for_stage(chat_id, lang, context)
-        return
 
     # === PUERTA ADS LEGACY: compatibilidad con enlaces trk_ ya publicados ===
     # El flujo vigente desde v7.10.86 es /ads -> enlace source-ADS del canal -> bienvenida -> bot.
@@ -9132,13 +8222,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _log_event(chat_id, "CHANNEL_WELCOME_START", start_param)
         _tracking_fire_event(chat_id, "CHANNEL_WELCOME_START", start_param)
         active_level = _active_member_level(chat_id)
-        # Al volver desde el canal, un usuario PRE/POST recibe un menú corto sin
-        # botón de canal. Así evitamos Canal → Bot → Canal en bucle.
-        channel_menu = (
-            member_space_keyboard(chat_id, lang)
-            if active_level != VIP_LEVEL_NONE
-            else build_registration_entry_menu(lang)
-        )
+        channel_menu = member_space_keyboard(chat_id, lang) if active_level != VIP_LEVEL_NONE else build_main_menu(lang)
         await update.message.reply_text(
             texto_entrada,
             parse_mode=ParseMode.HTML,
@@ -9197,73 +8281,6 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await q.answer()
     _touch_user_activity(chat_id)
-
-    if q.data == "premium100_open":
-        ok, reason, _ = _premium100_begin(chat_id)
-        if not ok and reason == "ACTIVE_LEVEL":
-            await q.message.reply_text("ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica como upgrade a un nivel ya activo.", reply_markup=member_space_keyboard(chat_id, get_user_lang(chat_id)))
-            return
-        if not ok and reason == "NOT_NEW":
-            await q.message.reply_text("ℹ️ Esta promoción es únicamente para cuentas nuevas registradas durante esta campaña. Tu proceso actual ya tiene una cuenta/ID previo.", reply_markup=support_keyboard("es", chat_id))
-            return
-        txt, kb = _premium100_status_text(chat_id, getattr(q.from_user, "first_name", ""))
-        await q.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb)
-        return
-
-    if q.data == "premium100_register":
-        ok, reason, _ = _premium100_begin(chat_id)
-        if not ok:
-            txt, kb = _premium100_status_text(chat_id, getattr(q.from_user, "first_name", ""))
-            await q.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb)
-            return
-        msg = (
-            "🚀 REGISTRO PREMIUM USD 100 · STOCKITY\n\n"
-            "1️⃣ Registra una cuenta NUEVA usando mi enlace oficial de Stockity:\n"
-            f"{ENLACE_REFERIDO_STOCKITY}\n\n"
-            "2️⃣ Después de crearla, envíame aquí el ID numérico de esa cuenta.\n"
-            "3️⃣ Espera mi validación antes de realizar cualquier depósito.\n\n"
-            "⚠️ No deposites antes de que yo confirme que el ID quedó correctamente vinculado."
-        )
-        await q.message.reply_text(_personalize_referral_links(msg, chat_id), disable_web_page_preview=True)
-        _log_event(chat_id, "PREMIUM100_REGISTER_CLICK", "STOCKITY")
-        return
-
-    if q.data == "premium100_reserve":
-        ok, reason, counts = _premium100_reserve(chat_id)
-        if ok and reason == "RESERVED":
-            # Reserva NUEVA: empieza ahora una sola ventana de 90 minutos.
-            part = _premium100_participant(chat_id) or {}
-            remaining = _premium100_reservation_remaining_text(part.get("reserved_until"))
-            await q.message.reply_text(
-                f"✅ <b>Cupo reservado.</b>\n\n"
-                f"⏳ Tiempo disponible: <b>{remaining}</b>.\n"
-                "Realiza el depósito de USD 100 en tu cuenta Stockity validada y envía aquí el comprobante antes de que venza la reserva.\n\n"
-                "⚠️ Si sales y vuelves a entrar, el contador continuará desde el mismo vencimiento; no vuelve a empezar.",
-                parse_mode=ParseMode.HTML,
-            )
-        elif ok and reason == "RESERVED_EXISTING":
-            # Reserva YA existente: nunca se prolonga al tocar otra vez el botón.
-            part = _premium100_participant(chat_id) or {}
-            remaining = _premium100_reservation_remaining_text(part.get("reserved_until"))
-            await q.message.reply_text(
-                f"⏳ <b>Tu cupo ya estaba reservado.</b>\n\n"
-                f"Tiempo restante ahora: <b>{remaining}</b>.\n\n"
-                "El contador no se reinició. Completa el depósito y envía el comprobante antes de que venza.",
-                parse_mode=ParseMode.HTML,
-            )
-        elif ok and reason == "PROOF_PENDING":
-            await q.message.reply_text(
-                "✅ Tu comprobante ya fue recibido y tu cupo está protegido mientras se revisa. No necesitas reservar nuevamente."
-            )
-        elif reason == "NOT_LAST":
-            await q.message.reply_text(f"ℹ️ Todavía quedan {counts.get('available', 0)} cupos. La reserva temporal se habilita automáticamente cuando quedan los últimos {PREMIUM100_RESERVE_LAST_SLOTS}. Puedes continuar con tu depósito y enviar el comprobante.")
-        elif reason == "SOLD_OUT":
-            await q.message.reply_text("🔒 Los cupos disponibles ya fueron asignados.")
-        elif reason == "NEED_ID":
-            await q.message.reply_text("⚠️ Primero necesito validar tu ID de Stockity.")
-        else:
-            await q.message.reply_text("⚠️ La promoción no está disponible para nuevas reservas en este momento.")
-        return
 
     if q.data == "upgrade_conditions" or (q.data and q.data.startswith("upgrade_conditions:")):
         lang = get_user_lang(chat_id)
@@ -14550,13 +13567,9 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
             # Limpia únicamente residuos antiguos de entrega de ID; conserva cualquier
             # pregunta legítima que ya estuviera esperando a Johanna/IA.
             _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="nuevo ID operativo")
-            trading_id = _record_submitted_trading_id(chat_id, texto, context)
-            if trading_id and _premium100_attach_stockity_id(chat_id, trading_id):
-                block = "✅ Tu ID de Stockity fue recibido para la promoción Premium USD 100 y quedó pendiente de validación. No realices ningún depósito hasta que yo te confirme la validación."
-                await update.effective_message.reply_text(block)
-            else:
-                block = _id_pending_review_message(lang)
-                await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
+            _record_submitted_trading_id(chat_id, texto, context)
+            block = _id_pending_review_message(lang)
+            await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
             handled_operational.append("ID_SUBMIT")
         # Estas intenciones quedan materialmente resueltas por recibir el ID. No
         # deben volver a provocar una respuesta IA del mismo mensaje.
@@ -14704,35 +13717,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_admin_auto_log(context, update, "PRESTIGE_IMAGE_CONTEXT_REQUIRED", qtxt)
             return
         if current_stage in (STAGE_POST, STAGE_DEPOSITED):
-            promo_part = _premium100_participant(chat_id)
-            if current_stage == STAGE_POST and promo_part and promo_part.get("status") in {"ID_VALIDATED", "RESERVED", "PROOF_PENDING"}:
-                stockity_state = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
-                if stockity_state.get("id_validated"):
-                    claim_ok, claim_reason, promo_counts = _premium100_claim_proof(chat_id)
-                    if not claim_ok:
-                        if claim_reason == "SOLD_OUT":
-                            qtxt = "🔒 Los cupos Premium USD 100 ya fueron asignados antes de que tu comprobante quedara registrado. No voy a procesar esta imagen como activación promocional automática. Escríbeme aquí si necesitas que revise tu caso."
-                        elif claim_reason == "INACTIVE":
-                            qtxt = "⏸ La promoción Premium USD 100 está pausada para nuevas asignaciones. No voy a procesar esta imagen como activación promocional automática hasta que la promoción vuelva a estar activa."
-                        else:
-                            qtxt = "⚠️ No pude asegurar tu cupo promocional. No realizaré una activación automática con esta imagen; escríbeme aquí para revisar el caso."
-                        await update.message.reply_text(qtxt, reply_markup=support_keyboard("es", chat_id))
-                        await send_admin_auto_log(context, update, "PREMIUM100_PROOF_NOT_CLAIMED", qtxt)
-                        return
-                    _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="comprobante PREMIUM100 recibido")
-                    _log_event(chat_id, "DEPOSIT_REVIEW_PROOF", json.dumps({"file_id": update.message.photo[-1].file_id, "message_id": update.message.message_id, "telegram_id": chat_id, "promo": "PREMIUM100"}))
-                    _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF_PREMIUM100")
-                    _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF_PREMIUM100")
-                    _broker_flow_set(chat_id, pending_deposit_broker=BROKER_STOCKITY)
-                    qtxt = "✅ Comprobante recibido. Tu cupo Premium USD 100 queda protegido mientras reviso el depósito de Stockity. Te confirmaré por este chat cuando quede validado."
-                    await update.message.reply_text(qtxt)
-                    await send_admin_auto_log(context, update, "PREMIUM100_PROOF_PENDING", qtxt)
-                    await context.bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text=f"🔥 PREMIUM USD 100 · COMPROBANTE RECIBIDO\nUsuario ID: {chat_id}\nCupo protegido hasta revisión manual. Validar monto real en Stockity.",
-                        reply_markup=admin_user_quick_keyboard(chat_id, "deposit_proof"),
-                    )
-                    return
             _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="comprobante de depósito recibido")
             _log_event(chat_id, "DEPOSIT_REVIEW_PROOF", json.dumps({"file_id": update.message.photo[-1].file_id, "message_id": update.message.message_id, "telegram_id": chat_id}))
             _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
@@ -15231,15 +14215,10 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="ID reconocido inmediatamente")
-        trading_id = _record_submitted_trading_id(chat_id, texto, context)
-        if trading_id and _premium100_attach_stockity_id(chat_id, trading_id):
-            msg = "✅ Tu ID de Stockity fue recibido para la promoción Premium USD 100 y quedó pendiente de validación. No realices ningún depósito hasta que yo te confirme la validación."
-            await update.message.reply_text(msg)
-            await send_admin_auto_log(context, update, "PREMIUM100_ID_PENDING", msg)
-        else:
-            msg = _id_pending_review_message(lang)
-            await update.message.reply_text(msg, reply_markup=_broker_selection_keyboard("id", lang))
-            await send_admin_auto_log(context, update, "ID_SUBMIT_PENDING_BROKER", msg)
+        _record_submitted_trading_id(chat_id, texto, context)
+        msg = _id_pending_review_message(lang)
+        await update.message.reply_text(msg, reply_markup=_broker_selection_keyboard("id", lang))
+        await send_admin_auto_log(context, update, "ID_SUBMIT_PENDING_BROKER", msg)
         return
 
     if intent in ("GESTION_CAPITAL", "CUENTA_PERSONAL", "VPN", "PAIS"):
@@ -15931,7 +14910,7 @@ async def _live_wait_send_slot():
         while True:
             delay = max(_LIVE_SEND_NEXT, _LIVE_SEND_PAUSE_UNTIL) - loop.time()
             if delay <= 0:
-                _LIVE_SEND_NEXT = loop.time() + 0.05  # máximo 20 intentos/s
+                _LIVE_SEND_NEXT = loop.time() + (1.0 / 24.0)  # máximo 24 intentos/s
                 return
             await asyncio.sleep(min(delay, 1.0))
 
@@ -15943,7 +14922,7 @@ def _live_pause_delivery(retry_after):
 
 
 async def _deliver_live_private_recipients(context, recipients, photo_file_id=None):
-    """Seis trabajadores; solo reintenta rechazos explícitos por límite (429)."""
+    """Doce trabajadores; solo reintenta rechazos explícitos por límite (429)."""
     pending = iter(recipients)
     sent = 0
     failed = 0
@@ -15978,7 +14957,7 @@ async def _deliver_live_private_recipients(context, recipients, photo_file_id=No
                     logging.info("Aviso LIVE no entregado a %s: %s", chat_id, e)
                     break
 
-    await asyncio.gather(*(worker() for _ in range(min(6, len(recipients)))))
+    await asyncio.gather(*(worker() for _ in range(min(12, len(recipients)))))
     return sent, failed
 
 
@@ -16020,61 +14999,69 @@ async def live_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    draft = context.user_data.get("live_draft") or {}
-    photo_file_id = draft.get("photo_file_id")
-    recipients = _recent_live_recipients()
-    await _safe_edit_callback_message(
-        query,
-        f"⏳ Enviando LIVE a {len(recipients)} usuarios...",
-    )
-
-    delivery_started = asyncio.get_running_loop().time()
-    sent, failed = await _deliver_live_private_recipients(context, recipients, photo_file_id)
-    delivery_seconds = int(asyncio.get_running_loop().time() - delivery_started)
-
-    channel_results = await _send_live_to_channels(context, photo_file_id=photo_file_id)
-
-    # Johanna recibe en su propio bot una copia EXACTA del aviso entregado a los
-    # usuarios, con los mismos botones, para poder revisar cómo salió publicado.
+    if context.user_data.get("live_broadcast_running"):
+        await context.bot.send_message(chat_id=ADMIN_ID, text="⏳ Ya hay un aviso LIVE enviándose. No inicié otro envío.")
+        return
+    context.user_data["live_broadcast_running"] = True
     try:
-        if photo_file_id:
-            await context.bot.send_photo(
-                chat_id=ADMIN_ID, photo=photo_file_id,
-                caption="📬 COPIA DEL AVISO LIVE ENVIADO\n\n" + LIVE_BROADCAST_MESSAGE_ES,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=live_broadcast_keyboard(user_chat=False),
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text="📬 COPIA DEL AVISO LIVE ENVIADO\n\n" + LIVE_BROADCAST_MESSAGE_ES,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=live_broadcast_keyboard(user_chat=False),
-                disable_web_page_preview=True,
-            )
-    except Exception as e:
-        logging.warning("No pude enviar copia LIVE al admin: %s", e)
+        draft = context.user_data.get("live_draft") or {}
+        photo_file_id = draft.get("photo_file_id")
+        await _safe_edit_callback_message(query, "📢 Publicando LIVE primero en VIP e informativo...")
+        channel_results = await _send_live_to_channels(context, photo_file_id=photo_file_id)
+        recipients = _recent_live_recipients()
+        await _safe_edit_callback_message(
+            query,
+            f"⏳ Enviando LIVE a {len(recipients)} usuarios...",
+        )
 
-    context.user_data.pop("live_draft", None)
-    if context.user_data.get("admin_broadcast_flow") == "live":
-        context.user_data.pop("admin_broadcast_flow", None)
+        delivery_started = asyncio.get_running_loop().time()
+        sent, failed = await _deliver_live_private_recipients(context, recipients, photo_file_id)
+        delivery_seconds = int(asyncio.get_running_loop().time() - delivery_started)
 
-    vip_line = f"👑 VIP: {'✅' if channel_results.get('vip') else '❌'}"
-    if not channel_results.get("vip") and channel_results.get("vip_error"):
-        vip_line += f"\n⚠️ Error VIP: {channel_results['vip_error']}"
+        # Johanna recibe en su propio bot una copia EXACTA del aviso entregado a los
+        # usuarios, con los mismos botones, para poder revisar cómo salió publicado.
+        try:
+            if photo_file_id:
+                await context.bot.send_photo(
+                    chat_id=ADMIN_ID, photo=photo_file_id,
+                    caption="📬 COPIA DEL AVISO LIVE ENVIADO\n\n" + LIVE_BROADCAST_MESSAGE_ES,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=live_broadcast_keyboard(user_chat=False),
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text="📬 COPIA DEL AVISO LIVE ENVIADO\n\n" + LIVE_BROADCAST_MESSAGE_ES,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=live_broadcast_keyboard(user_chat=False),
+                    disable_web_page_preview=True,
+                )
+        except Exception as e:
+            logging.warning("No pude enviar copia LIVE al admin: %s", e)
 
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=(
-            "✅ Aviso LIVE finalizado.\n\n"
-            f"👥 Usuarios enviados: {sent}\n"
-            f"🚫 No entregados: {failed}\n"
-            f"⏱ Entrega a usuarios: {delivery_seconds // 60} min {delivery_seconds % 60} s\n"
-            f"📅 Ventana usada: últimos {LIVE_BROADCAST_DAYS} días\n"
-            f"📢 Informativo: {'✅' if channel_results.get('info') else '❌'}\n"
-            + vip_line
-        ),
-    )
+        context.user_data.pop("live_draft", None)
+        if context.user_data.get("admin_broadcast_flow") == "live":
+            context.user_data.pop("admin_broadcast_flow", None)
+
+        vip_line = f"👑 VIP: {'✅' if channel_results.get('vip') else '❌'}"
+        if not channel_results.get("vip") and channel_results.get("vip_error"):
+            vip_line += f"\n⚠️ Error VIP: {channel_results['vip_error']}"
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "✅ Aviso LIVE finalizado.\n\n"
+                f"👥 Usuarios enviados: {sent}\n"
+                f"🚫 No entregados: {failed}\n"
+                f"⏱ Entrega a usuarios: {delivery_seconds // 60} min {delivery_seconds % 60} s\n"
+                f"📅 Ventana usada: últimos {LIVE_BROADCAST_DAYS} días\n"
+                f"📢 Informativo: {'✅' if channel_results.get('info') else '❌'}\n"
+                + vip_line
+            ),
+        )
+
+    finally:
+        context.user_data.pop("live_broadcast_running", None)
 
 
 async def marketing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
