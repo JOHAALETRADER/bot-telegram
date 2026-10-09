@@ -13328,7 +13328,38 @@ def _ai_known_fact_guard(answer: str, question: str, lang: str = "es") -> str:
     return value.strip()
 
 
+def _id_validation_guidance(question: str, chat_id: int, lang: str = "es") -> str:
+    """Resuelve consultas de validación con el estado real; nunca valida automáticamente."""
+    t = _norm(question)
+    if any(x in t for x in ("documento", "cedula", "pasaporte", "passport", "identity document", "kyc")):
+        return ""
+    has_id = bool(re.search(r"\bid\b", t))
+    check = any(x in t for x in ("valid", "verific", "confirm", "check"))
+    registered = any(x in t for x in ("quedo bien registr", "quedo correctamente registr", "registro quedo bien", "bien el registro", "registered correctly", "registration is correct"))
+    if not ((has_id and check) or (registered and ("stockity" in t or "binomo" in t))):
+        return ""
+    # Las preguntas combinadas sobre otros temas conservan el motor conversacional.
+    if any(x in t for x in ("cuanto", "cuantos", "how much", "senal", "signal", "curso", "course", "bono", "bonus", "upgrade", "retiro", "withdraw")):
+        return ""
+    broker = BROKER_STOCKITY if "stockity" in t else (BROKER_BINOMO if "binomo" in t else None)
+    accounts = [_broker_get(chat_id, broker, create=False) or {}] if broker else _broker_rows(chat_id)
+    validated = [a for a in accounts if a.get("id_validated") and str(a.get("trading_id") or "").strip()]
+    pending = [a for a in accounts if str(a.get("pending_trading_id") or "").strip()]
+    label = " Stockity" if broker == BROKER_STOCKITY else (" Binomo" if broker == BROKER_BINOMO else "")
+    if validated:
+        return (f"Your{label} ID is already validated ✅ You do not need to register or send it again." if lang == "en" else f"Tu ID{label} ya está validado ✅ No necesitas registrarte ni enviarlo nuevamente.")
+    if pending:
+        return (f"I already received your{label} ID ✅ It is pending my review. You do not need to register again; wait for my validation confirmation before depositing." if lang == "en" else f"Ya recibí tu ID{label} ✅ Está pendiente de mi revisión. No necesitas registrarte nuevamente; espera mi confirmación de validación antes de depositar.")
+    # Compatibilidad con validaciones anteriores sin ficha separada por broker.
+    if not broker and _strict_validated_id_state(chat_id):
+        return ("Your ID is already validated ✅ You do not need to register or send it again." if lang == "en" else "Tu ID ya está validado ✅ No necesitas registrarte ni enviarlo nuevamente.")
+    return (f"Send me your{label} account's numeric ID here so I can verify that your registration is correctly linked ✅" if lang == "en" else f"Envíame aquí el ID numérico de tu cuenta{label} para verificar que tu registro haya quedado correctamente vinculado ✅")
+
+
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    id_guidance = _id_validation_guidance(question, chat_id, lang)
+    if id_guidance:
+        return id_guidance
     promo_answer = _premium100_answer(question, chat_id, lang)
     if promo_answer:
         return promo_answer
