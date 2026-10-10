@@ -6196,8 +6196,6 @@ def _ai_entry_promo_available(question: str, chat_id: int) -> bool:
     if chat_id is None or not _is_min_50_intent(question):
         return False
     other = _is_hypothetical_other_person(question)
-    if not other and _active_member_level(chat_id) != VIP_LEVEL_NONE:
-        return False
     part = None if other else _premium100_participant(chat_id)
     protected = (part or {}).get("status") in {"RESERVED", "PROOF_PENDING"}
     counts = _premium100_counts()
@@ -6213,15 +6211,19 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
     counts = _premium100_counts()
     slots = counts.get("available", 0)
     total = counts.get("total", PREMIUM100_DEFAULT_SLOTS)
+    other = _is_hypothetical_other_person(question)
+    active = not other and _active_member_level(chat_id) != VIP_LEVEL_NONE
+    prior = not other and _premium100_has_prior_account_history(chat_id)
+    note = ("Your current level remains active; this promotion does not apply as an upgrade." if lang == "en" else "Tu nivel actual sigue activo; esta promoción no aplica como upgrade.") if active else (("You already have an account ID in the system. Do not repeat registration or assume promotional eligibility; Johanna must review and confirm it before a promotional deposit." if lang == "en" else "Ya tienes un ID de cuenta en el sistema. No repitas el registro ni asumas que aplica la promoción; Johanna debe revisar y confirmar tu elegibilidad antes de un depósito promocional.") if prior else ("Wait for account ID validation and promotion eligibility confirmation before depositing." if lang == "en" else "Antes de depositar, espera la validación del ID y la confirmación de que aplica la promoción."))
     if lang == "en":
         return ("The community minimum is USD 50 for Basic. USD 200 is recommended for normal Premium.\n\n"
                 "There is also a promotion to access Premium tools with USD 100 instead of USD 200, exclusively for new Stockity accounts enrolled in the promotion, subject to available slots or your existing reservation. "
                 f"Available slots: {slots}/{total}. See Premium and the promotion in the buttons below 👇\n\n"
-                "Wait for account ID validation and promotion eligibility confirmation before depositing. The money stays in your own trading account; trading involves a risk of loss.")
+                f"{note} The money stays in your own trading account; trading involves a risk of loss.")
     return ("El mínimo de la comunidad es USD 50 para Básico. Lo recomendado es USD 200 para Premium normal.\n\n"
             "También hay una promo para acceder a las herramientas Premium con USD 100 en vez de USD 200, exclusiva para cuentas nuevas Stockity inscritas en la promoción, según cupos disponibles o tu reserva vigente. "
             f"Cupos disponibles: {slots}/{total}. Mira Premium y la promoción en los siguientes botones 👇\n\n"
-            "Antes de depositar, espera la validación del ID y la confirmación de que aplica la promoción. El dinero queda en tu propia cuenta de trading; operar implica riesgo de pérdida.")
+            f"{note} El dinero queda en tu propia cuenta de trading; operar implica riesgo de pérdida.")
 
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
