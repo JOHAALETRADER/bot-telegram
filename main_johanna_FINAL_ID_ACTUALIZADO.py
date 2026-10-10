@@ -13228,7 +13228,7 @@ def _multiple_personal_accounts_case(text_value: str) -> bool:
     explicit_many = any(x in t for x in (
         "varias cuentas", "multiples cuentas", "múltiples cuentas", "tres cuentas", "3 cuentas",
         "cuatro cuentas", "4 cuentas", "cinco cuentas", "5 cuentas", "dos cuentas", "2 cuentas",
-        "cuatro o cinco", "4 o 5", "varios correos", "correos diferentes", "cerrar las otras",
+        "cuatro o cinco cuentas", "4 o 5 cuentas", "varios correos", "correos diferentes", "cerrar las otras cuentas",
         "cuentas con varios enlaces", "cuentas con diferentes enlaces", "he creado cuentas con varios enlaces",
     ))
     numeric_many = bool(re.search(r"\b(?:2|3|4|5|6|7|8|9|10)\s+cuentas\b", t))
