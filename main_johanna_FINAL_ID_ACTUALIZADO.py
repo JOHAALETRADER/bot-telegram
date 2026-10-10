@@ -6203,7 +6203,8 @@ def _ai_entry_promo_available(question: str, chat_id: int) -> bool:
     counts = _premium100_counts()
     if not protected and (not counts.get("active") or counts.get("available", 0) <= 0):
         return False
-    return bool(other or part or not _premium100_has_prior_account_history(chat_id))
+    # Informar no equivale a autorizar inscripción; el callback conserva elegibilidad.
+    return True
 
 
 def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str:
