@@ -1200,28 +1200,39 @@ def _premium100_reservation_remaining_text(reserved_until) -> str:
     return " ".join(parts)
 
 
+def _premium100_basic_binomo(chat_id: int) -> bool:
+    account = _broker_get(chat_id, BROKER_BINOMO, create=False) or {}
+    return _active_member_level(chat_id) == VIP_LEVEL_BASIC and account.get("level") == VIP_LEVEL_BASIC
+
+
+def _premium100_level_allowed(chat_id: int) -> bool:
+    return _active_member_level(chat_id) == VIP_LEVEL_NONE or _premium100_basic_binomo(chat_id)
+
+
 def _premium100_has_prior_account_history(chat_id: int) -> bool:
-    # La promo es únicamente para cuenta NUEVA: no debe existir ID previo/pendiente
-    # ni depósito validado en Binomo/Stockity al iniciar esta edición.
+    # Básico Binomo puede inscribir una cuenta NUEVA Stockity; nunca reutilizar Stockity previo.
+    if _premium100_basic_binomo(chat_id):
+        state = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+        return bool(state.get("trading_id") or state.get("pending_trading_id")
+                    or state.get("id_validated") or state.get("validated_total_cents")
+                    or state.get("deposit_count"))
     if (_get_saved_trading_id(chat_id) or "").strip():
         return True
     if (_broker_flow_get(chat_id).get("pending_trading_id") or "").strip():
         return True
     for state in _broker_rows(chat_id):
-        if (
-            (state.get("trading_id") or "").strip()
+        if ((state.get("trading_id") or "").strip()
             or (state.get("pending_trading_id") or "").strip()
             or state.get("id_validated")
             or int(state.get("validated_total_cents") or 0) > 0
-            or int(state.get("deposit_count") or 0) > 0
-        ):
+            or int(state.get("deposit_count") or 0) > 0):
             return True
     return False
 
 
 def _premium100_begin(chat_id: int):
     """Registra entrada promocional sin consumir cupo."""
-    if _active_member_level(chat_id) != VIP_LEVEL_NONE:
+    if not _premium100_level_allowed(chat_id):
         return False, "ACTIVE_LEVEL", None
     cfg = _premium100_get_config(create=True)
     if not cfg or not cfg["active"]:
@@ -1627,8 +1638,8 @@ def _premium100_answer(question: str, chat_id: int, lang: str = "es") -> str:
     status = (part or {}).get('status')
     if status == 'ACTIVATED':
         return ("Your promotional Premium access was activated. Your real validated deposit is used for future upgrades under the normal upgrade rules." if en else "Tu acceso Premium promocional ya fue activado. Para futuros upgrades se cuenta tu depósito real validado y se aplican las reglas normales de upgrade.")
-    if not for_other and _active_member_level(chat_id) != VIP_LEVEL_NONE:
-        return offer + "\n\n" + ("This promotion is exclusively for new Stockity accounts without an active community level. It does not replace your current level or the normal upgrade rules." if en else "Esta promoción es exclusiva para cuentas nuevas Stockity sin nivel activo en la comunidad. No reemplaza tu nivel actual ni las reglas normales de upgrade.")
+    if not for_other and not _premium100_level_allowed(chat_id):
+        return offer + "\n\n" + ("This promotion is exclusively for new Stockity accounts without Premium or Prestige access (Basic on Binomo is eligible). It does not replace your current level or the normal upgrade rules." if en else "Esta promoción es exclusiva para cuentas nuevas Stockity sin Premium ni Prestige activo (Básico en Binomo sí puede participar). No reemplaza tu nivel actual ni las reglas normales de upgrade.")
     protected = status in {'RESERVED', 'PROOF_PENDING'}
     available = counts.get('available', 0)
     if not counts.get('active') and not protected:
@@ -6212,7 +6223,7 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
     slots = counts.get("available", 0)
     total = counts.get("total", PREMIUM100_DEFAULT_SLOTS)
     other = _is_hypothetical_other_person(question)
-    active = not other and _active_member_level(chat_id) != VIP_LEVEL_NONE
+    active = not other and not _premium100_level_allowed(chat_id)
     prior = not other and _premium100_has_prior_account_history(chat_id)
     note = ("Your current level remains active; this promotion does not apply as an upgrade." if lang == "en" else "Tu nivel actual sigue activo; esta promoción no aplica como upgrade.") if active else (("You already have an account ID in the system. Do not repeat registration or assume promotional eligibility; Johanna must review and confirm it before a promotional deposit." if lang == "en" else "Ya tienes un ID de cuenta en el sistema. No repitas el registro ni asumas que aplica la promoción; Johanna debe revisar y confirmar tu elegibilidad antes de un depósito promocional.") if prior else ("Wait for account ID validation and promotion eligibility confirmation before depositing." if lang == "en" else "Antes de depositar, espera la validación del ID y la confirmación de que aplica la promoción."))
     if lang == "en":
@@ -7530,11 +7541,12 @@ async def _premium100_apply_promotional_deposit(context: ContextTypes.DEFAULT_TY
     if int(stockity.get("deposit_count") or 0) != 0 or int(stockity.get("validated_total_cents") or 0) != 0:
         return False, "⚠️ La promoción exige cuenta nueva sin depósitos validados previos."
     old_global_state = _vip_get_state(chat_id, create=False) or {}
-    if (old_global_state.get("level") or VIP_LEVEL_NONE) != VIP_LEVEL_NONE:
-        return False, "⚠️ El usuario ya tiene un nivel activo; la promoción no aplica como upgrade."
+    if not _premium100_level_allowed(chat_id):
+        return False, "⚠️ La promoción no aplica a un nivel Premium o Prestige ya activo."
+    old_level = old_global_state.get("level") or VIP_LEVEL_NONE
 
     now = utcnow_naive()
-    new_keys = _vip_new_channel_keys(VIP_LEVEL_NONE, VIP_LEVEL_PREMIUM)
+    new_keys = _vip_new_channel_keys(old_level, VIP_LEVEL_PREMIUM)
     try:
         with Session() as session:
             cfg = session.query(Premium100Config).filter_by(config_key=PREMIUM100_CONFIG_KEY).with_for_update().first()
@@ -7546,6 +7558,9 @@ async def _premium100_apply_promotional_deposit(context: ContextTypes.DEFAULT_TY
             b = session.get(BrokerAccountState, _broker_key(chat_id, BROKER_STOCKITY))
             if not b or not b.id_validated or int(b.validated_deposit_count or 0) != 0:
                 return False, "⚠️ El estado Stockity cambió; no se aplicó la promoción."
+            current_v = session.get(VIPAccessState, str(chat_id))
+            if current_v and current_v.level not in {None, VIP_LEVEL_NONE, VIP_LEVEL_BASIC}:
+                return False, "⚠️ El nivel cambió; la promoción no se aplicó."
             b.validated_total_cents = int(amount_cents)
             b.upgrade_accum_cents = int(amount_cents)
             b.validated_deposit_count = 1
@@ -9374,7 +9389,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = "es"
         ok, reason, _ = _premium100_begin(chat_id)
         if not ok and reason == "ACTIVE_LEVEL":
-            promo_text = "ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica como upgrade a usuarios que ya tengan un nivel activo."
+            promo_text = "ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica a usuarios que ya tengan Premium o Prestige activo."
             promo_keyboard = member_space_keyboard(chat_id, lang)
         elif not ok and reason == "NOT_NEW":
             promo_text = "ℹ️ Esta promoción es exclusiva para cuentas nuevas registradas durante la campaña. Detecté una cuenta/ID previo en tu proceso, por lo que no puedo asignarte uno de estos cupos automáticamente."
@@ -9642,7 +9657,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         part = _premium100_participant(chat_id)
         if part:
             rows.append([InlineKeyboardButton("🔥 MY PROMOTION" if get_user_lang(chat_id) == "en" else "🔥 MI PROMOCIÓN", callback_data="premium100_open")])
-        elif _premium100_counts().get("active") and _premium100_counts().get("available", 0) > 0 and _active_member_level(chat_id) == VIP_LEVEL_NONE and not _premium100_has_prior_account_history(chat_id):
+        elif _premium100_counts().get("active") and _premium100_counts().get("available", 0) > 0 and _premium100_level_allowed(chat_id) and not _premium100_has_prior_account_history(chat_id):
             rows.append([InlineKeyboardButton("📝 REGISTER FOR THE PROMOTION" if get_user_lang(chat_id) == "en" else "📝 REGISTRARME EN LA PROMOCIÓN", callback_data="premium100_register")])
         await q.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(rows))
         return
@@ -9650,7 +9665,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "premium100_open":
         ok, reason, _ = _premium100_begin(chat_id)
         if not ok and reason == "ACTIVE_LEVEL":
-            await q.message.reply_text("ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica como upgrade a un nivel ya activo.", reply_markup=member_space_keyboard(chat_id, get_user_lang(chat_id)))
+            await q.message.reply_text("ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica a un nivel Premium o Prestige ya activo.", reply_markup=member_space_keyboard(chat_id, get_user_lang(chat_id)))
             return
         if not ok and reason == "NOT_NEW":
             await q.message.reply_text("ℹ️ Esta promoción es únicamente para cuentas nuevas registradas durante esta campaña. Tu proceso actual ya tiene una cuenta/ID previo.", reply_markup=support_keyboard("es", chat_id))
@@ -9666,6 +9681,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(msg, reply_markup=ai_context_keyboard("Premium promo 100", get_user_lang(chat_id), chat_id))
             return
         ok, reason, _ = _premium100_begin(chat_id)
+        if not ok and reason in {"ACTIVE_LEVEL", "NOT_NEW"}:
+            msg = ("ℹ️ La promoción no aplica con Premium o Prestige activo." if reason == "ACTIVE_LEVEL" else "ℹ️ La promoción requiere una cuenta Stockity nueva; detecté un ID o cuenta Stockity previo.")
+            await q.message.reply_text(msg, reply_markup=support_keyboard(get_user_lang(chat_id), chat_id))
+            return
         if not ok:
             txt, kb = _premium100_status_text(chat_id, getattr(q.from_user, "first_name", ""))
             await q.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb)
