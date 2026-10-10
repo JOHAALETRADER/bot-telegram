@@ -1634,7 +1634,7 @@ def _premium100_answer(question: str, chat_id: int, lang: str = "es") -> str:
     counts = _premium100_counts()
     account = {} if for_other else (_broker_get(chat_id, BROKER_STOCKITY, create=False) or {})
     en = lang == "en"
-    offer = ("This promotion gives access to Premium tools with a USD 100 deposit instead of the normal USD 200, exclusively for new Stockity accounts enrolled in the promotion. See Premium and the promotion in the buttons below 👇" if en else "Esta promo te permite acceder a las herramientas del nivel Premium con un depósito de USD 100 en vez de los USD 200 habituales, exclusivamente con una cuenta nueva Stockity inscrita en la promoción. Mira el nivel Premium y la promoción en los siguientes botones 👇")
+    offer = ("The community is free. This promotion gives access to Premium tools with a personal USD 100 deposit directly into your own trading account instead of the normal USD 200, exclusively for new Stockity accounts enrolled in the promotion. This is not a payment to Johanna or a subscription. See Premium and the promotion in the buttons below 👇" if en else "Toda la comunidad es gratuita. Esta promo te permite acceder a las herramientas del nivel Premium con un depósito personal de USD 100 directamente en tu propia cuenta de trading en vez de los USD 200 habituales, exclusivamente con una cuenta nueva Stockity inscrita en la promoción. No es un pago a Johanna ni una suscripción. Mira el nivel Premium y la promoción en los siguientes botones 👇")
     status = (part or {}).get('status')
     if status == 'ACTIVATED':
         return ("Your promotional Premium access was activated. Your real validated deposit is used for future upgrades under the normal upgrade rules." if en else "Tu acceso Premium promocional ya fue activado. Para futuros upgrades se cuenta tu depósito real validado y se aplican las reglas normales de upgrade.")
@@ -1658,7 +1658,7 @@ def _premium100_answer(question: str, chat_id: int, lang: str = "es") -> str:
     else:
         msg += "\n\nUse the official promotion entry, send your new Stockity account ID and wait for validation before depositing." if en else "\n\nEntra por la promoción oficial, envía el ID de tu cuenta nueva Stockity y espera su validación antes de depositar."
     msg += "\n\nA 90-minute reservation is available only for the last 5 slots, after ID validation. Outside this promotion, Basic/Premium/Prestige keep their normal thresholds." if en else "\n\nLa reserva de 90 minutos aplica solo en los últimos 5 cupos, después de validar el ID. Fuera de esta promoción, Básico/Premium/Prestige mantienen sus mínimos normales."
-    return msg
+    return _clarify_free_community(msg, lang)
 
 
 def _premium100_admin_text():
@@ -6202,9 +6202,50 @@ def _ai_needs_levels_button(question: str, current_level: str = VIP_LEVEL_NONE, 
     return t.strip() in {"basico", "básico", "premium", "prestige"}
 
 
+def _bot_price_question(question: str) -> bool:
+    t = _norm(question or "")
+    return bool(re.search(r"\b(bot|cryptoidx|crypto idx)\b|24/7", t)
+                and re.search(r"cuanto|precio|costo|cuesta|pagar|how much|price|cost|pay", t)
+                and not re.search(r"ganar|ganancia|rentabil|earn|profit", t))
+
+
+def _bot_access_price_answer(question: str, chat_id: int, lang: str = "es") -> str:
+    if not _bot_price_question(question):
+        return ""
+    en = lang == "en"
+    intro = ("The community is free. The AI CRYPTO IDX 24/7 bot is included in Premium; it is not sold separately." if en else "Toda la comunidad es gratuita. El bot IA CRYPTO IDX 24/7 está incluido en Premium; no se vende por separado.")
+    if _active_member_level(chat_id) in {VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE}:
+        return intro + (" Your current level already includes this access; you do not need another deposit to obtain it." if en else " Tu nivel actual ya incluye este acceso; no necesitas otro depósito para obtenerlo.")
+    counts = _premium100_counts()
+    part = _premium100_participant(chat_id)
+    protected = (part or {}).get("status") in {"RESERVED", "PROOF_PENDING"}
+    if (counts.get("active") and counts.get("available", 0) > 0) or protected:
+        detail = (f"To activate Premium, the normal personal deposit is USD 200. The promotion allows USD 100 into your own new Stockity trading account, subject to eligibility. Available slots: {counts.get('available', 0)}/{counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. See Premium and the promotion below." if en else f"Para activar Premium, el depósito personal habitual es USD 200. La promoción permite USD 100 directamente en tu propia cuenta nueva de trading Stockity, sujeto a sus requisitos. Cupos disponibles: {counts.get('available', 0)}/{counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. Mira Premium y la promoción en los botones.")
+    else:
+        detail = ("Premium is activated with a personal deposit starting at USD 200 directly into your own trading account." if en else "Premium se activa con un depósito personal desde USD 200 directamente en tu propia cuenta de trading.")
+    return intro + "\n\n" + detail + (" This is not a payment to Johanna or a community subscription. Trading involves a risk of loss." if en else " No es un pago a Johanna ni una suscripción a la comunidad. Operar implica riesgo de pérdida.")
+
+
+def _clarify_free_community(answer: str, lang: str = "es") -> str:
+    value = (answer or "").strip()
+    t = _norm(value)
+    if not (re.search(r"\d", t) and re.search(r"premium|prestige|basico|basic|promocion|promotion", t)):
+        return value
+    # Evitar presentar un depósito personal como el precio del acceso.
+    if lang == "en":
+        value = re.sub(r"\bfor (USD\s*\d+(?:[.,]\d+)?)", r"with a personal deposit of \1 into your own trading account", value, flags=re.I)
+        note = "The community is free; the deposit goes directly into your own trading account. It is not a payment to Johanna or a subscription."
+        complete = "community is free" in t and "own" in t and "trading account" in t
+    else:
+        value = re.sub(r"\bpor (USD\s*\d+(?:[.,]\d+)?)", r"con un depósito personal de \1 en tu propia cuenta de trading", value, flags=re.I)
+        note = "Toda la comunidad es gratuita; el depósito va directamente a tu propia cuenta de trading. No es un pago a Johanna ni una suscripción."
+        complete = ("comunidad es gratuita" in t or "comunidad es gratuito" in t) and "propia cuenta" in t
+    return value if complete else value + "\n\n" + note
+
+
 def _ai_entry_promo_available(question: str, chat_id: int) -> bool:
     """Oferta de ingreso contextual; no inscribe ni modifica niveles/depósitos."""
-    if chat_id is None or not _is_min_50_intent(question):
+    if chat_id is None or not (_is_min_50_intent(question) or _bot_price_question(question)):
         return False
     other = _is_hypothetical_other_person(question)
     part = None if other else _premium100_participant(chat_id)
@@ -6230,11 +6271,11 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
         return ("The community minimum is USD 50 for Basic. USD 200 is recommended for normal Premium.\n\n"
                 "There is also a promotion to access Premium tools with USD 100 instead of USD 200, exclusively for new Stockity accounts enrolled in the promotion, subject to available slots or your existing reservation. "
                 f"Available slots: {slots}/{total}. See Premium and the promotion in the buttons below 👇\n\n"
-                f"{note} The money stays in your own trading account; trading involves a risk of loss.")
+                f"{note} The community is free. The deposit goes directly into your own trading account; it is not a payment to Johanna or a subscription. Trading involves a risk of loss.")
     return ("El mínimo de la comunidad es USD 50 para Básico. Lo recomendado es USD 200 para Premium normal.\n\n"
             "También hay una promo para acceder a las herramientas Premium con USD 100 en vez de USD 200, exclusiva para cuentas nuevas Stockity inscritas en la promoción, según cupos disponibles o tu reserva vigente. "
             f"Cupos disponibles: {slots}/{total}. Mira Premium y la promoción en los siguientes botones 👇\n\n"
-            f"{note} El dinero queda en tu propia cuenta de trading; operar implica riesgo de pérdida.")
+            f"{note} Toda la comunidad es gratuita. El depósito va directamente a tu propia cuenta de trading; no es un pago a Johanna ni una suscripción. Operar implica riesgo de pérdida.")
 
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
@@ -6577,7 +6618,7 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                     f"Current available slots: {p100_counts.get('available', 0)}/{p100_counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. "
                     "Describe the offer as Premium with USD 100 instead of the normal USD 200, never as a deposit range. Refer to Premium tools and its button; do not enumerate signal counts unless asked. Premium has no expiration after activation. "
                     "The REAL validated deposit is stored and counts toward future Prestige under the current upgrade rules. "
-                    "It does not apply to users who already have an active level."
+                    "Premium/Prestige members are excluded; Basic Binomo members may enroll a NEW Stockity account."
                 )
             else:
                 lines.append(
@@ -6585,13 +6626,14 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
                     f"Cupos disponibles actuales: {p100_counts.get('available', 0)}/{p100_counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. "
                     "Presenta la oferta como Premium con USD 100 en vez de USD 200 habituales, nunca como un rango. Menciona herramientas Premium y su botón; no enumeres cantidades de señales salvo que pregunten. Premium queda sin fecha de vencimiento. "
                     "Se guarda el depósito REAL validado y cuenta para un futuro Prestige bajo las reglas vigentes de upgrade. "
-                    "No aplica a usuarios con un nivel ya activo."
+                    "No aplica con Premium o Prestige activo; Básico en Binomo puede inscribir una cuenta NUEVA Stockity."
                 )
             lines.append("IMPORTANT: Premium USD 100 access promotion is NOT the broker balance bonus. Never replace a question about discounted Premium access with a 100% bonus code. Never claim promotional enrollment from the user's words alone. A validated Stockity ID does not automatically prove promotional enrollment. If a validated ID lacks a participant record, refer enrollment review to Johanna; do not request registration again. For a USD 100 level question, normal Basic applies unless eligible promotional enrollment is confirmed; mention the active promotion conditionally. No separate Stockity community groups exist: access channels are determined by community level. Do not invent broker-specific signal incompatibility or portray CRYPTO IDX as a generic cryptocurrency market.")
             if p100_part:
                 lines.append(("User PREMIUM100 status: " if lang == "en" else "Estado PREMIUM100 del usuario: ") + str(p100_part.get("status") or ""))
     except Exception as e:
         logging.info("No pude añadir contexto PREMIUM100 para %s: %s", chat_id, e)
+    lines.append("The entire community is free. Access amounts are personal deposits directly into the user own trading account, never fees paid to Johanna or subscriptions. State this explicitly whenever discussing access amounts or a promotion. Never present Premium as being sold for USD100 or USD200.")
     return "\n".join(lines)
 
 def remarketing_keyboard(lang: str = "es") -> InlineKeyboardMarkup:
@@ -13683,6 +13725,9 @@ def _copied_live_notice_answer(question: str, lang: str = "es") -> str:
 
 
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    bot_price_answer = _bot_access_price_answer(question, chat_id, lang)
+    if bot_price_answer:
+        return bot_price_answer
     live_notice_answer = _copied_live_notice_answer(question, lang)
     if live_notice_answer:
         return live_notice_answer
@@ -14824,7 +14869,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
 
             answer = _clean_ai_plain_text_format(answer)
 
-        return _neutralize_ai_gender(answer, lang)
+        return _neutralize_ai_gender(_clarify_free_community(answer, lang), lang)
     except Exception as e:
         logging.warning("Error generando respuesta IA: %s", e)
         return ""
@@ -14952,7 +14997,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         answer = _personalize_referral_links(answer, chat_id)
-        answer = _neutralize_ai_gender(answer, lang)
+        answer = _neutralize_ai_gender(_clarify_free_community(answer, lang), lang)
         base_markup = personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang, chat_id)
         # Para un miembro activo, si la respuesta no necesita un CTA más específico
         # (nivel/upgrade/live/etc.), mantenemos una salida mínima y útil: pregunta + MI ESPACIO JT.
