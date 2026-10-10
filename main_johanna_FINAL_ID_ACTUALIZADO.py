@@ -6466,6 +6466,30 @@ def _vip_rate_limit_message(lang: str = "es") -> str:
     )
 
 
+def _ai_last_id_decision(chat_id: int, broker=None) -> str:
+    """Read existing audit events; retain broker isolation and never modify accounts."""
+    try:
+        with Session() as session:
+            query = session.query(BotEvent).filter(
+                BotEvent.telegram_id == str(chat_id),
+                BotEvent.event_type.in_(["ID_SUBMITTED", "ID_VALIDATED", "ID_REJECTED"]),
+            )
+            if broker:
+                query = query.filter(BotEvent.detail.like(f"BROKER={_broker_norm(broker)} |%"))
+            row = query.order_by(BotEvent.created_at.desc(), BotEvent.id.desc()).first()
+            return row.event_type if row else ""
+    except Exception as e:
+        logging.warning("Cannot read ID decision for %s: %s", chat_id, e)
+        return ""
+
+
+def _ai_id_state_signature(chat_id: int):
+    return (_ai_last_id_decision(chat_id), get_user_stage(chat_id),
+            tuple(sorted((str(a.get("broker") or ""), bool(a.get("id_validated")),
+                          str(a.get("trading_id") or ""), str(a.get("pending_trading_id") or ""))
+                         for a in _broker_rows(chat_id))))
+
+
 def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
     """Contexto operativo REAL y de solo lectura para decisiones de la IA.
 
@@ -6474,6 +6498,7 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
     base comercial/general.
     """
     stage_now = get_user_stage(chat_id)
+    decision = _ai_last_id_decision(chat_id)
     if lang == "en":
         lines = [f"Bot stage: {stage_now}"]
         stage_labels = {
@@ -6491,6 +6516,12 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
         }
         lines.append(stage_labels.get(stage_now, stage_now))
 
+    lines.append(f"Latest recorded ID review event: {decision or 'none'}. "
+                 "ID_REJECTED means Johanna already reviewed and rejected the submitted ID, "
+                 "not an unreviewed ID. If no newer submission/approval exists, explain that the ID "
+                 "was incorrect and request the correct ID through the existing flow. "
+                 "Honor each broker account separately; never erase an approval on another broker. "
+                 "Do not ask which broker when the account or latest event already identifies it.")
     try:
         pending_review = _has_pending_id_review(chat_id)
         strict_valid = _strict_validated_id_state(chat_id)
@@ -13696,7 +13727,7 @@ def _id_validation_guidance(question: str, chat_id: int, lang: str = "es") -> st
     has_id = bool(re.search(r"\bid\b", t))
     check = any(x in t for x in ("valid", "verific", "confirm", "check"))
     registered = any(x in t for x in ("quedo bien registr", "quedo correctamente registr", "registro quedo bien", "bien el registro", "registered correctly", "registration is correct"))
-    if not ((has_id and check) or (registered and ("stockity" in t or "binomo" in t))):
+    if not ((has_id and check) or (registered and ("stockity" in t or "binomo" in t)) or any(x in t for x in ("pudo validar", "pudiste validar", "did you validate", "have you validated"))):
         return ""
     # Las preguntas combinadas sobre otros temas conservan el motor conversacional.
     if any(x in t for x in ("cuanto", "cuantos", "how much", "senal", "signal", "curso", "course", "bono", "bonus", "upgrade", "retiro", "withdraw")):
@@ -13713,6 +13744,8 @@ def _id_validation_guidance(question: str, chat_id: int, lang: str = "es") -> st
     # Compatibilidad con validaciones anteriores sin ficha separada por broker.
     if not broker and _strict_validated_id_state(chat_id):
         return ("Your ID is already validated ✅ You do not need to register or send it again." if lang == "en" else "Tu ID ya está validado ✅ No necesitas registrarte ni enviarlo nuevamente.")
+    if _ai_last_id_decision(chat_id, broker) == "ID_REJECTED":
+        return (f"I already reviewed your{label} ID, but it was incorrect. Send me the correct trading account ID here so I can verify it. Wait for approval before depositing." if lang == "en" else f"Ya revisé tu ID{label}, pero resultó incorrecto. Envíame aquí el ID correcto de tu cuenta de trading para verificarlo. Espera la aprobación antes de depositar.")
     return (f"Send me your{label} account's numeric ID here so I can verify that your registration is correctly linked ✅" if lang == "en" else f"Envíame aquí el ID numérico de tu cuenta{label} para verificar que tu registro haya quedado correctamente vinculado ✅")
 
 
@@ -14964,7 +14997,19 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
                 latest_before_ai = _get_pending_ai(chat_id)
                 if not latest_before_ai or str(latest_before_ai.get("message_id") or "") != expected_message_id:
                     return
-                answer = await openai_answer(question, chat_id, lang, stage, answered_topics)
+                id_state_before = _ai_id_state_signature(chat_id)
+                answer = await openai_answer(question, chat_id, lang, get_user_stage(chat_id), answered_topics)
+                # A review can finish while the model is generating. Re-run on current state;
+                # if state changes again, keep the existing job for retry instead of sending stale text.
+                if _ai_id_state_signature(chat_id) != id_state_before:
+                    id_state_before = _ai_id_state_signature(chat_id)
+                    answer = await openai_answer(question, chat_id, lang, get_user_stage(chat_id), answered_topics)
+                    if _ai_id_state_signature(chat_id) != id_state_before:
+                        if context.job_queue:
+                            context.job_queue.run_once(delayed_ai_reply, when=1,
+                                data={"chat_id": chat_id, "message_id": expected_message_id},
+                                name=f"AI_REPLY_{chat_id}")
+                        return
 
     if not answer:
         personal_review = True
