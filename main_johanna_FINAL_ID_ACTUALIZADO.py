@@ -1634,7 +1634,7 @@ def _premium100_answer(question: str, chat_id: int, lang: str = "es") -> str:
     counts = _premium100_counts()
     account = {} if for_other else (_broker_get(chat_id, BROKER_STOCKITY, create=False) or {})
     en = lang == "en"
-    offer = ("The community is free. This promotion gives access to Premium tools with a personal USD 100 deposit directly into your own trading account instead of the normal USD 200, exclusively for new Stockity accounts enrolled in the promotion. This is not a payment to Johanna or a subscription. See Premium and the promotion in the buttons below 👇" if en else "Toda la comunidad es gratuita. Esta promo te permite acceder a las herramientas del nivel Premium con un depósito personal de USD 100 directamente en tu propia cuenta de trading en vez de los USD 200 habituales, exclusivamente con una cuenta nueva Stockity inscrita en la promoción. No es un pago a Johanna ni una suscripción. Mira el nivel Premium y la promoción en los siguientes botones 👇")
+    offer = ("The community is free. This promotion gives access to Premium tools with a personal USD 100 deposit directly into your own trading account instead of the normal USD 200, exclusively for new Stockity accounts enrolled in the promotion. This is not a payment to me or a subscription. See Premium and the promotion in the buttons below 👇" if en else "Toda la comunidad es gratuita. Esta promo te permite acceder a las herramientas del nivel Premium con un depósito personal de USD 100 directamente en tu propia cuenta de trading en vez de los USD 200 habituales, exclusivamente con una cuenta nueva Stockity inscrita en la promoción. No es un pago a mí ni una suscripción. Mira el nivel Premium y la promoción en los siguientes botones 👇")
     status = (part or {}).get('status')
     if status == 'ACTIVATED':
         return ("Your promotional Premium access was activated. Your real validated deposit is used for future upgrades under the normal upgrade rules." if en else "Tu acceso Premium promocional ya fue activado. Para futuros upgrades se cuenta tu depósito real validado y se aplican las reglas normales de upgrade.")
@@ -6223,7 +6223,75 @@ def _bot_access_price_answer(question: str, chat_id: int, lang: str = "es") -> s
         detail = (f"To activate Premium, the normal personal deposit is USD 200. The promotion allows USD 100 into your own new Stockity trading account, subject to eligibility. Available slots: {counts.get('available', 0)}/{counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. See Premium and the promotion below." if en else f"Para activar Premium, el depósito personal habitual es USD 200. La promoción permite USD 100 directamente en tu propia cuenta nueva de trading Stockity, sujeto a sus requisitos. Cupos disponibles: {counts.get('available', 0)}/{counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. Mira Premium y la promoción en los botones.")
     else:
         detail = ("Premium is activated with a personal deposit starting at USD 200 directly into your own trading account." if en else "Premium se activa con un depósito personal desde USD 200 directamente en tu propia cuenta de trading.")
-    return intro + "\n\n" + detail + (" This is not a payment to Johanna or a community subscription. Trading involves a risk of loss." if en else " No es un pago a Johanna ni una suscripción a la comunidad. Operar implica riesgo de pérdida.")
+    return intro + "\n\n" + detail + (" This is not a payment to me or a community subscription. Trading involves a risk of loss." if en else " No es un pago a mí ni una suscripción a la comunidad. Operar implica riesgo de pérdida.")
+
+
+def _ai_brief_clarification(question: str, lang: str = "es") -> str:
+    t = _norm(question or "").strip()
+    if t in {"yemen", "اليمن"}:
+        return ("Are you asking whether you can register from Yemen?" if lang == "en" else
+                "¿Quieres saber si puedes registrarte desde Yemen?")
+    if t in {"asdf", "asdasd", "qwerty", "asdfgh", "jkl"} or re.fullmatch(r"([^\W\d_])\1{5,}", t):
+        return ("What did you mean? Tell me your question so I can help." if lang == "en" else
+                "¿Qué quisiste decir? Cuéntame tu consulta para poder ayudarte.")
+    return ""
+
+
+def _ai_access_amount_query(text: str) -> bool:
+    t = _norm(text or "")
+    if any(x in t for x in ("upgrade", "subir de nivel", "deposito adicional", "another deposit", "additional deposit")):
+        return False
+    return (_is_min_50_intent(text) or _bot_price_question(text) or
+            bool(re.search(r"cuanto|capital|monto|minim|how much|minimum|amount", t)
+                 and re.search(r"deposit|invert|inversion|ingres|entrar|empez|inici|registr|comunidad|premium|join|start|investment", t)))
+
+
+def _ai_registration_sequence(chat_id: int, lang: str = "es", broker=None) -> str:
+    en = lang == "en"
+    if _active_member_level(chat_id) in {VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE}:
+        return ""
+    account = (_broker_get(chat_id, broker, create=False) or {}) if broker else {}
+    approved = bool(account.get("id_validated") and account.get("trading_id")) if broker else _strict_validated_id_state(chat_id)
+    pending = bool(account.get("pending_trading_id")) if broker else _has_pending_id_review(chat_id)
+    if approved:
+        return ("Your account ID is already validated. Do not repeat registration: make any applicable deposit only in that same validated trading account." if en else
+                "Tu ID ya está validado. No repitas el registro: realiza el depósito que corresponda únicamente en esa misma cuenta de trading validada.")
+    if pending:
+        return ("Your account ID is awaiting my review. Wait for my approval before depositing in that same account." if en else
+                "Tu ID está pendiente de mi revisión. Espera mi aprobación antes de depositar en esa misma cuenta.")
+    if _ai_last_id_decision(chat_id, broker) == "ID_REJECTED":
+        return ("The ID you sent was reviewed and rejected. Send me the correct account ID and wait for approval before depositing." if en else
+                "El ID que enviaste ya fue revisado y rechazado. Envíame el ID correcto y espera la aprobación antes de depositar.")
+    if broker and account.get("trading_id"):
+        return ("Your account is already recorded. I must verify its ID and whether registration is linked to my link before you deposit; do not register again." if en else
+                "Tu cuenta ya está registrada en el sistema. Debo verificar su ID y que el registro esté asociado a mi enlace antes de que deposites; no te registres nuevamente.")
+    return ("First register through my link and send me your trading account ID. I must verify that the account is registered under my link. Only after I approve the ID should you deposit in that same trading account." if en else
+            "Primero regístrate mediante mi enlace y envíame el ID de tu cuenta de trading. Debo verificar que el registro quedó asociado a mi enlace. Solo después de aprobar tu ID haces el depósito en esa misma cuenta.")
+
+
+def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es", offer_promo: bool = True) -> str:
+    """Final read-only reply/CTA policy; does not enroll or change any account."""
+    value = (answer or "").strip()
+    value = re.sub(r"\b(?:a|to) Johanna\b", "to me" if lang == "en" else "a mí", value, flags=re.I)
+    value = re.sub(r"\bJohanna (?:debe revisar y confirmar|must review and confirm)\b",
+                   "I must review and confirm" if lang == "en" else "debo revisar y confirmar", value, flags=re.I)
+    # Look at the actual final access explanation as well as the user's wording.
+    # This catches model answers that identify the minimum despite unfamiliar phrasing.
+    amount_context = _ai_access_amount_query(question) or bool(
+        re.search(r"\b50\b", value) and "premium" in _norm(value)
+        and re.search(r"minim|recomiend|recommend", _norm(value)))
+    if amount_context and offer_promo and not value.lstrip().startswith("[[PERSONAL_CHAT]]"):
+        probe = question + "\nminimum deposit para ingresar"
+        promo = _ai_entry_promo_answer(probe, chat_id, lang)
+        if promo:
+            value = promo
+        sequence = _ai_registration_sequence(chat_id, lang, BROKER_STOCKITY if promo else None)
+        if sequence and sequence not in value:
+            value += "\n\n" + sequence
+    value = re.sub(r"\b(?:a|to) Johanna\b", "to me" if lang == "en" else "a mí", value, flags=re.I)
+    value = re.sub(r"\bJohanna (?:debe revisar y confirmar|must review and confirm)\b",
+                   "I must review and confirm" if lang == "en" else "debo revisar y confirmar", value, flags=re.I)
+    return _neutralize_ai_gender(_clarify_free_community(value, lang), lang)
 
 
 def _clarify_free_community(answer: str, lang: str = "es") -> str:
@@ -6234,20 +6302,22 @@ def _clarify_free_community(answer: str, lang: str = "es") -> str:
     # Evitar presentar un depósito personal como el precio del acceso.
     if lang == "en":
         value = re.sub(r"\bfor (USD\s*\d+(?:[.,]\d+)?)", r"with a personal deposit of \1 into your own trading account", value, flags=re.I)
-        note = "The community is free; the deposit goes directly into your own trading account. It is not a payment to Johanna or a subscription."
+        note = "The community is free; the deposit goes directly into your own trading account. It is not a payment to me or a subscription."
         complete = "community is free" in t and "own" in t and "trading account" in t
     else:
         value = re.sub(r"\bpor (USD\s*\d+(?:[.,]\d+)?)", r"con un depósito personal de \1 en tu propia cuenta de trading", value, flags=re.I)
-        note = "Toda la comunidad es gratuita; el depósito va directamente a tu propia cuenta de trading. No es un pago a Johanna ni una suscripción."
+        note = "Toda la comunidad es gratuita; el depósito va directamente a tu propia cuenta de trading. No es un pago a mí ni una suscripción."
         complete = ("comunidad es gratuita" in t or "comunidad es gratuito" in t) and "propia cuenta" in t
     return value if complete else value + "\n\n" + note
 
 
 def _ai_entry_promo_available(question: str, chat_id: int) -> bool:
     """Oferta de ingreso contextual; no inscribe ni modifica niveles/depósitos."""
-    if chat_id is None or not (_is_min_50_intent(question) or _bot_price_question(question)):
+    if chat_id is None or not _ai_access_amount_query(question):
         return False
     other = _is_hypothetical_other_person(question)
+    if not other and _active_member_level(chat_id) in {VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE}:
+        return False
     part = None if other else _premium100_participant(chat_id)
     protected = (part or {}).get("status") in {"RESERVED", "PROOF_PENDING"}
     counts = _premium100_counts()
@@ -6266,16 +6336,16 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
     other = _is_hypothetical_other_person(question)
     active = not other and not _premium100_level_allowed(chat_id)
     prior = not other and _premium100_has_prior_account_history(chat_id)
-    note = ("Your current level remains active; this promotion does not apply as an upgrade." if lang == "en" else "Tu nivel actual sigue activo; esta promoción no aplica como upgrade.") if active else (("You already have an account ID in the system. Do not repeat registration or assume promotional eligibility; Johanna must review and confirm it before a promotional deposit." if lang == "en" else "Ya tienes un ID de cuenta en el sistema. No repitas el registro ni asumas que aplica la promoción; Johanna debe revisar y confirmar tu elegibilidad antes de un depósito promocional.") if prior else ("Wait for account ID validation and promotion eligibility confirmation before depositing." if lang == "en" else "Antes de depositar, espera la validación del ID y la confirmación de que aplica la promoción."))
+    note = ("Your current level remains active; this promotion does not apply as an upgrade." if lang == "en" else "Tu nivel actual sigue activo; esta promoción no aplica como upgrade.") if active else (("You already have an account ID in the system. Do not repeat registration or assume promotional eligibility; I must review and confirm it before a promotional deposit." if lang == "en" else "Ya tienes un ID de cuenta en el sistema. No repitas el registro ni asumas que aplica la promoción; debo revisar y confirmar tu elegibilidad antes de un depósito promocional.") if prior else ("Wait for account ID validation and promotion eligibility confirmation before depositing." if lang == "en" else "Antes de depositar, espera la validación del ID y la confirmación de que aplica la promoción."))
     if lang == "en":
         return ("The community minimum is USD 50 for Basic. USD 200 is recommended for normal Premium.\n\n"
                 "There is also a promotion to access Premium tools with USD 100 instead of USD 200, exclusively for new Stockity accounts enrolled in the promotion, subject to available slots or your existing reservation. "
                 f"Available slots: {slots}/{total}. See Premium and the promotion in the buttons below 👇\n\n"
-                f"{note} The community is free. The deposit goes directly into your own trading account; it is not a payment to Johanna or a subscription. Trading involves a risk of loss.")
+                f"{note} The community is free. The deposit goes directly into your own trading account; it is not a payment to me or a subscription. Trading involves a risk of loss.")
     return ("El mínimo de la comunidad es USD 50 para Básico. Lo recomendado es USD 200 para Premium normal.\n\n"
             "También hay una promo para acceder a las herramientas Premium con USD 100 en vez de USD 200, exclusiva para cuentas nuevas Stockity inscritas en la promoción, según cupos disponibles o tu reserva vigente. "
             f"Cupos disponibles: {slots}/{total}. Mira Premium y la promoción en los siguientes botones 👇\n\n"
-            f"{note} Toda la comunidad es gratuita. El depósito va directamente a tu propia cuenta de trading; no es un pago a Johanna ni una suscripción. Operar implica riesgo de pérdida.")
+            f"{note} Toda la comunidad es gratuita. El depósito va directamente a tu propia cuenta de trading; no es un pago a mí ni una suscripción. Operar implica riesgo de pérdida.")
 
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
@@ -6516,6 +6586,18 @@ def _ai_runtime_context(chat_id: int, lang: str = "es") -> str:
         }
         lines.append(stage_labels.get(stage_now, stage_now))
 
+    lines.append("REPLY RULES: Speak as Johanna in first person: my community, my link, not a payment to me. "
+                 "For access amounts, state that the community is free, registration must be under my link, "
+                 "the trading ID must be approved BEFORE depositing, and the deposit goes into that same personal account. "
+                 "Respect already approved/rejected/pending IDs and active levels. "
+                 "When the active promotion applies, mention the exact USD100 versus normal USD200, real slot availability, "
+                 "and the Premium and promotion buttons. Do not repeat the USD200 recommendation. "
+                 "Binomo and Stockity work very similarly with small differences; my signals can be used on both "
+                 "when the asset, time and expiry match. Quotes and outcomes may differ, never guarantee identical results. "
+                 "A country name or a short message is not proof of trolling. If intent is unclear, ask one brief neutral "
+                 "clarification relevant to the preceding conversation. A yes/no reply must use the previous question. "
+                 "Do not invent a registration request from an unclear message, do not scold or accuse. "
+                 "For obvious unrelated spam, respond briefly without sales information; do not classify real short questions as spam.")
     lines.append(f"Latest recorded ID review event: {decision or 'none'}. "
                  "ID_REJECTED means Johanna already reviewed and rejected the submitted ID, "
                  "not an unreviewed ID. If no newer submission/approval exists, explain that the ID "
@@ -13758,6 +13840,9 @@ def _copied_live_notice_answer(question: str, lang: str = "es") -> str:
 
 
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    clarification = _ai_brief_clarification(question, lang)
+    if clarification:
+        return clarification
     bot_price_answer = _bot_access_price_answer(question, chat_id, lang)
     if bot_price_answer:
         return bot_price_answer
@@ -14902,7 +14987,7 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
 
             answer = _clean_ai_plain_text_format(answer)
 
-        return _neutralize_ai_gender(_clarify_free_community(answer, lang), lang)
+        return _ai_delivery_text(answer, question, chat_id, lang)
     except Exception as e:
         logging.warning("Error generando respuesta IA: %s", e)
         return ""
@@ -15042,8 +15127,11 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         answer = _personalize_referral_links(answer, chat_id)
-        answer = _neutralize_ai_gender(_clarify_free_community(answer, lang), lang)
-        base_markup = personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(question, lang, chat_id)
+        answer = _ai_delivery_text(answer, question, chat_id, lang, offer_promo=not personal_review)
+        button_context = question
+        if not personal_review and _ai_entry_promo_available(question + "\n" + answer, chat_id):
+            button_context += "\n" + answer
+        base_markup = personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(button_context, lang, chat_id)
         # Para un miembro activo, si la respuesta no necesita un CTA más específico
         # (nivel/upgrade/live/etc.), mantenemos una salida mínima y útil: pregunta + MI ESPACIO JT.
         # No mostramos el menú general de registro y no añadimos el chat personal salvo
