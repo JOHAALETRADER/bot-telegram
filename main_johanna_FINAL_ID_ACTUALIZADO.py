@@ -6237,11 +6237,20 @@ def _ai_brief_clarification(question: str, lang: str = "es") -> str:
     return ""
 
 
+def _ai_registration_entry_query(text: str) -> bool:
+    t = _norm(text or "")
+    if re.search(r"no (?:quiero|deseo) registr|do not want to register|don't want to register", t):
+        return False
+    registration = bool(re.search(r"registrarme|registrarse|registrar|registro|registration|register|sign up|signup", t))
+    request = bool(re.search(r"enlace|link|como|how|quiero|deseo|want|puedo|can i|manda|envia|send", t))
+    return registration and (request or t.strip() in {"registrarme", "registro", "register", "sign up", "signup"})
+
+
 def _ai_access_amount_query(text: str) -> bool:
     t = _norm(text or "")
     if any(x in t for x in ("upgrade", "subir de nivel", "deposito adicional", "another deposit", "additional deposit")):
         return False
-    return (_is_min_50_intent(text) or _bot_price_question(text) or
+    return (_ai_registration_entry_query(text) or _is_min_50_intent(text) or _bot_price_question(text) or
             bool(re.search(r"cuanto|capital|monto|minim|how much|minimum|amount", t)
                  and re.search(r"deposit|invert|inversion|ingres|entrar|empez|inici|registr|comunidad|premium|join|start|investment", t)))
 
@@ -6353,6 +6362,8 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     if _premium100_question(question) or _ai_entry_promo_available(question, chat_id):
         rows = [[InlineKeyboardButton("🔵 VIEW PREMIUM" if lang == "en" else "🔵 VER NIVEL PREMIUM", callback_data=f"level_detail:{VIP_LEVEL_PREMIUM}")],
                 [InlineKeyboardButton("🔥 VIEW PROMOTION" if lang == "en" else "🔥 VER PROMOCIÓN", callback_data="premium100_info")]]
+        if _ai_registration_entry_query((question or "").split("\n", 1)[0]) and not _strict_validated_id_state(chat_id) and not _has_pending_id_review(chat_id):
+            rows.append([InlineKeyboardButton("📝 NORMAL REGISTRATION" if lang == "en" else "📝 REGISTRO NORMAL", callback_data="registrarme")])
         return InlineKeyboardMarkup(rows)
     current_level = VIP_LEVEL_NONE
     current_stage = None
