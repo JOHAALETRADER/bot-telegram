@@ -6219,7 +6219,7 @@ def _bot_access_price_answer(question: str, chat_id: int, lang: str = "es") -> s
     counts = _premium100_counts()
     part = _premium100_participant(chat_id)
     protected = (part or {}).get("status") in {"RESERVED", "PROOF_PENDING"}
-    if (counts.get("active") and counts.get("available", 0) > 0) or protected:
+    if counts.get("active") and counts.get("available", 0) > 0:
         detail = (f"To activate Premium, the normal personal deposit is USD 200. The promotion allows USD 100 into your own new Stockity trading account, subject to eligibility. Available slots: {counts.get('available', 0)}/{counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. See Premium and the promotion below." if en else f"Para activar Premium, el depósito personal habitual es USD 200. La promoción permite USD 100 directamente en tu propia cuenta nueva de trading Stockity, sujeto a sus requisitos. Cupos disponibles: {counts.get('available', 0)}/{counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. Mira Premium y la promoción en los botones.")
     else:
         detail = ("Premium is activated with a personal deposit starting at USD 200 directly into your own trading account." if en else "Premium se activa con un depósito personal desde USD 200 directamente en tu propia cuenta de trading.")
@@ -6250,7 +6250,7 @@ def _ai_access_amount_query(text: str) -> bool:
     t = _norm(text or "")
     if any(x in t for x in ("upgrade", "subir de nivel", "deposito adicional", "another deposit", "additional deposit")):
         return False
-    return (_ai_registration_entry_query(text) or _is_min_50_intent(text) or _bot_price_question(text) or
+    return (bool(re.search(r"\bdeposit\w*\b", t)) or _ai_registration_entry_query(text) or _is_min_50_intent(text) or _bot_price_question(text) or
             bool(re.search(r"cuanto|capital|monto|minim|how much|minimum|amount", t)
                  and re.search(r"deposit|invert|inversion|ingres|entrar|empez|inici|registr|comunidad|premium|join|start|investment", t)))
 
@@ -6330,7 +6330,7 @@ def _ai_entry_promo_available(question: str, chat_id: int) -> bool:
     part = None if other else _premium100_participant(chat_id)
     protected = (part or {}).get("status") in {"RESERVED", "PROOF_PENDING"}
     counts = _premium100_counts()
-    if not protected and (not counts.get("active") or counts.get("available", 0) <= 0):
+    if not counts.get("active") or counts.get("available", 0) <= 0:
         return False
     # Informar no equivale a autorizar inscripción; el callback conserva elegibilidad.
     return True
