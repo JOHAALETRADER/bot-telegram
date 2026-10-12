@@ -6223,7 +6223,7 @@ def _bot_access_price_answer(question: str, chat_id: int, lang: str = "es") -> s
         detail = (f"To activate Premium, the normal personal deposit is USD 200. The promotion allows USD 100 into your own new Stockity trading account, subject to eligibility. Available slots: {counts.get('available', 0)}/{counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. See Premium and the promotion below." if en else f"Para activar Premium, el depósito personal habitual es USD 200. La promoción permite USD 100 directamente en tu propia cuenta nueva de trading Stockity, sujeto a sus requisitos. Cupos disponibles: {counts.get('available', 0)}/{counts.get('total', PREMIUM100_DEFAULT_SLOTS)}. Mira Premium y la promoción en los botones.")
     else:
         detail = ("Premium is activated with a personal deposit starting at USD 200 directly into your own trading account." if en else "Premium se activa con un depósito personal desde USD 200 directamente en tu propia cuenta de trading.")
-    return intro + "\n\n" + detail + (" This is not a payment to me or a community subscription. Trading involves a risk of loss." if en else " No es un pago a mí ni una suscripción a la comunidad. Operar implica riesgo de pérdida.")
+    return intro + "\n\n" + detail + (" This is not a payment to me or a community subscription." if en else " No es un pago a mí ni una suscripción a la comunidad.")
 
 
 def _ai_brief_clarification(question: str, lang: str = "es") -> str:
@@ -6255,6 +6255,14 @@ def _ai_access_amount_query(text: str) -> bool:
                  and re.search(r"deposit|invert|inversion|ingres|entrar|empez|inici|registr|comunidad|premium|join|start|investment", t)))
 
 
+def _ai_promo_id_confirmed(chat_id: int, account=None) -> bool:
+    account = account if account is not None else (_broker_get(chat_id, BROKER_STOCKITY, create=False) or {})
+    part = _premium100_participant(chat_id) or {}
+    return bool(account.get("id_validated") and account.get("trading_id")
+                and part.get("status") in {"ID_VALIDATED", "RESERVED", "PROOF_PENDING", "ACTIVATED"}
+                and str(part.get("stockity_id") or "").strip() == str(account.get("trading_id") or "").strip())
+
+
 def _ai_registration_sequence(chat_id: int, lang: str = "es", broker=None) -> str:
     en = lang == "en"
     if _active_member_level(chat_id) in {VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE}:
@@ -6262,6 +6270,9 @@ def _ai_registration_sequence(chat_id: int, lang: str = "es", broker=None) -> st
     account = (_broker_get(chat_id, broker, create=False) or {}) if broker else {}
     approved = bool(account.get("id_validated") and account.get("trading_id")) if broker else _strict_validated_id_state(chat_id)
     pending = bool(account.get("pending_trading_id")) if broker else _has_pending_id_review(chat_id)
+    if approved and broker == BROKER_STOCKITY and not _ai_promo_id_confirmed(chat_id, account):
+        return ("Your Stockity ID is marked as validated in the system, but this does not confirm promotion eligibility. Wait for me to confirm eligibility before making a promotional deposit." if en else
+                "Tu ID de Stockity figura como validado en el sistema, pero eso no confirma que aplique la promoción. Espera mi confirmación de elegibilidad antes de hacer un depósito promocional.")
     if approved:
         return ("Your account ID is already validated. Do not repeat registration: make any applicable deposit only in that same validated trading account." if en else
                 "Tu ID ya está validado. No repitas el registro: realiza el depósito que corresponda únicamente en esa misma cuenta de trading validada.")
@@ -6346,15 +6357,18 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
     active = not other and not _premium100_level_allowed(chat_id)
     prior = not other and _premium100_has_prior_account_history(chat_id)
     note = ("Your current level remains active; this promotion does not apply as an upgrade." if lang == "en" else "Tu nivel actual sigue activo; esta promoción no aplica como upgrade.") if active else (("You already have an account ID in the system. Do not repeat registration or assume promotional eligibility; I must review and confirm it before a promotional deposit." if lang == "en" else "Ya tienes un ID de cuenta en el sistema. No repitas el registro ni asumas que aplica la promoción; debo revisar y confirmar tu elegibilidad antes de un depósito promocional.") if prior else ("Wait for account ID validation and promotion eligibility confirmation before depositing." if lang == "en" else "Antes de depositar, espera la validación del ID y la confirmación de que aplica la promoción."))
+    if not other and _ai_promo_id_confirmed(chat_id):
+        note = ("Your Stockity ID is recorded as approved for the promotion. Use that same validated account." if lang == "en" else
+                "Tu ID de Stockity consta aprobado para la promoción. Utiliza esa misma cuenta validada.")
     if lang == "en":
         return ("The community minimum is USD 50 for Basic. USD 200 is recommended for normal Premium.\n\n"
                 "There is also a promotion to access Premium tools with USD 100 instead of USD 200, exclusively for new Stockity accounts enrolled in the promotion, subject to available slots or your existing reservation. "
                 f"Available slots: {slots}/{total}. See Premium and the promotion in the buttons below 👇\n\n"
-                f"{note} The community is free. The deposit goes directly into your own trading account; it is not a payment to me or a subscription. Trading involves a risk of loss.")
+                f"{note} The community is free. The deposit goes directly into your own trading account; it is not a payment to me or a subscription.")
     return ("El mínimo de la comunidad es USD 50 para Básico. Lo recomendado es USD 200 para Premium normal.\n\n"
             "También hay una promo para acceder a las herramientas Premium con USD 100 en vez de USD 200, exclusiva para cuentas nuevas Stockity inscritas en la promoción, según cupos disponibles o tu reserva vigente. "
             f"Cupos disponibles: {slots}/{total}. Mira Premium y la promoción en los siguientes botones 👇\n\n"
-            f"{note} Toda la comunidad es gratuita. El depósito va directamente a tu propia cuenta de trading; no es un pago a mí ni una suscripción. Operar implica riesgo de pérdida.")
+            f"{note} Toda la comunidad es gratuita. El depósito va directamente a tu propia cuenta de trading; no es un pago a mí ni una suscripción.")
 
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
