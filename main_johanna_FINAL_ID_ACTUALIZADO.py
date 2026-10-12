@@ -6239,11 +6239,19 @@ def _ai_brief_clarification(question: str, lang: str = "es") -> str:
 
 def _ai_registration_entry_query(text: str) -> bool:
     t = _norm(text or "")
-    if re.search(r"no (?:quiero|deseo) registr|do not want to register|don't want to register", t):
+    if re.search(r"no (?:quiero|deseo) (?:registr|empez|comenz|inici|entr|unir)|do not want to (?:register|start|join)|don't want to (?:register|start|join)", t):
         return False
     registration = bool(re.search(r"registrarme|registrarse|registrar|registro|registration|register|sign up|signup", t))
     request = bool(re.search(r"enlace|link|como|how|quiero|deseo|want|puedo|can i|manda|envia|send", t))
-    return registration and (request or t.strip() in {"registrarme", "registro", "register", "sign up", "signup"})
+    if registration and (request or t.strip() in {"registrarme", "registro", "register", "sign up", "signup"}):
+        return True
+    # Entry can be expressed without mentioning registration or money. Do not
+    # confuse it with starting a course, login, withdrawal or a specific trade.
+    if re.search(r"curso|course|clase|lesson|live|sesion|session|login|log in|contrasena|password|retir|withdraw|instal|install|operacion|trade entry|abrir una operacion", t):
+        return False
+    action = bool(re.search(r"\b(?:empez\w*|empiez\w*|comenz\w*|comienz\w*|inici\w*|entrar|entro|ingresar|ingreso|unirme|unirse|join|start\w*|begin\w*)\b|formar parte|ser parte|be part", t))
+    inquiry = bool(re.search(r"como|por donde|que (?:hago|debo|necesito|tengo)|quiero|deseo|me interesa|how|where|what (?:do|should|must)|want|interested", t))
+    return action and inquiry
 
 
 def _ai_access_amount_query(text: str) -> bool:
