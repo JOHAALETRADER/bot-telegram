@@ -13303,6 +13303,13 @@ def _profit_target_query(text_value: str) -> bool:
     ))
 
 
+def _mg_definition_query(text_value: str) -> bool:
+    t = _norm(text_value or "")
+    term = bool(re.search(r"\bmg\s*[12]\b|martingala|martingale", t))
+    definition = bool(re.search(r"que (?:es|son|significa|significan)|what (?:is|are|does)|meaning|explica|explain", t))
+    return term and (definition or t.strip(" ?¿.!") in {"mg1", "mg2", "mg1 mg2", "martingala", "martingale"})
+
+
 def _risk_management_query(text_value: str) -> bool:
     """Detecta dudas educativas de riesgo/tamaño de entrada sin confundirlas con gestión de cuenta."""
     t = _norm(text_value or "")
@@ -13315,16 +13322,24 @@ def _risk_management_query(text_value: str) -> bool:
         "porcentaje por entrada", "porcentaje por operacion", "riesgo por entrada", "riesgo por operacion",
         "cuanto arriesgar", "cuanto debo arriesgar", "que porcentaje arriesgar", "qué porcentaje arriesgar",
         "cuanto puedo perder al dia", "perdida diaria", "perdida maxima diaria", "limite de perdida", "stop diario",
-        "martingala", "mg1", "mg2", "dividir en 6", "dividir en 7", "6 o 7 partes",
+        "dividir en 6", "dividir en 7", "6 o 7 partes",
         "risk management", "risk per trade", "risk per entry", "how much per trade", "how much should i trade",
-        "how much should i risk", "martingale",
+        "how much should i risk",
     )
-    return any(x in t for x in phrases)
+    direct_mg = bool(re.search(r"\bmg\s*[12]\b|martingala|martingale", t) and
+                     re.search(r"como (?:uso|usar|aplico|aplicar|funciona)|puedo usar|debo usar|how (?:do|can|to)|can i use|should i use", t))
+    return _mg_definition_query(text_value) or direct_mg or any(x in t for x in phrases)
 
 
 def _risk_management_reply(text_value: str, lang: str = "es") -> str:
     """Respuesta determinística proporcional: explica solo lo que la pregunta necesita."""
     t = _norm(text_value or "")
+    if _mg_definition_query(text_value):
+        return (
+            "MG1 means the first martingale attempt after the initial trade loses. MG2 is the second attempt, only if MG1 also loses. They are optional and must stay within the total budget for the full sequence."
+            if lang == "en" else
+            "MG1 es el primer intento de martingala después de perder la entrada inicial. MG2 es el segundo intento, solo si MG1 también pierde. Son opcionales y deben mantenerse dentro del presupuesto total de la secuencia."
+        )
     simple_mg = (
         any(x in t for x in ("puedo usar martingala", "usar martingala", "puedo usar mg1", "puedo usar mg2", "can i use martingale"))
         and not any(x in t for x in ("cuanto", "porcentaje", "divide", "dividir", "how much", "percent"))
