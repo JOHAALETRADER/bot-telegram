@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.03-20261008-PREMIUM100-ID-ADMIN-BUTTONS"
+BOT_VERSION = "v7.11.04-20261014-BILINGUAL-LEVELS-PROMO"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -106,6 +106,10 @@ BOT_VERSION = "v7.11.03-20261008-PREMIUM100-ID-ADMIN-BUTTONS"
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
 TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
+TELEGRAPH_LEVELS_URL_EN = "https://telegra.ph/JT-TRADERS-TEAMS-MEMBERSHIP-LEVELS-10-14"
+
+def _levels_url(lang: str = "es") -> str:
+    return TELEGRAPH_LEVELS_URL_EN if lang == "en" else TELEGRAPH_LEVELS_URL
 
 
 def utcnow_naive():
@@ -1430,38 +1434,60 @@ def _premium100_global_button_available() -> bool:
     return bool(counts.get("active") and counts.get("available", 0) > 0)
 
 
+
+def _premium100_localize(text: str, lang: str = "es") -> str:
+    """Translate promotion presentation only; never changes saved state or callbacks."""
+    if lang != "en":
+        return text
+    for source, target in sorted([('tu promoción ya fue activada.', 'your promotion has already been activated.'), ('Tu nivel <b>Premium</b> está habilitado sin fecha de vencimiento.', 'Your <b>Premium</b> level is enabled without an expiry date.'), ('PROMOCIÓN NO DISPONIBLE', 'PROMOTION UNAVAILABLE'), ('La promoción Premium USD 100 no está activa en este momento. Puedes consultar los niveles habituales de JT TRADERS TEAMS.', 'The Premium USD 100 promotion is not active right now. You can view the regular JT TRADERS TEAMS levels.'), ('PROMOCIÓN COMPLETADA', 'PROMOTION FULL'), (' cupos Premium USD 100 ya fueron asignados. Puedes continuar con los niveles habituales.', ' Premium USD 100 slots have already been assigned. You can continue with the regular levels.'), ('tu comprobante ya fue recibido y <b>tu cupo está protegido mientras lo reviso</b>.', 'your proof has been received and <b>your slot is protected while I review it</b>.'), ('No necesitas enviar otro depósito. Te confirmaré por este chat cuando termine la validación.', 'You do not need another deposit. I will confirm here once the review is complete.'), ('ya tienes un cupo reservado.', 'you already have a reserved slot.'), ('Tiempo restante ahora:', 'Time remaining now:'), ('Realiza el depósito de USD 100 en tu cuenta Stockity validada y envía aquí el comprobante antes de que venza la reserva.', 'Deposit USD 100 into your validated Stockity account and send the proof here before your reservation expires.'), ('Salir del bot y volver a entrar <b>no reinicia el contador</b>; siempre conserva la hora original de vencimiento.', 'Leaving and returning <b>does not reset the timer</b>; the original expiry time stays the same.'), ('RESERVAR 1 DE LOS ÚLTIMOS ', 'RESERVE 1 OF THE LAST '), (' CUPOS', ' SLOTS'), ('TENGO UNA PREGUNTA', 'I HAVE A QUESTION'), ('VER MENÚ COMPLETO', 'VIEW FULL MENU'), ('VER MI ESPACIO JT', 'VIEW MY JT SPACE'), ('VER NIVELES', 'VIEW LEVELS'), ('VER BENEFICIOS PREMIUM', 'VIEW PREMIUM BENEFITS'), ('INICIAR REGISTRO STOCKITY', 'START STOCKITY REGISTRATION'), ('Tu ID de Stockity ya está validado. Ahora realiza el depósito de USD 100 en esa misma cuenta y envía aquí la captura.', 'Your Stockity ID is already validated. Now deposit USD 100 into that same account and send the screenshot here.'), ('Registra una cuenta NUEVA en Stockity con mi enlace oficial, envíame el ID y espera mi validación antes de depositar.', 'Register a NEW Stockity account through my official link, send me its ID and wait for my validation before depositing.'), ('¡Hola, ', 'Hello, '), ('! Esta promoción te permite activar <b>Premium con un depósito desde USD 100</b> en tu propia cuenta Stockity.', '! This promotion lets you activate <b>Premium with a deposit from USD 100</b> into your own Stockity account.'), ('Premium queda habilitado <b>sin fecha de vencimiento</b>.', 'Premium stays enabled <b>without an expiry date</b>.'), ('Cupos disponibles:', 'Available slots:'), ('Promoción exclusiva para cuentas nuevas y únicamente para quienes inicien el proceso desde la promoción.', 'This promotion is exclusively for new accounts and people who start through the promotion.'), ('Esta promoción es exclusiva para cuentas nuevas y no aplica a usuarios que ya tengan Premium o Prestige activo.', 'This promotion is exclusively for new accounts and does not apply to people with active Premium or Prestige.'), ('Esta promoción es exclusiva para cuentas nuevas y no aplica a un nivel Premium o Prestige ya activo.', 'This promotion is exclusively for new accounts and does not apply to an already active Premium or Prestige level.'), ('Esta promoción es exclusiva para cuentas nuevas registradas durante la campaña. Detecté una cuenta/ID previo en tu proceso, por lo que no puedo asignarte uno de estos cupos automáticamente.', 'This promotion is exclusively for new accounts registered during the campaign. Your process has a previous account/ID, so I cannot automatically assign a promotional slot.'), ('Esta promoción es únicamente para cuentas nuevas registradas durante esta campaña. Tu proceso actual ya tiene una cuenta/ID previo.', 'This promotion is only for new accounts registered during this campaign. Your current process already has a previous account/ID.'), ('La promoción no aplica con Premium o Prestige activo.', 'The promotion does not apply with active Premium or Prestige.'), ('La promoción requiere una cuenta Stockity nueva; detecté un ID o cuenta Stockity previo.', 'The promotion requires a new Stockity account; I found a previous Stockity ID or account.'), ('REGISTRO PREMIUM USD 100 · STOCKITY', 'PREMIUM USD 100 REGISTRATION · STOCKITY'), ('Registra una cuenta NUEVA usando mi enlace oficial de Stockity:', 'Register a NEW account using my official Stockity link:'), ('Después de crearla, envíame aquí el ID numérico de esa cuenta.', 'After creating it, send me the numeric account ID here.'), ('Espera mi validación antes de realizar cualquier depósito.', 'Wait for my validation before making any deposit.'), ('No deposites antes de que yo confirme que el ID quedó correctamente vinculado.', 'Do not deposit before I confirm that your ID is correctly linked.'), ('Cupo reservado.', 'Slot reserved.'), ('Tiempo disponible:', 'Time available:'), ('Si sales y vuelves a entrar, el contador continuará desde el mismo vencimiento; no vuelve a empezar.', 'If you leave and return, the timer keeps the same expiry; it does not restart.'), ('Tu cupo ya estaba reservado.', 'Your slot was already reserved.'), ('El contador no se reinició. Completa el depósito y envía el comprobante antes de que venza.', 'The timer was not reset. Complete your deposit and send the proof before it expires.'), ('Tu comprobante ya fue recibido y tu cupo está protegido mientras se revisa. No necesitas reservar nuevamente.', 'Your proof has been received and your slot is protected during review. You do not need to reserve again.'), ('Todavía quedan ', 'There are still '), (' cupos. La reserva temporal se habilita automáticamente cuando quedan los últimos ', ' slots. Temporary reservation is automatically enabled for the last '), ('. Puedes continuar con tu depósito y enviar el comprobante.', '. You can continue with your deposit and send the proof.'), ('Los cupos disponibles ya fueron asignados.', 'All available slots have been assigned.'), ('Primero necesito validar tu ID de Stockity.', 'First I need to validate your Stockity ID.'), ('La promoción no está disponible para nuevas reservas en este momento.', 'The promotion is not available for new reservations right now.'), ('Tu ID de Stockity fue validado correctamente para la promoción Premium USD 100.', 'Your Stockity ID was successfully validated for the Premium USD 100 promotion.'), ('Cupos disponibles ahora:', 'Available slots now:'), ('Ya puedes realizar el depósito de USD 100 en esa misma cuenta. Cuando lo hagas, envíame aquí el comprobante. Tu Premium, una vez activado, queda sin fecha de vencimiento.', 'You can now deposit USD 100 into that same account. Send me the proof here afterwards. Once activated, your Premium has no expiry date.'), ('Tu ID de Stockity fue recibido para la promoción Premium USD 100 y quedó pendiente de validación. No realices ningún depósito hasta que yo te confirme la validación.', 'Your Stockity ID was received for the Premium USD 100 promotion and is pending validation. Do not make any deposit until I confirm validation.'), ('Los cupos Premium USD 100 ya fueron asignados antes de que tu comprobante quedara registrado. No voy a procesar esta imagen como activación promocional automática. Escríbeme aquí si necesitas que revise tu caso.', 'All Premium USD 100 slots were assigned before your proof was recorded. I will not process this image as an automatic promotional activation. Write here if you need me to review your case.'), ('La promoción Premium USD 100 está pausada para nuevas asignaciones. No voy a procesar esta imagen como activación promocional automática hasta que la promoción vuelva a estar activa.', 'The Premium USD 100 promotion is paused for new assignments. I will not process this image as an automatic promotional activation until it becomes active again.'), ('No pude asegurar tu cupo promocional. No realizaré una activación automática con esta imagen; escríbeme aquí para revisar el caso.', 'I could not secure your promotional slot. I will not activate it automatically using this image; write here so I can review your case.'), ('Comprobante recibido. Tu cupo Premium USD 100 queda protegido mientras reviso el depósito de Stockity. Te confirmaré por este chat cuando quede validado.', 'Proof received. Your Premium USD 100 slot is protected while I review your Stockity deposit. I will confirm in this chat once validated.'), ('¡PROMOCIÓN ACTIVADA!', 'PROMOTION ACTIVATED!'), ('Depósito Stockity validado:', 'Stockity deposit validated:'), ('Tu nivel Premium dentro de JT TRADERS TEAMS quedó habilitado sin fecha de vencimiento.', 'Your Premium level in JT TRADERS TEAMS is enabled without an expiry date.'), ('Tu capital validado real queda registrado en USD ', 'Your actual validated capital is recorded as USD '), ('. Como referencia, para Prestige te faltan USD ', '. As a reference, you need USD '), (', sujeto a las condiciones vigentes de upgrade.', ' more for Prestige, subject to current upgrade conditions.')], key=lambda pair: len(pair[0]), reverse=True):
+        text = text.replace(source, target)
+    text = re.sub(r'(?<=Available slots: )([0-9]+) de ([0-9]+)', r'\1 of \2', text)
+    text = re.sub(r'(?<=Available slots now: )([0-9]+) de ([0-9]+)', r'\1 of \2', text)
+    text = re.sub(r'Los ([0-9]+)(?= Premium USD 100 slots)', r'All \1', text)
+    return text
+
+def _premium100_localize_keyboard(keyboard, lang: str):
+    if lang != "en":
+        return keyboard
+    return InlineKeyboardMarkup([[InlineKeyboardButton(_premium100_localize(button.text, lang), url=button.url, callback_data=button.callback_data) for button in row] for row in keyboard.inline_keyboard])
+
+def _premium100_status_localized(text, keyboard, lang):
+    return _premium100_localize(text, lang), _premium100_localize_keyboard(keyboard, lang)
+
+
 def _premium100_status_text(chat_id: int, first_name: str = ""):
+    lang = get_user_lang(chat_id)
     counts = _premium100_counts()
     part = _premium100_participant(chat_id)
     safe_name = html.escape((first_name or "").strip() or "✨")
     if part and part.get("status") == "ACTIVATED":
-        return (
+        return _premium100_status_localized((
             f"💎 <b>{safe_name}, tu promoción ya fue activada.</b>\n\n"
             "Tu nivel <b>Premium</b> está habilitado sin fecha de vencimiento."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("🏠 VER MI ESPACIO JT", callback_data="member_space")]])
+        ), InlineKeyboardMarkup([[InlineKeyboardButton("🏠 VER MI ESPACIO JT", callback_data="member_space")]]), lang)
     if not counts.get("active") and not (part and part.get("status") in {"RESERVED", "PROOF_PENDING"}):
-        return (
+        return _premium100_status_localized((
             "🔒 <b>PROMOCIÓN NO DISPONIBLE</b>\n\n"
             "La promoción Premium USD 100 no está activa en este momento. Puedes consultar los niveles habituales de JT TRADERS TEAMS."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("📚 VER NIVELES", url=TELEGRAPH_LEVELS_URL)], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
+        ), InlineKeyboardMarkup([[InlineKeyboardButton("📚 VER NIVELES", url=_levels_url(lang))], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]]), lang)
     if counts.get("available", 0) <= 0 and not (part and part.get("status") in {"RESERVED", "PROOF_PENDING"}):
-        return (
+        return _premium100_status_localized((
             "🔒 <b>PROMOCIÓN COMPLETADA</b>\n\n"
             f"Los {counts.get('total', PREMIUM100_DEFAULT_SLOTS)} cupos Premium USD 100 ya fueron asignados. Puedes continuar con los niveles habituales."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("📚 VER NIVELES", url=TELEGRAPH_LEVELS_URL)], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
+        ), InlineKeyboardMarkup([[InlineKeyboardButton("📚 VER NIVELES", url=_levels_url(lang))], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]]), lang)
     if part and part.get("status") == "PROOF_PENDING":
-        return (
+        return _premium100_status_localized((
             f"🔥 <b>PREMIUM USD 100</b>\n\n{safe_name}, tu comprobante ya fue recibido y <b>tu cupo está protegido mientras lo reviso</b>.\n\n"
             "No necesitas enviar otro depósito. Te confirmaré por este chat cuando termine la validación."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
+        ), InlineKeyboardMarkup([[InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]]), lang)
     if part and part.get("status") == "RESERVED":
         remaining = _premium100_reservation_remaining_text(part.get("reserved_until"))
-        return (
+        return _premium100_status_localized((
             f"🔥 <b>PREMIUM USD 100</b>\n\n{safe_name}, ya tienes un cupo reservado.\n"
             f"⏳ <b>Tiempo restante ahora: {remaining}</b>\n\n"
             "Realiza el depósito de USD 100 en tu cuenta Stockity validada y envía aquí el comprobante antes de que venza la reserva.\n\n"
             "⚠️ Salir del bot y volver a entrar <b>no reinicia el contador</b>; siempre conserva la hora original de vencimiento."
-        ), InlineKeyboardMarkup([[InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
+        ), InlineKeyboardMarkup([[InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]]), lang)
 
     available = int(counts.get("available") or 0)
     status = (part or {}).get("status")
@@ -1472,7 +1498,7 @@ def _premium100_status_text(chat_id: int, first_name: str = ""):
         rows.append([InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")])
     else:
         rows.append([InlineKeyboardButton("🚀 INICIAR REGISTRO STOCKITY", callback_data="premium100_register")])
-        rows.append([InlineKeyboardButton("📚 VER BENEFICIOS PREMIUM", url=TELEGRAPH_LEVELS_URL)])
+        rows.append([InlineKeyboardButton("📚 VER BENEFICIOS PREMIUM", url=_levels_url(lang))])
         rows.append([InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")])
     rows.append([InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")])
 
@@ -1489,7 +1515,8 @@ def _premium100_status_text(chat_id: int, first_name: str = ""):
         f"{next_text}\n\n"
         "⚠️ Promoción exclusiva para cuentas nuevas y únicamente para quienes inicien el proceso desde la promoción."
     )
-    return text_value, InlineKeyboardMarkup(rows)
+    return _premium100_status_localized(text_value, InlineKeyboardMarkup(rows), lang)
+
 
 
 
@@ -6123,7 +6150,7 @@ def levels_keyboard(lang: str = "es", chat_id: int = None) -> InlineKeyboardMark
     label = "📄 Full structure" if lang == "en" else "📄 Ver estructura completa"
     upgrade_label = "ℹ️ View upgrade conditions" if lang == "en" else "ℹ️ Ver condiciones de upgrade"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(label, url=TELEGRAPH_LEVELS_URL)],
+        [InlineKeyboardButton(label, url=_levels_url(lang))],
         [InlineKeyboardButton(upgrade_label, callback_data="upgrade_conditions")],
         *support_rows(lang, chat_id),
     ])
@@ -6300,6 +6327,7 @@ def _ai_registration_sequence(chat_id: int, lang: str = "es", broker=None) -> st
 def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es", offer_promo: bool = True) -> str:
     """Final read-only reply/CTA policy; does not enroll or change any account."""
     value = (answer or "").strip()
+    value = value.replace(TELEGRAPH_LEVELS_URL, _levels_url(lang)).replace(TELEGRAPH_LEVELS_URL_EN, _levels_url(lang))
     value = re.sub(r"\b(?:a|to) Johanna\b", "to me" if lang == "en" else "a mí", value, flags=re.I)
     value = re.sub(r"\bJohanna (?:debe revisar y confirmar|must review and confirm)\b",
                    "I must review and confirm" if lang == "en" else "debo revisar y confirmar", value, flags=re.I)
@@ -7614,7 +7642,7 @@ async def _admin_finalize_broker_id(context: ContextTypes.DEFAULT_TYPE, chat_id:
                 f"🔥 Cupos disponibles ahora: {counts.get('available', 0)} de {counts.get('total', PREMIUM100_DEFAULT_SLOTS)}.\n\n"
                 "Ya puedes realizar el depósito de USD 100 en esa misma cuenta. Cuando lo hagas, envíame aquí el comprobante. Tu Premium, una vez activado, queda sin fecha de vencimiento."
             )
-            await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=InlineKeyboardMarkup(rows))
+            await context.bot.send_message(chat_id=chat_id, text=_premium100_localize(msg, lang), reply_markup=_premium100_localize_keyboard(InlineKeyboardMarkup(rows), lang))
         elif lang == "en":
             msg = f"✅ Your {_broker_label(broker)} ID has been successfully validated.\n\nYou can now make the deposit in that same trading account. When done, send me the proof here."
             await context.bot.send_message(chat_id=chat_id, text=msg)
@@ -7812,7 +7840,7 @@ async def _premium100_apply_promotional_deposit(context: ContextTypes.DEFAULT_TY
         "💎 Tu nivel Premium dentro de JT TRADERS TEAMS quedó habilitado sin fecha de vencimiento.\n\n"
         f"Tu capital validado real queda registrado en USD {_usd(amount_cents)}. Como referencia, para Prestige te faltan USD {_usd(missing)}, sujeto a las condiciones vigentes de upgrade."
     )
-    await context.bot.send_message(chat_id=chat_id, text=user_msg, disable_web_page_preview=True)
+    await context.bot.send_message(chat_id=chat_id, text=_premium100_localize(user_msg, lang), disable_web_page_preview=True)
     if new_keys:
         await context.bot.send_message(chat_id=chat_id, text=_vip_access_intro(VIP_LEVEL_PREMIUM, lang, upgrade=False), reply_markup=_vip_access_keyboard(VIP_LEVEL_PREMIUM, lang, keys=new_keys), disable_web_page_preview=True)
     return True, (
@@ -9595,9 +9623,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # === PROMOCIÓN PREMIUM USD 100 · DEEP LINK EXCLUSIVO ===
     # Enlace oficial: https://t.me/JOHAALETRADER_bot?start=PREMIUM100
-    if start_param == "premium100":
-        set_user_lang(chat_id, nombre, "es")
-        lang = "es"
+    if start_param in {"premium100", "premium100_en"}:
+        if start_param == "premium100_en":
+            lang = "en"
+        elif not lang or (lang == "es" and not user and (getattr(update.effective_user, "language_code", "") or "").lower().startswith("en")):
+            lang = "en"
+        set_user_lang(chat_id, nombre, lang)
         ok, reason, _ = _premium100_begin(chat_id)
         if not ok and reason == "ACTIVE_LEVEL":
             promo_text = "ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica a usuarios que ya tengan Premium o Prestige activo."
@@ -9607,6 +9638,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             promo_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💬 TENGO UNA PREGUNTA", callback_data="ask_here")], [InlineKeyboardButton("🏠 VER MENÚ COMPLETO", callback_data="back_main_menu")]])
         else:
             promo_text, promo_keyboard = _premium100_status_text(chat_id, getattr(update.effective_user, "first_name", "") or nombre)
+        promo_text = _premium100_localize(promo_text, lang)
+        promo_keyboard = _premium100_localize_keyboard(promo_keyboard, lang)
         _log_event(chat_id, "PREMIUM100_START", reason)
         _tracking_fire_event(chat_id, "PREMIUM100_START", reason)
         try:
@@ -9876,29 +9909,29 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "premium100_open":
         ok, reason, _ = _premium100_begin(chat_id)
         if not ok and reason == "ACTIVE_LEVEL":
-            await q.message.reply_text("ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica a un nivel Premium o Prestige ya activo.", reply_markup=member_space_keyboard(chat_id, get_user_lang(chat_id)))
+            await q.message.reply_text(_premium100_localize("ℹ️ Esta promoción es exclusiva para cuentas nuevas y no aplica a un nivel Premium o Prestige ya activo.", get_user_lang(chat_id)), reply_markup=member_space_keyboard(chat_id, get_user_lang(chat_id)))
             return
         if not ok and reason == "NOT_NEW":
-            await q.message.reply_text("ℹ️ Esta promoción es únicamente para cuentas nuevas registradas durante esta campaña. Tu proceso actual ya tiene una cuenta/ID previo.", reply_markup=support_keyboard("es", chat_id))
+            await q.message.reply_text(_premium100_localize("ℹ️ Esta promoción es únicamente para cuentas nuevas registradas durante esta campaña. Tu proceso actual ya tiene una cuenta/ID previo.", get_user_lang(chat_id)), reply_markup=support_keyboard(get_user_lang(chat_id), chat_id))
             return
         txt, kb = _premium100_status_text(chat_id, getattr(q.from_user, "first_name", ""))
-        await q.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb)
+        await q.message.reply_text(_premium100_localize(txt, get_user_lang(chat_id)), parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
     if q.data == "premium100_register":
         account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
         if account.get("id_validated"):
             msg = _premium100_answer("Premium promo 100", chat_id, get_user_lang(chat_id))
-            await q.message.reply_text(msg, reply_markup=ai_context_keyboard("Premium promo 100", get_user_lang(chat_id), chat_id))
+            await q.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=ai_context_keyboard("Premium promo 100", get_user_lang(chat_id), chat_id))
             return
         ok, reason, _ = _premium100_begin(chat_id)
         if not ok and reason in {"ACTIVE_LEVEL", "NOT_NEW"}:
             msg = ("ℹ️ La promoción no aplica con Premium o Prestige activo." if reason == "ACTIVE_LEVEL" else "ℹ️ La promoción requiere una cuenta Stockity nueva; detecté un ID o cuenta Stockity previo.")
-            await q.message.reply_text(msg, reply_markup=support_keyboard(get_user_lang(chat_id), chat_id))
+            await q.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=support_keyboard(get_user_lang(chat_id), chat_id))
             return
         if not ok:
             txt, kb = _premium100_status_text(chat_id, getattr(q.from_user, "first_name", ""))
-            await q.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb)
+            await q.message.reply_text(_premium100_localize(txt, get_user_lang(chat_id)), parse_mode=ParseMode.HTML, reply_markup=kb)
             return
         msg = (
             "🚀 REGISTRO PREMIUM USD 100 · STOCKITY\n\n"
@@ -9908,7 +9941,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3️⃣ Espera mi validación antes de realizar cualquier depósito.\n\n"
             "⚠️ No deposites antes de que yo confirme que el ID quedó correctamente vinculado."
         )
-        await q.message.reply_text(_personalize_referral_links(msg, chat_id), disable_web_page_preview=True)
+        await q.message.reply_text(_premium100_localize(_personalize_referral_links(msg, chat_id), get_user_lang(chat_id)), disable_web_page_preview=True)
         _log_event(chat_id, "PREMIUM100_REGISTER_CLICK", "STOCKITY")
         return
 
@@ -9919,10 +9952,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             part = _premium100_participant(chat_id) or {}
             remaining = _premium100_reservation_remaining_text(part.get("reserved_until"))
             await q.message.reply_text(
-                f"✅ <b>Cupo reservado.</b>\n\n"
+                _premium100_localize(f"✅ <b>Cupo reservado.</b>\n\n"
                 f"⏳ Tiempo disponible: <b>{remaining}</b>.\n"
                 "Realiza el depósito de USD 100 en tu cuenta Stockity validada y envía aquí el comprobante antes de que venza la reserva.\n\n"
-                "⚠️ Si sales y vuelves a entrar, el contador continuará desde el mismo vencimiento; no vuelve a empezar.",
+                "⚠️ Si sales y vuelves a entrar, el contador continuará desde el mismo vencimiento; no vuelve a empezar.", get_user_lang(chat_id)),
                 parse_mode=ParseMode.HTML,
             )
         elif ok and reason == "RESERVED_EXISTING":
@@ -9930,23 +9963,23 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             part = _premium100_participant(chat_id) or {}
             remaining = _premium100_reservation_remaining_text(part.get("reserved_until"))
             await q.message.reply_text(
-                f"⏳ <b>Tu cupo ya estaba reservado.</b>\n\n"
+                _premium100_localize(f"⏳ <b>Tu cupo ya estaba reservado.</b>\n\n"
                 f"Tiempo restante ahora: <b>{remaining}</b>.\n\n"
-                "El contador no se reinició. Completa el depósito y envía el comprobante antes de que venza.",
+                "El contador no se reinició. Completa el depósito y envía el comprobante antes de que venza.", get_user_lang(chat_id)),
                 parse_mode=ParseMode.HTML,
             )
         elif ok and reason == "PROOF_PENDING":
             await q.message.reply_text(
-                "✅ Tu comprobante ya fue recibido y tu cupo está protegido mientras se revisa. No necesitas reservar nuevamente."
+                _premium100_localize("✅ Tu comprobante ya fue recibido y tu cupo está protegido mientras se revisa. No necesitas reservar nuevamente.", get_user_lang(chat_id))
             )
         elif reason == "NOT_LAST":
-            await q.message.reply_text(f"ℹ️ Todavía quedan {counts.get('available', 0)} cupos. La reserva temporal se habilita automáticamente cuando quedan los últimos {PREMIUM100_RESERVE_LAST_SLOTS}. Puedes continuar con tu depósito y enviar el comprobante.")
+            await q.message.reply_text(_premium100_localize(f"ℹ️ Todavía quedan {counts.get('available', 0)} cupos. La reserva temporal se habilita automáticamente cuando quedan los últimos {PREMIUM100_RESERVE_LAST_SLOTS}. Puedes continuar con tu depósito y enviar el comprobante.", get_user_lang(chat_id)))
         elif reason == "SOLD_OUT":
-            await q.message.reply_text("🔒 Los cupos disponibles ya fueron asignados.")
+            await q.message.reply_text(_premium100_localize("🔒 Los cupos disponibles ya fueron asignados.", get_user_lang(chat_id)))
         elif reason == "NEED_ID":
-            await q.message.reply_text("⚠️ Primero necesito validar tu ID de Stockity.")
+            await q.message.reply_text(_premium100_localize("⚠️ Primero necesito validar tu ID de Stockity.", get_user_lang(chat_id)))
         else:
-            await q.message.reply_text("⚠️ La promoción no está disponible para nuevas reservas en este momento.")
+            await q.message.reply_text(_premium100_localize("⚠️ La promoción no está disponible para nuevas reservas en este momento.", get_user_lang(chat_id)))
         return
 
     if q.data == "upgrade_conditions" or (q.data and q.data.startswith("upgrade_conditions:")):
@@ -10219,7 +10252,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- Niveles y Planes (informativo) ---
-    if q.data == "niveles_planes":
+    if q.data in {"niveles_planes", "levels_plans_en"} and get_user_lang(chat_id) != "en":
         texto = _personalize_referral_links(respuesta_niveles_es(), chat_id)
         active_level = _active_member_level(chat_id)
         if active_level != VIP_LEVEL_NONE:
@@ -10235,7 +10268,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- Levels & Plans (EN) ---
-    if q.data == "levels_plans_en":
+    if q.data in {"niveles_planes", "levels_plans_en"} and get_user_lang(chat_id) == "en":
         texto = _personalize_referral_links(respuesta_niveles_en(), chat_id)
         active_level = _active_member_level(chat_id)
         if active_level != VIP_LEVEL_NONE:
@@ -15394,10 +15427,10 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
             trading_id = _record_submitted_trading_id(chat_id, texto, context)
             if trading_id and _premium100_attach_stockity_id(chat_id, trading_id):
                 block = "✅ Tu ID de Stockity fue recibido para la promoción Premium USD 100 y quedó pendiente de validación. No realices ningún depósito hasta que yo te confirme la validación."
-                await update.effective_message.reply_text(block)
+                await update.effective_message.reply_text(_premium100_localize(block, get_user_lang(chat_id)))
             else:
                 block = _id_pending_review_message(lang)
-                await update.effective_message.reply_text(block, reply_markup=_broker_selection_keyboard("id", lang))
+                await update.effective_message.reply_text(_premium100_localize(block, get_user_lang(chat_id)), reply_markup=_broker_selection_keyboard("id", lang))
             handled_operational.append("ID_SUBMIT")
         # Estas intenciones quedan materialmente resueltas por recibir el ID. No
         # deben volver a provocar una respuesta IA del mismo mensaje.
@@ -15452,7 +15485,7 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
                 )
                 if "SENALES" in effective_intents and "SENALES" not in handled_operational:
                     handled_operational.append("SENALES")
-        await update.effective_message.reply_text(block)
+        await update.effective_message.reply_text(_premium100_localize(block, get_user_lang(chat_id)))
         handled_operational.append("DEPOSITO")
 
     non_operational = [i for i in effective_intents if i not in handled_operational]
@@ -15541,7 +15574,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if lang == "es" else
                 "🏆 You are already Prestige, the highest level in my community. I do not need to validate your ID again or review this image for an upgrade. Tell me what you need to check or manage with this screenshot and I’ll respond accordingly. 😊"
             )
-            await update.message.reply_text(qtxt)
+            await update.message.reply_text(_premium100_localize(qtxt, get_user_lang(chat_id)))
             await send_admin_auto_log(context, update, "PRESTIGE_IMAGE_CONTEXT_REQUIRED", qtxt)
             return
         if current_stage in (STAGE_POST, STAGE_DEPOSITED):
@@ -15557,7 +15590,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             qtxt = "⏸ La promoción Premium USD 100 está pausada para nuevas asignaciones. No voy a procesar esta imagen como activación promocional automática hasta que la promoción vuelva a estar activa."
                         else:
                             qtxt = "⚠️ No pude asegurar tu cupo promocional. No realizaré una activación automática con esta imagen; escríbeme aquí para revisar el caso."
-                        await update.message.reply_text(qtxt, reply_markup=support_keyboard("es", chat_id))
+                        await update.message.reply_text(_premium100_localize(qtxt, get_user_lang(chat_id)), reply_markup=support_keyboard(lang, chat_id))
                         await send_admin_auto_log(context, update, "PREMIUM100_PROOF_NOT_CLAIMED", qtxt)
                         return
                     _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="comprobante PREMIUM100 recibido")
@@ -15566,7 +15599,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF_PREMIUM100")
                     _broker_flow_set(chat_id, pending_deposit_broker=BROKER_STOCKITY)
                     qtxt = "✅ Comprobante recibido. Tu cupo Premium USD 100 queda protegido mientras reviso el depósito de Stockity. Te confirmaré por este chat cuando quede validado."
-                    await update.message.reply_text(qtxt)
+                    await update.message.reply_text(_premium100_localize(qtxt, get_user_lang(chat_id)))
                     await send_admin_auto_log(context, update, "PREMIUM100_PROOF_PENDING", qtxt)
                     await context.bot.send_message(
                         chat_id=ADMIN_ID,
@@ -15586,7 +15619,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == "es" else
                     "✅ Received. To review this deposit correctly, tell me which account it belongs to. Choose the broker:"
                 )
-                await update.message.reply_text(qtxt, reply_markup=_broker_selection_keyboard("deposit", lang))
+                await update.message.reply_text(_premium100_localize(qtxt, get_user_lang(chat_id)), reply_markup=_broker_selection_keyboard("deposit", lang))
                 log_intent = "DEPOSIT_PROOF_BROKER_REQUIRED"
             elif len(brokers) == 1:
                 _broker_flow_set(chat_id, pending_deposit_broker=brokers[0])
@@ -15595,7 +15628,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == "es" else
                     f"✅ Received. I’m reviewing your {_broker_label(brokers[0])} deposit. I’ll confirm here once it is validated."
                 )
-                await update.message.reply_text(qtxt)
+                await update.message.reply_text(_premium100_localize(qtxt, get_user_lang(chat_id)))
                 log_intent = f"DEPOSIT_PROOF_{brokers[0]}"
             else:
                 # Usuario de una versión anterior: antes de sumar cualquier depósito
@@ -15606,7 +15639,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == "es" else
                     "✅ Received. To keep your deposits separated correctly, I need to identify the broker for this account. Choose BINOMO or STOCKITY:"
                 )
-                await update.message.reply_text(qtxt, reply_markup=_broker_selection_keyboard("deposit", lang))
+                await update.message.reply_text(_premium100_localize(qtxt, get_user_lang(chat_id)), reply_markup=_broker_selection_keyboard("deposit", lang))
                 log_intent = "DEPOSIT_PROOF_LEGACY_BROKER_REQUIRED"
             await send_admin_auto_log(context, update, log_intent, qtxt)
             return
@@ -15624,7 +15657,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 [InlineKeyboardButton("❌ Era otra cosa" if lang == "es" else "❌ Something else", callback_data=f"IMG_IS_OTHER|{chat_id}")],
             ])
-            prompt = await update.message.reply_text(qtxt, reply_markup=kb)
+            prompt = await update.message.reply_text(_premium100_localize(qtxt, get_user_lang(chat_id)), reply_markup=kb)
             _log_event(chat_id, "ADMIN_REVIEW_IMAGE_PROMPT", json.dumps({"prompt_id": prompt.message_id, "file_id": update.message.photo[-1].file_id, "message_id": update.message.message_id}))
             await send_admin_auto_log(context, update, "AUTO_IMAGE", qtxt)
             return
@@ -15635,7 +15668,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     copied_live_answer = _copied_live_notice_answer(texto, lang)
     if copied_live_answer:
-        await update.message.reply_text(copied_live_answer, reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang, chat_id=chat_id))
+        await update.message.reply_text(_premium100_localize(copied_live_answer, get_user_lang(chat_id)), reply_markup=live_broadcast_keyboard(user_chat=True, lang=lang, chat_id=chat_id))
         await send_admin_auto_log(context, update, "COPIED_LIVE_NOTICE", copied_live_answer)
         return
 
@@ -15649,41 +15682,41 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _is_short_acknowledgement(texto):
         msg = _concise_ack_reply(lang)
         kb = _append_personal_chat_button(None, lang) if _should_offer_personal_chat(chat_id, texto) else None
-        await update.message.reply_text(msg, reply_markup=kb)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=kb)
         await send_admin_auto_log(context, update, "AI_SHORT_ACK", msg)
         return
 
     if _is_balance_progress_statement(texto):
         msg = _balance_progress_reply(lang)
         kb = _append_personal_chat_button(None, lang) if _should_offer_personal_chat(chat_id, texto) else None
-        await update.message.reply_text(msg, reply_markup=kb)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=kb)
         await send_admin_auto_log(context, update, "AI_BALANCE_PROGRESS", msg)
         return
 
     if _emotional_trading_context(texto):
         msg = _emotional_trading_reply(lang)
         kb = _append_personal_chat_button(None, lang) if _should_offer_personal_chat(chat_id, texto) else None
-        await update.message.reply_text(msg, reply_markup=kb)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=kb)
         await send_admin_auto_log(context, update, "EMOTIONAL_TRADING_CONTEXT", msg)
         return
 
     if _multiple_personal_accounts_case(texto):
         msg = _multiple_accounts_reply(texto, lang)
-        await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=personal_chat_keyboard(lang))
         await send_admin_auto_log(context, update, "MULTIPLE_PERSONAL_ACCOUNTS", msg)
         return
 
     if _risk_management_query(texto) and not any(x in _norm(texto) for x in ("gestion de capital", "gestionar capital", "gestion de cuenta", "gestionar mi cuenta", "manage my capital", "account management")):
         msg = _risk_management_reply(texto, lang)
         kb = support_keyboard(lang, chat_id) if _active_member_level(chat_id) != VIP_LEVEL_NONE else None
-        await update.message.reply_text(msg, reply_markup=kb)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=kb)
         await send_admin_auto_log(context, update, "RISK_MANAGEMENT_METHOD", msg)
         return
 
     if _profit_target_query(texto) and not any(x in _norm(texto) for x in ("deposito", "depósito", "registro", "registr", "nivel", "premium", "prestige")):
         msg = _profit_target_reply(lang)
         kb = _append_personal_chat_button(None, lang) if _should_offer_personal_chat(chat_id, texto) else None
-        await update.message.reply_text(msg, reply_markup=kb)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=kb)
         await send_admin_auto_log(context, update, "DAILY_PROFIT_TARGET", msg)
         return
 
@@ -15707,7 +15740,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _vip_schedule_resume(context, chat_id, pause["due_at"])
         msg = _vip_rate_limit_message(lang)
         await update.message.reply_text(
-            msg,
+            _premium100_localize(msg, get_user_lang(chat_id)),
             reply_markup=_vip_pause_keyboard(lang) if pending else support_keyboard(lang, chat_id),
         )
         await send_admin_auto_log(context, update, "VIP_TELEGRAM_RATE_LIMIT", msg)
@@ -15760,7 +15793,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             markup = ai_context_keyboard(texto + " upgrade", lang, chat_id)
         if _should_offer_personal_chat(chat_id, texto):
             markup = _append_personal_chat_button(markup, lang)
-        await update.message.reply_text(msg, reply_markup=markup)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=markup)
         await send_admin_auto_log(context, update, "UPGRADE_DEPOSIT_DATE", msg)
         return
 
@@ -15784,7 +15817,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Your current level inside my JT TRADERS TEAMS community is {_vip_level_label(level_for_upgrade, lang)}, which is already above {_vip_level_label(explicit_target_for_upgrade, lang)}. Your level does not need to move down; if you want to advance, the next JT TRADERS TEAMS level is {_vip_level_label(_next_member_level(level_for_upgrade), lang)}."
                 )
             markup = ai_context_keyboard(texto, lang, chat_id)
-            await update.message.reply_text(msg, reply_markup=markup)
+            await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=markup)
             await send_admin_auto_log(context, update, "UPGRADE_TARGET_ALREADY_REACHED", msg)
             return
 
@@ -15797,7 +15830,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prestige_markup = ai_context_keyboard(texto, lang, chat_id)
             if _should_offer_personal_chat(chat_id, texto):
                 prestige_markup = _append_personal_chat_button(prestige_markup, lang)
-            await update.message.reply_text(msg, reply_markup=prestige_markup)
+            await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=prestige_markup)
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_PRESTIGE", msg)
             return
 
@@ -15868,7 +15901,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upgrade_markup = ai_context_keyboard(texto, lang, chat_id)
             if _should_offer_personal_chat(chat_id, texto):
                 upgrade_markup = _append_personal_chat_button(upgrade_markup, lang)
-            await update.message.reply_text(msg, reply_markup=upgrade_markup)
+            await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=upgrade_markup)
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_CALCULATED", msg)
             return
         else:
@@ -15886,7 +15919,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upgrade_markup = ai_context_keyboard(texto, lang, chat_id)
             if _should_offer_personal_chat(chat_id, texto):
                 upgrade_markup = _append_personal_chat_button(upgrade_markup, lang)
-            await update.message.reply_text(msg, reply_markup=upgrade_markup)
+            await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=upgrade_markup)
             await send_admin_auto_log(context, update, "UPGRADE_STATUS_LEGACY", msg)
             return
 
@@ -15915,7 +15948,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if lang == "es" else
                 f"You already have a validated account and your level inside my JT TRADERS TEAMS community is {_vip_level_label(level_for_upgrade, lang)}. I will not send this number for validation automatically. If it is the ID of another account/broker you want to link, tell me which one; otherwise, tell me what you need to check with that number."
             )
-        await update.message.reply_text(msg)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)))
         await send_admin_auto_log(context, update, "ACTIVE_MEMBER_ID_GUARD", msg)
         return
 
@@ -15929,7 +15962,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     personal_intent = _personal_escalation_intent(texto)
     if personal_intent:
         msg = _immediate_block(personal_intent, lang)
-        await update.message.reply_text(msg, reply_markup=personal_chat_keyboard(lang))
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=personal_chat_keyboard(lang))
         await send_admin_auto_log(context, update, personal_intent, msg)
         return
 
@@ -15966,7 +15999,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         intent = meaningful[0]
     if intent == "GREETING":
         msg = "¡Hola! 🤍 ¿En qué puedo ayudarte hoy?" if lang == "es" else "Hi! 🤍 How can I help you today?"
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang, chat_id))
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=support_keyboard(lang, chat_id))
         await send_admin_auto_log(context, update, "AUTO_GREETING", msg)
         return
 
@@ -15985,13 +16018,13 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if intent == "YA_REGISTRE":
         msg = _immediate_block("YA_REGISTRE", lang)
-        await update.message.reply_text(msg)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)))
         await send_admin_auto_log(context, update, "AUTO_YA_REGISTRE", msg)
         return
 
     if intent == "DEP_LATER":
         msg = _immediate_block("DEP_LATER", lang)
-        await update.message.reply_text(msg, reply_markup=support_keyboard(lang, chat_id))
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)), reply_markup=support_keyboard(lang, chat_id))
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_LATER", msg)
         return
 
@@ -16044,7 +16077,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == "es" else
                     " After the ID is validated first and then the deposit is validated, I’ll enable the signal access included in your level."
                 )
-        await update.message.reply_text(msg)
+        await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)))
         await send_admin_auto_log(context, update, "AUTO_DEPOSIT_CONFIRM", msg)
         return
 
@@ -16077,7 +16110,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == "es" else
                     f"You already have a validated account and you are {_vip_level_label(active_level, lang)}. I will not send this ID for validation automatically. If it belongs to another account/broker you want to link, tell me which one."
                 )
-            await update.message.reply_text(msg)
+            await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)))
             await send_admin_auto_log(context, update, "ACTIVE_MEMBER_ID_GUARD", msg)
             return
 
@@ -16085,7 +16118,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trading_id = _record_submitted_trading_id(chat_id, texto, context)
         if trading_id and _premium100_attach_stockity_id(chat_id, trading_id):
             msg = "✅ Tu ID de Stockity fue recibido para la promoción Premium USD 100 y quedó pendiente de validación. No realices ningún depósito hasta que yo te confirme la validación."
-            await update.message.reply_text(msg)
+            await update.message.reply_text(_premium100_localize(msg, get_user_lang(chat_id)))
             await send_admin_auto_log(context, update, "PREMIUM100_ID_PENDING", msg)
         else:
             msg = _id_pending_review_message(lang)
@@ -17618,3 +17651,4 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
