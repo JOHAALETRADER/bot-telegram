@@ -7716,6 +7716,19 @@ def _premium100_deposit_preview_text(chat_id: int, amount_cents: int, normal_pre
     return note + standard
 
 
+def _premium100_admin_deposit_candidate(chat_id: int, broker: str, amount_cents: int) -> bool:
+    if _broker_norm(broker) != BROKER_STOCKITY or not (PREMIUM100_MIN_CENTS <= int(amount_cents) < PREMIUM100_NORMAL_PREMIUM_CENTS):
+        return False
+    part = _premium100_participant(chat_id) or {}
+    account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+    return bool(part.get("status") in {"ID_VALIDATED", "RESERVED", "PROOF_PENDING"}
+                and account.get("id_validated") and account.get("trading_id")
+                and str(part.get("stockity_id") or "").strip() == str(account.get("trading_id") or "").strip()
+                and int(account.get("deposit_count") or 0) == 0
+                and int(account.get("validated_total_cents") or 0) == 0
+                and _premium100_level_allowed(chat_id))
+
+
 async def _premium100_apply_promotional_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, amount_cents: int):
     """Activa Premium promocional guardando el monto REAL. No altera los umbrales normales."""
     if not (PREMIUM100_MIN_CENTS <= int(amount_cents) < PREMIUM100_NORMAL_PREMIUM_CENTS):
@@ -7728,6 +7741,8 @@ async def _premium100_apply_promotional_deposit(context: ContextTypes.DEFAULT_TY
         return False, "⚠️ Stockity no tiene un ID validado. No se activó la promoción."
     if int(stockity.get("deposit_count") or 0) != 0 or int(stockity.get("validated_total_cents") or 0) != 0:
         return False, "⚠️ La promoción exige cuenta nueva sin depósitos validados previos."
+    if str(part.get("stockity_id") or "").strip() != str(stockity.get("trading_id") or "").strip():
+        return False, "⚠️ El ID promocional no coincide con la cuenta Stockity validada."
     old_global_state = _vip_get_state(chat_id, create=False) or {}
     if not _premium100_level_allowed(chat_id):
         return False, "⚠️ La promoción no aplica a un nivel Premium o Prestige ya activo."
@@ -7746,6 +7761,8 @@ async def _premium100_apply_promotional_deposit(context: ContextTypes.DEFAULT_TY
             b = session.get(BrokerAccountState, _broker_key(chat_id, BROKER_STOCKITY))
             if not b or not b.id_validated or int(b.validated_deposit_count or 0) != 0:
                 return False, "⚠️ El estado Stockity cambió; no se aplicó la promoción."
+            if str(p.stockity_id or "").strip() != str(b.trading_id or "").strip():
+                return False, "⚠️ El ID cambió durante la revisión; no se aplicó la promoción."
             current_v = session.get(VIPAccessState, str(chat_id))
             if current_v and current_v.level not in {None, VIP_LEVEL_NONE, VIP_LEVEL_BASIC}:
                 return False, "⚠️ El nivel cambió; la promoción no se aplicó."
@@ -7809,6 +7826,12 @@ async def _premium100_apply_promotional_deposit(context: ContextTypes.DEFAULT_TY
 
 async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str, preview: dict):
     broker = _broker_norm(broker)
+    amount_cents = int(preview.get("amount_cents") or 0)
+    if _premium100_admin_deposit_candidate(chat_id, broker, amount_cents):
+        ok, reason, _ = _premium100_claim_proof(chat_id)
+        if not ok:
+            return False, f"⚠️ No se confirmó el depósito: el cupo promocional no está disponible ({reason}). No se asignó Básico."
+        preview = dict(preview, promo_premium100=True)
     if broker == BROKER_STOCKITY and preview.get("promo_premium100"):
         amount_cents = int(preview.get("amount_cents") or 0)
         if PREMIUM100_MIN_CENTS <= amount_cents < PREMIUM100_NORMAL_PREMIUM_CENTS:
@@ -8046,7 +8069,7 @@ async def admin_broker_callback(update: Update, context: ContextTypes.DEFAULT_TY
             return
         timely = action == "timely"
         preview = _broker_preview_deposit(chat_id, broker, int(pending["amount_cents"]), timely)
-        if broker == BROKER_STOCKITY and ((_premium100_participant(chat_id) or {}).get("status") == "PROOF_PENDING"):
+        if broker == BROKER_STOCKITY and (((_premium100_participant(chat_id) or {}).get("status") == "PROOF_PENDING") or _premium100_admin_deposit_candidate(chat_id, broker, int(pending["amount_cents"]))):
             preview["promo_premium100"] = True
         pending.update({"timely": timely, "preview": preview})
         context.user_data["admin_pending_broker_deposit"] = pending
@@ -8669,7 +8692,7 @@ async def admin_user_text_input(update: Update, context: ContextTypes.DEFAULT_TY
             or account_level == VIP_LEVEL_PRESTIGE
             or amount_cents >= VIP_LEVEL_THRESHOLDS_CENTS[VIP_LEVEL_PRESTIGE]
         )
-        promo100_pending = bool(broker == BROKER_STOCKITY and ((_premium100_participant(chat_id) or {}).get("status") == "PROOF_PENDING"))
+        promo100_pending = bool(broker == BROKER_STOCKITY and (((_premium100_participant(chat_id) or {}).get("status") == "PROOF_PENDING") or _premium100_admin_deposit_candidate(chat_id, broker, amount_cents)))
         if skip_72h:
             preview = _broker_preview_deposit(chat_id, broker, amount_cents, True)
             if promo100_pending:
@@ -17337,6 +17360,84 @@ async def vip_channel_watch_job(context: ContextTypes.DEFAULT_TYPE):
             logging.warning("Vigilancia VIP falló para %s sin detener el bot: %s", key, e)
 
 
+def _premium100_repair_existing_basic(chat_id: int, expected_id: str, expected_cents: int):
+    """Authorized one-time correction of a recorded deposit; never add money/counts."""
+    now = utcnow_naive()
+    with Session() as session:
+        cfg = session.query(Premium100Config).filter_by(config_key=PREMIUM100_CONFIG_KEY).with_for_update().first()
+        if not cfg:
+            return "NO_CONFIG", []
+        counts = _premium100_counts_locked(session, cfg)
+        part = session.get(Premium100Participant, _premium100_key(cfg.edition, chat_id))
+        b = session.get(BrokerAccountState, _broker_key(chat_id, BROKER_STOCKITY))
+        v = session.get(VIPAccessState, str(chat_id))
+        if not part or not b or not v:
+            return "MISSING_STATE", []
+        if part.status == "ACTIVATED" and b.level == VIP_LEVEL_PREMIUM and v.level == VIP_LEVEL_PREMIUM:
+            return "ALREADY_APPLIED", []
+        if (part.status not in {"ID_VALIDATED", "RESERVED", "PROOF_PENDING"}
+                or not b.id_validated or str(b.trading_id or "").strip() != expected_id
+                or str(part.stockity_id or "").strip() != expected_id
+                or b.level != VIP_LEVEL_BASIC or v.level != VIP_LEVEL_BASIC
+                or int(b.validated_deposit_count or 0) != 1
+                or int(b.validated_total_cents or 0) != expected_cents
+                or int(v.validated_total_cents or 0) != expected_cents
+                or not (PREMIUM100_MIN_CENTS <= expected_cents < PREMIUM100_NORMAL_PREMIUM_CENTS)
+                or not b.first_validated_deposit_at or not part.entered_at
+                or part.entered_at > b.first_validated_deposit_at):
+            return "STATE_MISMATCH", []
+        if part.status not in {"RESERVED", "PROOF_PENDING"} and (not cfg.active or counts["available"] <= 0):
+            return "PROMO_UNAVAILABLE", []
+        keys = set(_vip_new_channel_keys(VIP_LEVEL_BASIC, VIP_LEVEL_PREMIUM))
+        pending = set(k for k in (v.pending_access_keys or "").split(",") if k)
+        required = _vip_channel_keys_for_level(VIP_LEVEL_PREMIUM)
+        keys = [k for k in required if k in keys or k in pending]
+        # Preserve amount, count, accumulation and original deposit timestamp.
+        b.level = VIP_LEVEL_PREMIUM
+        b.updated_at = now
+        v.level = VIP_LEVEL_PREMIUM
+        v.pending_access_keys = ",".join(keys)
+        v.welcome_level = None
+        v.updated_at = now
+        part.status = "ACTIVATED"
+        part.deposit_cents = expected_cents
+        part.activated_at = now
+        part.reserved_until = None
+        part.updated_at = now
+        session.commit()
+    return "APPLIED", keys
+
+
+async def _premium100_run_authorized_repairs(application):
+    specs = (os.getenv("PREMIUM100_REPAIR_USERS") or "").strip()
+    if not specs:
+        return
+    for spec in specs.split(","):
+        match = re.fullmatch(r"(\d+):(\d{6,12}):(\d+)", spec.strip())
+        if not match:
+            logging.warning("PREMIUM100_REPAIR invalid specification")
+            continue
+        chat_id, account_id, cents = int(match[1]), match[2], int(match[3])
+        try:
+            result, keys = _premium100_repair_existing_basic(chat_id, account_id, cents)
+            check = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+            logging.info("PREMIUM100_REPAIR user=%s result=%s level=%s total=%s count=%s", chat_id, result, check.get("level"), check.get("validated_total_cents"), check.get("deposit_count"))
+            if result == "ALREADY_APPLIED":
+                continue
+            await application.bot.send_message(chat_id=ADMIN_ID, text=f"🔧 CORRECCIÓN PROMOCIONAL · Usuario {chat_id}\nResultado: {result}\nNivel: {check.get('level')} · USD {_usd(check.get('validated_total_cents', 0))} · Depósitos: {check.get('deposit_count')}\nEl importe y el contador no se duplicaron.")
+            if result != "APPLIED":
+                continue
+            _log_event(chat_id, "PREMIUM100_REPAIRED", "Existing validated deposit; no added amount or count")
+            lang = get_user_lang(chat_id)
+            msg = ("Your promotion has been corrected: your level is Premium ✅ The USD 100 already confirmed remains recorded as one deposit. No additional deposit is needed." if lang == "en" else "Tu promoción quedó corregida: tu nivel es Premium ✅ Los USD 100 ya confirmados se conservan como un único depósito. No necesitas otro depósito.")
+            await application.bot.send_message(chat_id=chat_id, text=msg)
+            if keys:
+                await application.bot.send_message(chat_id=chat_id, text=_vip_access_intro(VIP_LEVEL_PREMIUM, lang, upgrade=True), reply_markup=_vip_access_keyboard(VIP_LEVEL_PREMIUM, lang, keys=keys), disable_web_page_preview=True)
+            logging.info("PREMIUM100_REPAIR user=%s notification=sent access_links=sent", chat_id)
+        except Exception:
+            logging.exception("PREMIUM100_REPAIR user=%s failed", chat_id)
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
     if application.job_queue and not application.job_queue.get_jobs_by_name("VIP_CHANNEL_WATCH"):
@@ -17345,6 +17446,7 @@ async def post_init_app(application):
     await recover_pending_ai_jobs(application)
     await recover_pending_campaign_jobs(application)
     await recover_pending_vip_access_pauses(application)
+    await _premium100_run_authorized_repairs(application)
     await recover_pending_vip_access_flows(application)
     # Si el Chat ID de Señales Premium +300 ya fue aprendido en pruebas anteriores,
     # reemplazamos para el BOT el enlace histórico por uno propio con solicitud.
