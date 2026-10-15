@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.04-20261014-BILINGUAL-LEVELS-PROMO"
+BOT_VERSION = "v7.11.05-20261015-DIRECT-ID-ENTRY"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -9585,6 +9585,100 @@ def build_lang_picker() -> InlineKeyboardMarkup:
          InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_en")]
     ])
 
+
+async def _direct_id_entry(update, context, lang: str):
+    """Route a direct validation entry from persisted state, without changing it."""
+    chat_id = update.effective_user.id
+    message = update.effective_message
+    context.user_data.pop("direct_id_broker", None)
+    level = _active_member_level(chat_id)
+    if level != VIP_LEVEL_NONE:
+        text = (f"✅ Your {_vip_level_label(level, lang)} level is already active. You do not need to repeat registration, ID validation or your deposit." if lang == "en" else
+                f"✅ Tu nivel {_vip_level_label(level, lang)} ya está activo. No necesitas repetir registro, validación de ID ni depósito.")
+        await message.reply_text(text, reply_markup=member_space_keyboard(chat_id, lang))
+        return
+    flow = _broker_flow_get(chat_id)
+    if _has_pending_id_review(chat_id):
+        if flow.get("pending_trading_id"):
+            await message.reply_text(_id_pending_review_message(lang), reply_markup=_broker_selection_keyboard("id", lang))
+        else:
+            await message.reply_text("⏳ Your ID is already awaiting my review. I will confirm here; do not send it again or deposit yet." if lang == "en" else
+                                     "⏳ Tu ID ya está pendiente de mi revisión. Te confirmaré por aquí; no necesitas reenviarlo ni depositar todavía.", reply_markup=support_keyboard(lang, chat_id))
+        return
+    if _strict_validated_id_state(chat_id):
+        part = _premium100_participant(chat_id)
+        if part and part.get("status") in {"ID_VALIDATED", "RESERVED", "PROOF_PENDING", "ACTIVATED"}:
+            text, keyboard = _premium100_status_text(chat_id, getattr(update.effective_user, "first_name", ""))
+            await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        else:
+            await message.reply_text(ADMIN_ID_VALIDATED_EN if lang == "en" else ADMIN_ID_VALIDATED_ES,
+                                     reply_markup=_validated_id_marketing_keyboard(lang))
+        return
+    part = _premium100_participant(chat_id)
+    if part and part.get("status") in {"ENTERED", "ID_SUBMITTED"}:
+        # Existing promotional enrollment stays Stockity and keeps its original entry date.
+        context.user_data["direct_id_broker"] = BROKER_STOCKITY
+        await _direct_id_prompt(message, BROKER_STOCKITY, lang)
+        return
+    rows = _broker_rows(chat_id)
+    known = [row.get("broker") for row in rows if row.get("broker") in {BROKER_BINOMO, BROKER_STOCKITY}
+             and (row.get("trading_id") or row.get("pending_trading_id"))]
+    if len(set(known)) == 1:
+        broker = known[0]
+        context.user_data["direct_id_broker"] = broker
+        await _direct_id_prompt(message, broker, lang)
+        return
+    await message.reply_text("🆔 Which trading account ID do you want me to verify? Choose your broker:" if lang == "en" else
+                             "🆔 ¿De qué cuenta de trading quieres validar el ID? Elige tu broker:",
+                             reply_markup=InlineKeyboardMarkup([[
+                                 InlineKeyboardButton("🟡 BINOMO", callback_data="direct_id_broker:BINOMO"),
+                                 InlineKeyboardButton("🔵 STOCKITY", callback_data="direct_id_broker:STOCKITY"),
+                             ]]))
+
+
+async def _direct_id_prompt(message, broker: str, lang: str):
+    text = (f"🆔 Send your {_broker_label(broker)} trading account ID here as text (numbers only). Wait for my validation before depositing." if lang == "en" else
+            f"🆔 Envíame aquí el ID de tu cuenta de trading {_broker_label(broker)} en texto (solo números). Espera mi validación antes de depositar.")
+    await message.reply_text(text)
+
+
+async def _direct_id_receive(update, context) -> bool:
+    """Receive a numeric ID only in this entry; delegate all validation to existing flows."""
+    if not context.user_data.get("direct_id_entry"):
+        return False
+    text = (update.effective_message.text or "").strip()
+    if not re.fullmatch(r"[0-9]{6,12}", text):
+        return False
+    chat_id = update.effective_user.id
+    lang = get_user_lang(chat_id)
+    if _active_member_level(chat_id) != VIP_LEVEL_NONE or _has_pending_id_review(chat_id) or _strict_validated_id_state(chat_id):
+        await _direct_id_entry(update, context, lang)
+        return True
+    broker = context.user_data.get("direct_id_broker")
+    if broker not in {BROKER_BINOMO, BROKER_STOCKITY}:
+        return False  # Existing ID-first handler still works if the session was lost.
+    _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="ID recibido por enlace directo")
+    trading_id = _record_submitted_trading_id(chat_id, text, context)
+    if not trading_id:
+        return False
+    if _premium100_attach_stockity_id(chat_id, trading_id):
+        msg = ("✅ Your Stockity ID was received for the Premium USD 100 promotion and is pending validation. Do not deposit until I confirm validation." if lang == "en" else
+               "✅ Tu ID de Stockity fue recibido para la promoción Premium USD 100 y quedó pendiente de validación. No deposites hasta que confirme su validación.")
+        await update.effective_message.reply_text(msg)
+        await send_admin_auto_log(context, update, "PREMIUM100_ID_PENDING", msg)
+        return True
+    # Adapt the real user's message and prior broker choice to the existing ID callback.
+    # This callback only records a pending ID and displays the same admin review buttons;
+    # approval, eligibility checks and activation remain exclusively in existing admin flows.
+    from types import SimpleNamespace
+    async def answered():
+        return None
+    query = SimpleNamespace(data=f"broker_id_select:{broker}", message=update.effective_message, answer=answered)
+    routed = SimpleNamespace(callback_query=query, effective_user=update.effective_user,
+                             effective_chat=update.effective_chat, effective_message=update.effective_message)
+    await broker_user_callback(routed, context)
+    return True
+
 # === /start: primero elige idioma, luego bienvenida + menú por idioma; agenda jobs con lang ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_chat or update.effective_chat.type != "private":
@@ -9595,6 +9689,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Crear usuario si no existe (lang por defecto "es" hasta que elija)
     with Session() as session:
         user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+        direct_id_language_configured = bool(user and user.lang in ("es", "en"))
         if not user:
             nuevo_usuario = Usuario(
                 telegram_id=str(chat_id),
@@ -9620,6 +9715,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # v7.10.88: cada /start queda persistido; el ADMIN recibe solo cortes agregados.
     # detail conserva el deep-link/origen para auditoría sin alterar el tracking existente.
     _log_event(chat_id, "BOT_START", start_param or "normal")
+
+    # Direct ID validation: preserve stored language, attribution and all account history.
+    if start_param == "validar_id":
+        context.user_data["direct_id_entry"] = True
+        context.user_data.pop("direct_id_broker", None)
+        if not direct_id_language_configured:
+            await update.effective_message.reply_text("Elige tu idioma / Choose your language:", reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🇪🇸 Español", callback_data="direct_id_lang:es"),
+                InlineKeyboardButton("🇺🇸 English", callback_data="direct_id_lang:en"),
+            ]]))
+        else:
+            await _direct_id_entry(update, context, lang)
+            _sync_menu_campaign_for_stage(chat_id, lang, context)
+        return
+    context.user_data.pop("direct_id_entry", None)
+    context.user_data.pop("direct_id_broker", None)
 
     # === PROMOCIÓN PREMIUM USD 100 · DEEP LINK EXCLUSIVO ===
     # Enlace oficial: https://t.me/JOHAALETRADER_bot?start=PREMIUM100
@@ -9893,6 +10004,28 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await q.answer()
     _touch_user_activity(chat_id)
+
+    if q.data in {"direct_id_lang:es", "direct_id_lang:en"}:
+        lang = q.data.rsplit(":", 1)[1]
+        set_user_lang(chat_id, q.from_user.full_name, lang)
+        context.user_data["direct_id_entry"] = True
+        await _direct_id_entry(update, context, lang)
+        _sync_menu_campaign_for_stage(chat_id, lang, context)
+        return
+    if q.data in {"direct_id_broker:BINOMO", "direct_id_broker:STOCKITY"}:
+        context.user_data["direct_id_entry"] = True
+        lang = get_user_lang(chat_id)
+        if _active_member_level(chat_id) != VIP_LEVEL_NONE or _has_pending_id_review(chat_id) or _strict_validated_id_state(chat_id):
+            await _direct_id_entry(update, context, lang)
+        else:
+            part = _premium100_participant(chat_id)
+            broker = BROKER_STOCKITY if part and part.get("status") in {"ENTERED", "ID_SUBMITTED"} else q.data.rsplit(":", 1)[1]
+            context.user_data["direct_id_broker"] = broker
+            await _direct_id_prompt(q.message, broker, lang)
+        return
+    if q.data in {"back_main_menu", "member_space", "registrarme", "ya_tengo_cuenta", "set_lang_es", "set_lang_en"} or (q.data or "").startswith("member_add_broker:"):
+        context.user_data.pop("direct_id_entry", None)
+        context.user_data.pop("direct_id_broker", None)
 
     if q.data == "premium100_info":
         # Consulta de solo lectura: no inscribe ni reinicia el proceso del usuario.
@@ -15543,6 +15676,11 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     lang = get_user_lang(chat_id)
+
+    if (update.effective_chat.type == "private" and update.effective_user
+            and update.effective_user.id != ADMIN_ID
+            and await _direct_id_receive(update, context)):
+        return
 
     # Voz/audio: además de reenviarlo a Johanna, intentamos transcribirlo para que
     # la IA pueda entender la conversación completa si Johanna no responde.
