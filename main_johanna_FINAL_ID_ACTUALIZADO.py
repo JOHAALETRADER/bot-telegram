@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.05-20261015-DIRECT-ID-ENTRY"
+BOT_VERSION = "v7.11.06-20261016-DIRECT-ID-GREETING"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -9718,6 +9718,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Direct ID validation: preserve stored language, attribution and all account history.
     if start_param == "validar_id":
+        greeting_lang = lang if direct_id_language_configured else (
+            "en" if (getattr(update.effective_user, "language_code", "") or "").lower().startswith("en") else "es"
+        )
+        greeting_name = (getattr(update.effective_user, "first_name", "") or "").strip() or _telegram_display_name(update.effective_user)
+        await update.effective_message.reply_text(
+            f"Hi, {greeting_name}! 👋" if greeting_lang == "en" else f"¡Hola, {greeting_name}! 👋"
+        )
         context.user_data["direct_id_entry"] = True
         context.user_data.pop("direct_id_broker", None)
         if not direct_id_language_configured:
