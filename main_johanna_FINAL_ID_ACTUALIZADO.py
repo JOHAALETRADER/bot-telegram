@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.06-20261016-DIRECT-ID-GREETING"
+BOT_VERSION = "v7.11.07-20261017-MANUAL-REPLY-EDIT-SYNC"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -466,6 +466,22 @@ class PromoCodeConfig(Base):
     reminder_3d_for     = Column(String)
     reminder_expiry_for = Column(String)
     updated_at          = Column(DateTime, default=utcnow_naive, index=True)
+
+
+class ManualReplyDelivery(Base):
+    """Exact persistent source-to-recipient mapping for admin reply edits."""
+    __tablename__ = "manual_reply_deliveries"
+    source_key = Column(String, primary_key=True)
+    source_chat_id = Column(String, nullable=False)
+    source_message_id = Column(Integer, nullable=False)
+    target_chat_id = Column(String, nullable=False)
+    target_message_id = Column(Integer, nullable=False)
+    kind = Column(String, nullable=False)
+    raw_text = Column(Text)
+    question = Column(Text)
+    example_id = Column(Integer)
+    created_at = Column(DateTime, default=utcnow_naive)
+    last_edit_at = Column(DateTime)
 
 
 engine = create_engine(DATABASE_URL, echo=False)
@@ -10922,6 +10938,140 @@ def _ai_signal_delivery_answer(question, lang, level):
     return "Las señales se reciben por Telegram en los canales correspondientes a tu nivel:\n\n" + directory + "\n\nBusca esos nombres en Telegram. Si te falta alguno, dime cuál para revisar tu acceso."
 
 
+def _manual_delivery_save(update, sent, kind, raw_text, question=""):
+    try:
+        with Session() as session:
+            source = update.effective_message
+            key = f"{source.chat_id}:{source.message_id}"
+            row = session.get(ManualReplyDelivery, key)
+            if row is None:
+                session.add(ManualReplyDelivery(source_key=key, source_chat_id=str(source.chat_id),
+                    source_message_id=source.message_id, target_chat_id=str(sent.chat_id),
+                    target_message_id=sent.message_id, kind=kind, raw_text=raw_text or "",
+                    question=question or "", created_at=utcnow_naive()))
+                session.commit()
+    except Exception:
+        logging.exception("No pude guardar referencia para editar respuesta manual")
+
+
+def _manual_delivery_link_memory(update):
+    try:
+        source = update.effective_message
+        with Session() as session:
+            row = session.get(ManualReplyDelivery, f"{source.chat_id}:{source.message_id}")
+            if row is None:
+                return
+            example = session.query(JohannaExample).filter(
+                JohannaExample.source_chat_id == row.target_chat_id,
+                JohannaExample.response_text == (row.raw_text or "").strip()[:5000],
+                JohannaExample.created_at >= row.created_at,
+            ).order_by(JohannaExample.id.desc()).first()
+            if example:
+                row.example_id = example.id
+            user = session.query(Usuario).filter_by(telegram_id=row.target_chat_id).first()
+            if user and user.ai_history:
+                history = json.loads(user.ai_history)
+                for item in reversed(history):
+                    if (item.get("role") == "assistant" and item.get("source") == "manual"
+                            and item.get("content") == (row.raw_text or "").strip()[:2200]
+                            and not item.get("delivery_key")):
+                        item["delivery_key"] = row.source_key
+                        user.ai_history = json.dumps(history, ensure_ascii=False)
+                        break
+            session.commit()
+    except Exception:
+        logging.exception("No pude asociar memoria de respuesta manual")
+
+
+def _manual_delivery_update_memory(key, new_text, edit_at):
+    with Session() as session:
+        row = session.get(ManualReplyDelivery, key)
+        if row is None:
+            return
+        previous = (row.raw_text or "").strip()
+        user = session.query(Usuario).filter_by(telegram_id=row.target_chat_id).first()
+        if user:
+            if user.ai_history:
+                history = json.loads(user.ai_history)
+                for item in history:
+                    if item.get("delivery_key") == key and item.get("role") == "assistant" and item.get("source") == "manual":
+                        item["content"] = new_text[:2200]
+                user.ai_history = json.dumps(history, ensure_ascii=False)
+            if previous and user.ai_memory_summary:
+                user.ai_memory_summary = user.ai_memory_summary.replace("JOHANNA: " + previous[:1000], "JOHANNA: " + new_text[:1000])
+        if row.example_id:
+            example = session.get(JohannaExample, row.example_id)
+            if example and example.source_chat_id == row.target_chat_id:
+                example.response_text = new_text[:5000]
+        row.raw_text = new_text
+        row.last_edit_at = edit_at
+        session.commit()
+
+
+async def sync_admin_reply_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Edit only an already-delivered copy; never re-run reply triggers or financial flows."""
+    edited = update.edited_message
+    if (edited is None or not update.effective_user or update.effective_user.id != ADMIN_ID
+            or not update.effective_chat or update.effective_chat.type != "private"):
+        return
+    from telegram.ext import ApplicationHandlerStop
+    key = f"{edited.chat_id}:{edited.message_id}"
+    with Session() as session:
+        stored = session.get(ManualReplyDelivery, key)
+        info = ({"target": int(stored.target_chat_id), "message_id": stored.target_message_id,
+                 "kind": stored.kind, "raw_text": stored.raw_text or "", "last_edit_at": stored.last_edit_at}
+                if stored else None)
+    if info is None:
+        # Ignore unrelated admin edits; explain the limit for an old reply only.
+        if edited.reply_to_message or (edited.caption or "").startswith("/enviar "):
+            await context.bot.send_message(chat_id=edited.chat_id,
+                text="ℹ️ No pude sincronizar esta edición: no hay referencia guardada del mensaje enviado. La sincronización funciona para respuestas enviadas desde esta actualización.")
+            raise ApplicationHandlerStop
+        return
+    if not _is_private_user_id(info["target"]):
+        raise ApplicationHandlerStop
+    locks = context.bot_data.setdefault("manual_reply_edit_locks", {})
+    async with locks.setdefault(key, asyncio.Lock()):
+        # Re-read after lock: concurrent edits must not use stale content/version.
+        with Session() as session:
+            row = session.get(ManualReplyDelivery, key)
+            info.update(raw_text=row.raw_text or "", last_edit_at=row.last_edit_at)
+        edit_at = edited.edit_date.replace(tzinfo=None) if edited.edit_date else utcnow_naive()
+        if info["last_edit_at"] and edit_at < info["last_edit_at"]:
+            raise ApplicationHandlerStop
+        value = edited.text if info["kind"] == "text" else edited.caption
+        value = value or ""
+        if info["kind"].startswith("direct_"):
+            parts = value.split(" ", 2)
+            if len(parts) < 2 or parts[0] != "/enviar" or parts[1] != str(info["target"]):
+                await context.bot.send_message(chat_id=edited.chat_id, text="⚠️ No cambié el destinatario. Para corregir esta respuesta conserva /enviar y el mismo Telegram ID.")
+                raise ApplicationHandlerStop
+            value = parts[2] if len(parts) == 3 else ""
+        if value == info["raw_text"]:
+            raise ApplicationHandlerStop
+        try:
+            outbound = _personalize_referral_links(value, info["target"])
+            try:
+                if info["kind"] in {"text", "direct_text"}:
+                    await context.bot.edit_message_text(chat_id=info["target"], message_id=info["message_id"], text=outbound)
+                else:
+                    await context.bot.edit_message_caption(chat_id=info["target"], message_id=info["message_id"], caption=outbound)
+            except Exception as error:
+                if "message is not modified" not in str(error).lower():
+                    raise
+            notice = "✅ Corrección aplicada al mensaje que recibió el usuario."
+            try:
+                _manual_delivery_update_memory(key, value, edit_at)
+            except Exception:
+                logging.exception("Mensaje corregido, pero no pude actualizar referencia/memoria %s", key)
+                notice = "✅ El usuario ya ve la corrección. No pude actualizar su referencia/memoria interna; requiere revisión."
+            await context.bot.send_message(chat_id=edited.chat_id, text=notice)
+        except Exception as error:
+            logging.warning("No pude sincronizar edición manual %s: %s", key, error)
+            await context.bot.send_message(chat_id=edited.chat_id, text=f"❌ No pude sincronizar la edición con el usuario: {error}")
+    raise ApplicationHandlerStop
+
+
 async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Puede ser respuesta a un mensaje del admin que contenía texto o media con caption.
     if update.message.reply_to_message:
@@ -10964,11 +11114,12 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                 pending_cleared_early = False
 
                 if update.message.photo:
-                    await context.bot.send_photo(
+                    _delivered_reply = await context.bot.send_photo(
                         chat_id=destinatario_id,
                         photo=update.message.photo[-1].file_id,
                         caption=_personalize_referral_links(update.message.caption or "", destinatario_id),
                     )
+                    _manual_delivery_save(update, _delivered_reply, "caption", update.message.caption or "", original_question)
                     response_type = "photo"
                     learned_reply = (update.message.caption or "").strip()
                     manual_reply_text = learned_reply or "[Imagen enviada por Johanna]"
@@ -10990,10 +11141,11 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                     manual_reply_text = learned_reply or "[Respuesta de voz enviada por Johanna]"
                 else:
                     _manual_outbound = _personalize_referral_links(update.message.text or "", destinatario_id)
-                    await context.bot.send_message(
+                    _delivered_reply = await context.bot.send_message(
                         chat_id=destinatario_id,
                         text=_manual_outbound
                     )
+                    _manual_delivery_save(update, _delivered_reply, "text", update.message.text or "", original_question)
                     learned_reply = (update.message.text or "").strip()
                     manual_reply_text = learned_reply
 
@@ -11013,6 +11165,8 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
                         get_user_lang(destinatario_id),
                         response_type=response_type,
                     )
+
+                _manual_delivery_link_memory(update)
 
                 # Detectar mensajes gatillo con protección estricta del flujo:
                 # PRE -> ID enviado -> Johanna valida ESE ID -> POST -> depósito -> DEPOSITED.
@@ -16357,37 +16511,45 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
 
         # Enviar imagen como PHOTO
         if update.message.photo:
-            await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
+            _direct_sent = await context.bot.send_photo(chat_id=chat_id, photo=update.message.photo[-1].file_id, caption=mensaje)
+            _manual_delivery_save(update, _direct_sent, "direct_caption", mensaje)
             if mensaje:
                 _learn_direct_admin_message(chat_id, mensaje, "photo_caption")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Imagen enviada por Johanna]")
+            _manual_delivery_link_memory(update)
             await update.message.reply_text("✅ Imagen enviada con éxito.")
             return
 
         # Enviar imagen como DOCUMENTO
         if update.message.document and update.message.document.mime_type.startswith("image/"):
-            await context.bot.send_document(chat_id=chat_id, document=update.message.document.file_id, caption=mensaje)
+            _direct_sent = await context.bot.send_document(chat_id=chat_id, document=update.message.document.file_id, caption=mensaje)
+            _manual_delivery_save(update, _direct_sent, "direct_caption", mensaje)
             if mensaje:
                 _learn_direct_admin_message(chat_id, mensaje, "document_caption")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Imagen enviada por Johanna]")
+            _manual_delivery_link_memory(update)
             await update.message.reply_text("✅ Imagen enviada como documento.")
             return
 
         # Enviar video
         if update.message.video:
-            await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
+            _direct_sent = await context.bot.send_video(chat_id=chat_id, video=update.message.video.file_id, caption=mensaje)
+            _manual_delivery_save(update, _direct_sent, "direct_caption", mensaje)
             if mensaje:
                 _learn_direct_admin_message(chat_id, mensaje, "video_caption")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Video enviado por Johanna]")
+            _manual_delivery_link_memory(update)
             await update.message.reply_text("✅ Video enviado con éxito.")
             return
 
         # Enviar audio
         if update.message.audio:
-            await context.bot.send_audio(chat_id=chat_id, audio=update.message.audio.file_id, caption=mensaje)
+            _direct_sent = await context.bot.send_audio(chat_id=chat_id, audio=update.message.audio.file_id, caption=mensaje)
+            _manual_delivery_save(update, _direct_sent, "direct_caption", mensaje)
             if mensaje:
                 _learn_direct_admin_message(chat_id, mensaje, "audio_caption")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje or "[Audio enviado por Johanna]")
+            _manual_delivery_link_memory(update)
             await update.message.reply_text("✅ Audio enviado con éxito.")
             return
 
@@ -16409,9 +16571,11 @@ async def enviar_mensaje_directo(update: Update, context: ContextTypes.DEFAULT_T
         # Si no es archivo multimedia, enviar como texto
         if mensaje:
             _direct_outbound = _personalize_referral_links(mensaje, chat_id)
-            await context.bot.send_message(chat_id=chat_id, text=_direct_outbound)
+            _direct_sent = await context.bot.send_message(chat_id=chat_id, text=_direct_outbound)
+            _manual_delivery_save(update, _direct_sent, "direct_text", mensaje)
             _learn_direct_admin_message(chat_id, mensaje, "text")
             _cancel_pending_ai(context, chat_id, manual_reply=mensaje)
+            _manual_delivery_link_memory(update)
             await update.message.reply_text("✅ Mensaje enviado con éxito.")
         else:
             await update.message.reply_text("⚠️ No se pudo enviar nada. Revisa el contenido.")
@@ -17743,6 +17907,9 @@ if __name__ == "__main__":
         MessageHandler(filters.User(ADMIN_ID) & filters.TEXT & ~filters.COMMAND, admin_user_text_input),
         group=-5,
     )
+
+    # Edited admin replies are intercepted before all original admin handlers.
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.User(ADMIN_ID), sync_admin_reply_edit), group=-21)
 
     # Captura fotos, videos y texto de borradores antes del manejador normal del admin.
     app.add_handler(
