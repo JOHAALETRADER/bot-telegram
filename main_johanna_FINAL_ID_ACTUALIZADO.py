@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.07-20261017-MANUAL-REPLY-EDIT-SYNC"
+BOT_VERSION = "v7.11.08-20261018-AI-PENDING-JOB-RECOVERY"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -15436,6 +15436,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
                 when=delay,
                 data={"chat_id": chat_id, "message_id": pending.get("message_id")},
                 name=f"AI_REPLY_{chat_id}",
+                job_kwargs={"misfire_grace_time": 300},
             )
         return
 
@@ -15491,7 +15492,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
                         if context.job_queue:
                             context.job_queue.run_once(delayed_ai_reply, when=1,
                                 data={"chat_id": chat_id, "message_id": expected_message_id},
-                                name=f"AI_REPLY_{chat_id}")
+                                name=f"AI_REPLY_{chat_id}", job_kwargs={"misfire_grace_time": 300})
                         return
 
     if not answer:
@@ -15520,6 +15521,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
                 when=1,
                 data={"chat_id": chat_id, "message_id": expected_message_id},
                 name=f"AI_REPLY_{chat_id}",
+                job_kwargs={"misfire_grace_time": 300},
             )
         return
 
@@ -15554,6 +15556,25 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("No se pudo enviar la respuesta IA a %s: %s", chat_id, e)
 
 
+def _ensure_pending_ai_job(context, chat_id, pending):
+    """Restore a missing job without changing the saved question or deadline."""
+    if not context.job_queue or not pending:
+        return
+    name = f"AI_REPLY_{chat_id}"
+    expected = str(pending.get("message_id") or "")
+    jobs = context.job_queue.get_jobs_by_name(name)
+    if any(str((job.data or {}).get("message_id") or "") == expected
+           and not getattr(job, "removed", False) for job in jobs):
+        return
+    delay = max(1, (pending["due_at"] - utcnow_naive()).total_seconds())
+    context.job_queue.run_once(
+        delayed_ai_reply, when=delay,
+        data={"chat_id": chat_id, "message_id": expected}, name=name,
+        job_kwargs={"misfire_grace_time": 300},
+    )
+    logging.info("✅ Tarea IA pendiente restaurada: %s", chat_id)
+
+
 def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_value: str, answered_topics=None):
     if not text_value or not text_value.strip():
         return
@@ -15565,6 +15586,7 @@ def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_v
     # Una insistencia sin contenido nuevo no reemplaza la pregunta ni reinicia
     # su espera; conserva también el ID que verifica el trabajo ya programado.
     if re.fullmatch(r"[\s¿?]+", text_value) and _get_pending_ai(chat_id):
+        _ensure_pending_ai_job(context, chat_id, _get_pending_ai(chat_id))
         logging.info("⏱ IA conserva pregunta y plazo ante insistencia: %s", chat_id)
         return
     message_id = update.effective_message.message_id
@@ -15573,6 +15595,7 @@ def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_v
         # Acumula la segunda y tercera consulta sin cambiar el plazo ni el job.
         _set_pending_ai(chat_id, text_value, message_id,
                         answered_topics=answered_topics or [], preserve_wait=True)
+        _ensure_pending_ai_job(context, chat_id, _get_pending_ai(chat_id))
         return
     _cancel_ai_job(context, chat_id)
     _set_pending_ai(chat_id, text_value, message_id, answered_topics=answered_topics or [])
@@ -15582,6 +15605,7 @@ def schedule_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text_v
             when=AI_WAIT_SECONDS,
             data={"chat_id": chat_id, "message_id": str(message_id)},
             name=f"AI_REPLY_{chat_id}",
+            job_kwargs={"misfire_grace_time": 300},
         )
 
 
@@ -15625,6 +15649,7 @@ async def recover_pending_ai_jobs(application):
                 when=delay,
                 data={"chat_id": chat_id, "message_id": str(pending_message_id or "")},
                 name=f"AI_REPLY_{chat_id}",
+                job_kwargs={"misfire_grace_time": 300},
             )
             recovered += 1
 
