@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.08-20261018-AI-PENDING-JOB-RECOVERY"
+BOT_VERSION = "v7.11.09-20261018-DEPOSIT-ACK-CONTEXT"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -6340,8 +6340,45 @@ def _ai_registration_sequence(chat_id: int, lang: str = "es", broker=None) -> st
             "Primero regístrate mediante mi enlace y envíame el ID de tu cuenta de trading. Debo verificar que el registro quedó asociado a mi enlace. Solo después de aprobar tu ID haces el depósito en esa misma cuenta.")
 
 
+def _deposit_commitment_acknowledgement(question: str) -> bool:
+    """A short statement of intent, not a question, amount lookup or paid proof."""
+    t = _norm(question or "")
+    if not t or len(t.split()) > 35 or "?" in t or "¿" in t or "\n" in t:
+        return False
+    if _is_deposit_report_intent(question):
+        return False
+    if re.search(r"\b(?:como|donde|cuanto|cual|puedo|podria|necesito|pero|si|no|despues|luego|manana|how|where|what|which|can|could|but|if|not|later|tomorrow)\b", t):
+        return False
+    return bool(re.search(
+        r"\b(?:(?:ya|ahora|enseguida|inmediatamente)\s+(?:hago|realizo|hare|realizare|voy\s+a\s+hacer)\s+(?:el|mi|un)\s+deposito"
+        r"|(?:ya\s+)?voy\s+a\s+depositar|(?:ahora|ya|enseguida)\s+deposito"
+        r"|(?:i\s+)?(?:will|ll|am\s+going\s+to|m\s+going\s+to)\s+(?:make\s+(?:the|my|a)\s+deposit|deposit)"
+        r"|(?:i\s+)?(?:am|m)\s+depositing\s+now)\b", t.replace("'", " ")))
+
+
+def _deposit_commitment_reply(question: str, chat_id: int, lang: str) -> str:
+    if not _deposit_commitment_acknowledgement(question):
+        return ""
+    en = lang == "en"
+    part = _premium100_participant(chat_id) or {}
+    if part.get("status") in {"ID_VALIDATED", "RESERVED", "PROOF_PENDING"} and not _ai_promo_id_confirmed(chat_id):
+        return ("Before making a promotional deposit, wait for my confirmation that your account ID and promotion eligibility are approved." if en else
+                "Antes de hacer un depósito promocional, espera mi confirmación de que tu ID y la elegibilidad para la promoción están aprobados.")
+    if _strict_validated_id_state(chat_id):
+        return ("Perfect 😊 Once you complete it in your validated trading account, send me the deposit proof here so I can review it." if en else
+                "Perfecto 😊 Cuando lo completes en tu cuenta de trading validada, envíame aquí el comprobante para revisarlo.")
+    if _has_pending_id_review(chat_id):
+        return ("Before depositing, wait for my confirmation that your account ID has been validated. 😊" if en else
+                "Antes de depositar, espera mi confirmación de que tu ID quedó validado. 😊")
+    return ("Before depositing, send me your trading account ID here and wait for my approval. 😊" if en else
+            "Antes de depositar, envíame aquí el ID de tu cuenta de trading y espera mi aprobación. 😊")
+
+
 def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es", offer_promo: bool = True) -> str:
     """Final read-only reply/CTA policy; does not enroll or change any account."""
+    commitment = _deposit_commitment_reply(question, chat_id, lang)
+    if commitment:
+        return commitment
     value = (answer or "").strip()
     value = value.replace(TELEGRAPH_LEVELS_URL, _levels_url(lang)).replace(TELEGRAPH_LEVELS_URL_EN, _levels_url(lang))
     value = re.sub(r"\b(?:a|to) Johanna\b", "to me" if lang == "en" else "a mí", value, flags=re.I)
@@ -6425,6 +6462,8 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
+    if _deposit_commitment_acknowledgement(question):
+        return None
     if _premium100_question(question) or _ai_entry_promo_available(question, chat_id):
         rows = [[InlineKeyboardButton("🔵 VIEW PREMIUM" if lang == "en" else "🔵 VER NIVEL PREMIUM", callback_data=f"level_detail:{VIP_LEVEL_PREMIUM}")],
                 [InlineKeyboardButton("🔥 VIEW PROMOTION" if lang == "en" else "🔥 VER PROMOCIÓN", callback_data="premium100_info")]]
@@ -14238,6 +14277,9 @@ def _copied_live_notice_answer(question: str, lang: str = "es") -> str:
 
 
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    commitment = _deposit_commitment_reply(question, chat_id, lang)
+    if commitment:
+        return commitment
     clarification = _ai_brief_clarification(question, lang)
     if clarification:
         return clarification
