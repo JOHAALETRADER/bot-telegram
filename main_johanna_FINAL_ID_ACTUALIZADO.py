@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.09-20261018-DEPOSIT-ACK-CONTEXT"
+BOT_VERSION = "v7.11.10-20261026-PREMIUM-SIGNAL-PUBLICATION"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -5713,8 +5713,36 @@ def _explicit_target_level(text_value: str) -> str:
     return VIP_LEVEL_NONE
 
 
+def _premium_signal_publication_query(question: str) -> bool:
+    """Separate publishing Premium signals from moving a person to Premium."""
+    t = _norm(question or "")
+    if "premium" not in t or not re.search(r"senal|signal", t):
+        return False
+    if re.search(r"\b(?:upgrade|deposit\w*|recarg\w*)\b|subir\s+(?:de|mi)\s+nivel|cuanto\s+me\s+falta|how\s+much", t):
+        return False
+    if re.search(r"\b(?:quiero|puedo|necesito|como|para)\b.{0,25}\b(?:pasar|subir|llegar|cambiar)\s+(?:al?\s+)?(?:nivel\s+)?premium\b|\b(?:move|upgrade)\s+to\s+premium\b", t):
+        return False
+    return bool(re.search(
+        r"public\w*|envi\w*|mand\w*|pasar\w*|suben|subiran|subir\s+(?:las|senales)|"
+        r"\b(?:hoy|manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|cuando|horario|hora|"
+        r"today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|when|schedule|post\w*|publish\w*|send\w*)\b", t))
+
+
+def _premium_signal_publication_reply(question: str, lang: str) -> str:
+    if not _premium_signal_publication_query(question):
+        return ""
+    t = _norm(question)
+    if lang == "en":
+        greeting = "Good morning! 😊" if "good morning" in t else ("Good afternoon! 😊" if "good afternoon" in t else ("Good evening! 😊" if "good evening" in t else "Hello! 😊"))
+        return greeting + " Thank you for your message.\n\nPremium signals are published every day from Monday to Saturday in the corresponding Telegram group."
+    greeting = "¡Buenos días! 😊" if "buenos dias" in t else ("¡Buenas tardes! 😊" if "buenas tardes" in t else ("¡Buenas noches! 😊" if "buenas noches" in t else "¡Hola! 😊"))
+    return greeting + " Gracias por tu mensaje.\n\nLas señales Premium se publican todos los días, de lunes a sábado, en el grupo de Telegram correspondiente."
+
+
 def _is_upgrade_query_text(text_value: str) -> bool:
     """Reconoce intención real de subir/cambiar de nivel, incluso con nivel objetivo explícito."""
+    if _premium_signal_publication_query(text_value):
+        return False
     t = _norm(text_value or "")
     if not t:
         return False
@@ -6376,6 +6404,9 @@ def _deposit_commitment_reply(question: str, chat_id: int, lang: str) -> str:
 
 def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es", offer_promo: bool = True) -> str:
     """Final read-only reply/CTA policy; does not enroll or change any account."""
+    publication = _premium_signal_publication_reply(question, lang)
+    if publication:
+        return publication
     commitment = _deposit_commitment_reply(question, chat_id, lang)
     if commitment:
         return commitment
@@ -14277,6 +14308,9 @@ def _copied_live_notice_answer(question: str, lang: str = "es") -> str:
 
 
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    publication = _premium_signal_publication_reply(question, lang)
+    if publication:
+        return publication
     commitment = _deposit_commitment_reply(question, chat_id, lang)
     if commitment:
         return commitment
@@ -16110,6 +16144,12 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_vip_pause_keyboard(lang) if pending else support_keyboard(lang, chat_id),
         )
         await send_admin_auto_log(context, update, "VIP_TELEGRAM_RATE_LIMIT", msg)
+        return
+
+    publication = _premium_signal_publication_reply(texto, lang)
+    if publication:
+        await update.message.reply_text(publication)
+        await send_admin_auto_log(context, update, "PREMIUM_SIGNAL_PUBLICATION", publication)
         return
 
     # v7.10.63 — CONSULTA DE UPGRADE BASADA EN DATOS PERSISTIDOS.
@@ -18030,4 +18070,5 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
