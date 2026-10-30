@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.10-20261026-PREMIUM-SIGNAL-PUBLICATION"
+BOT_VERSION = "v7.11.11-20261030-PREMIUM-INVITE-RECOVERY"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -2167,18 +2167,32 @@ def _vip_store_invite_override(access_key: str, chat_id: int, invite_url: str) -
         return False
 
 
-async def _vip_ensure_request_link(bot, access_key: str, *, notify_admin: bool = False) -> str:
+async def _vip_ensure_request_link(bot, access_key: str, *, notify_admin: bool = False, force: bool = False) -> str:
     """Crea una sola vez un enlace del BOT que siempre requiera aprobación.
 
     Se usa especialmente para Señales Premium +300, cuyo enlace histórico se
     comportó como ingreso directo en Telegram. No revoca enlaces de otros admins.
     """
     existing = _vip_invite_override(access_key)
-    if existing:
-        return existing
     channel_id = _vip_mapped_chat_id(access_key)
     if not channel_id:
         return ""
+    if existing and not force:
+        try:
+            checked = await bot.edit_chat_invite_link(
+                chat_id=channel_id, invite_link=existing, creates_join_request=True,
+            )
+            expiry = getattr(checked, "expire_date", None)
+            expired = bool(expiry and expiry.timestamp() <= utcnow_naive().replace(tzinfo=timezone.utc).timestamp())
+            if not getattr(checked, "is_revoked", False) and not expired:
+                return existing
+        except Exception as error:
+            from telegram.error import BadRequest
+            detail = str(error).lower()
+            if not (isinstance(error, BadRequest) and "invite" in detail
+                    and any(word in detail for word in ("expired", "revoked", "invalid"))):
+                logging.warning("No pude comprobar enlace VIP %s: %s", access_key, error)
+                return ""  # Never present a cached link as checked after a network/permission error.
     info = VIP_ACCESS_CHANNELS.get(access_key) or {}
     name = ("JT " + (info.get("name_es") or access_key))[:32]
     try:
@@ -4266,6 +4280,11 @@ async def _vip_send_next_or_welcome(
 
         _vip_clear_pause(chat_id)
         next_key = remaining[0]
+        if next_key == "signals_premium":
+            if not await _vip_ensure_request_link(context.bot, next_key):
+                logging.warning("PREMIUM_INVITE unavailable user=%s; pending access preserved", chat_id)
+                await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ No pude comprobar el enlace de Señales Premium para {chat_id}. El acceso sigue pendiente; no se modificaron nivel ni depósitos.")
+                return
         next_info = VIP_ACCESS_CHANNELS.get(next_key) or {}
         next_name = next_info.get("name_es") if lang == "es" else next_info.get("name_en")
         if not next_name:
@@ -17887,6 +17906,41 @@ async def _premium100_run_authorized_repairs(application):
             logging.exception("PREMIUM100_REPAIR user=%s failed", chat_id)
 
 
+async def _repair_antonio_premium_invite_once(application):
+    """User-authorized recovery of this existing member; no financial/state override."""
+    chat_id = 7427561182
+    marker = "PREMIUM_INVITE_RECOVERY_20261030"
+    try:
+        with Session() as session:
+            if session.query(BotEvent.id).filter_by(telegram_id=str(chat_id), event_type=marker).first():
+                return
+        state = _vip_get_state(chat_id, create=False) or {}
+        level = state.get("level") or VIP_LEVEL_NONE
+        if get_user_stage(chat_id) != STAGE_DEPOSITED or not _vip_channel_allowed(level, "signals_premium"):
+            logging.warning("PREMIUM_INVITE_RECOVERY user=%s skipped: active entitlement not confirmed", chat_id)
+            return
+        await _vip_reconcile_known_memberships(application, chat_id)
+        if "signals_premium" not in _vip_pending_keys(chat_id):
+            _log_event(chat_id, marker, "Already confirmed; no new deposit or entitlement")
+            logging.info("PREMIUM_INVITE_RECOVERY user=%s already_confirmed", chat_id)
+            await _vip_send_next_or_welcome(application, chat_id, level, get_user_lang(chat_id), should_welcome=True)
+            return
+        invite = await _vip_ensure_request_link(application.bot, "signals_premium", force=True)
+        if not invite:
+            raise RuntimeError("Could not create and persist a replacement request link")
+        lang = get_user_lang(chat_id)
+        message = ("I have renewed your Premium Signals access link. Your Premium level and confirmed deposit remain unchanged. Request access using this new button; I will verify your entry and continue your remaining accesses." if lang == "en" else
+                   "Ya renové tu enlace de Señales Premium. Tu nivel Premium y tu depósito confirmado se conservan. Solicita el ingreso con este nuevo botón; verificaré tu entrada y continuaré con los accesos que tengas pendientes.")
+        await application.bot.send_message(chat_id=chat_id, text=message,
+            reply_markup=_vip_access_keyboard(level, lang, keys=["signals_premium"]), disable_web_page_preview=True)
+        _log_event(chat_id, marker, "New request link delivered; level/deposits unchanged")
+        _vip_schedule_access_recheck(application, chat_id, "signals_premium", 0)
+        logging.info("PREMIUM_INVITE_RECOVERY user=%s new_link_delivered level=%s", chat_id, level)
+        await application.bot.send_message(chat_id=ADMIN_ID, text="✅ Enlace de Señales Premium renovado y enviado a Antonio Vallenilla (7427561182). Conserva su nivel y depósito. Su ingreso al canal aún debe confirmarse; el envío del enlace no equivale a ingreso completado.")
+    except Exception:
+        logging.exception("PREMIUM_INVITE_RECOVERY user=%s failed; recovery not marked complete", chat_id)
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
     if application.job_queue and not application.job_queue.get_jobs_by_name("VIP_CHANNEL_WATCH"):
@@ -17900,6 +17954,7 @@ async def post_init_app(application):
     # Si el Chat ID de Señales Premium +300 ya fue aprendido en pruebas anteriores,
     # reemplazamos para el BOT el enlace histórico por uno propio con solicitud.
     await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
+    await _repair_antonio_premium_invite_once(application)
     # NO cerrar/ocultar el tema General en cada redeploy: Telegram genera mensajes
     # de servicio visibles ("cerró/ocultó el tema"). El estado del tema persiste
     # en Telegram; la privacidad diaria la mantiene cleanup_vip_membership_service_message,
@@ -18070,5 +18125,6 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 
