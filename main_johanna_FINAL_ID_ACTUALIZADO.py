@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.12-20261101-PROMO-SECOND-BROKER-ID"
+BOT_VERSION = "v7.11.13-20261102-LOSS-CONTEXT"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -6380,7 +6380,34 @@ def _ai_registration_entry_query(text: str) -> bool:
     return action and inquiry
 
 
+def _trading_loss_account_context(question: str) -> bool:
+    """Actual personal losses/distress take priority over incidental deposit wording."""
+    t = _norm(question or "").replace("’", "'")
+    if re.search(r"\b(?:perdi|lost)\b.{0,30}\b(?:id|contrasena|password|enlace|link|acceso|access)\b", t):
+        return False
+    personal_loss = re.search(
+        r"\b(?:perdi|he perdido|habia perdido|estoy perdiendo|sigo perdiendo|perdiendo mas|perder mas|"
+        r"queme mi cuenta|se me quemo|de \d+.{0,35}me quedan? \d+|he bajado mi cuenta|"
+        r"i lost|i have lost|i've lost|i keep losing|i am losing|i'm losing|i only have \d+ left)\b", t)
+    trading = re.search(r"oper|trad|cuenta|saldo|capital|dolar|usd|deposit|recuper|perder|account|balance|money|loss", t)
+    return bool(personal_loss and trading)
+
+
+def _trading_loss_context_reply(question: str, lang: str = "es") -> str:
+    if not _trading_loss_account_context(question):
+        return ""
+    if lang == "en":
+        return ("Thank you for telling me. I understand how frustrating this has been. "
+                "Keep the pause rather than trying to recover losses in a hurry. Before thinking about adding more money, "
+                "tell me how you were sizing your entries and when you stopped the session so we can review what happened.")
+    return ("Gracias por contármelo. Entiendo la frustración por lo que pasó con tu cuenta. "
+            "Mantén la pausa y evita intentar recuperar con prisa. Antes de pensar en añadir dinero, "
+            "cuéntame qué monto usabas por entrada y cuándo detenías la sesión para revisar lo ocurrido.")
+
+
 def _ai_access_amount_query(text: str) -> bool:
+    if _trading_loss_account_context(text):
+        return False
     t = _norm(text or "")
     if any(x in t for x in ("upgrade", "subir de nivel", "deposito adicional", "another deposit", "additional deposit")):
         return False
@@ -6459,6 +6486,9 @@ def _deposit_commitment_reply(question: str, chat_id: int, lang: str) -> str:
 
 def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es", offer_promo: bool = True) -> str:
     """Final read-only reply/CTA policy; does not enroll or change any account."""
+    loss_reply = _trading_loss_context_reply(question, lang)
+    if loss_reply:
+        return loss_reply
     publication = _premium_signal_publication_reply(question, lang)
     if publication:
         return publication
@@ -6548,7 +6578,7 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
-    if _deposit_commitment_acknowledgement(question):
+    if _trading_loss_account_context(question) or _deposit_commitment_acknowledgement(question):
         return None
     if _premium100_question(question) or _ai_entry_promo_available(question, chat_id):
         rows = [[InlineKeyboardButton("🔵 VIEW PREMIUM" if lang == "en" else "🔵 VER NIVEL PREMIUM", callback_data=f"level_detail:{VIP_LEVEL_PREMIUM}")],
@@ -14363,6 +14393,9 @@ def _copied_live_notice_answer(question: str, lang: str = "es") -> str:
 
 
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    loss_reply = _trading_loss_context_reply(question, lang)
+    if loss_reply:
+        return loss_reply
     publication = _premium_signal_publication_reply(question, lang)
     if publication:
         return publication
@@ -16433,6 +16466,10 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_auto_log(context, update, personal_intent, msg)
         return
 
+    if _trading_loss_account_context(texto):
+        schedule_ai_reply(update, context, texto)
+        return
+
     # CONTEXTO HUMANO ACTIVO: si Johanna viene conversando personalmente con este
     # usuario, una frase de seguimiento no debe caer en una FAQ rígida por una sola
     # palabra (ID, bono, cuenta, etc.). La IA espera la ventana normal y responde
@@ -18003,6 +18040,36 @@ async def _recover_elias_stockity_id_once(application):
         logging.exception("STOCKITY_ID_RECOVERY failed; recovery not marked complete")
 
 
+async def _recover_loss_context_reply_once(application):
+    """Correct the specific authorized wrong reply only if no later manual reply exists."""
+    chat_id, marker = 8012823611, "LOSS_REPLY_RECOVERY_20261102"
+    try:
+        with Session() as session:
+            if session.query(BotEvent.id).filter_by(telegram_id=str(chat_id), event_type=marker).first():
+                return
+            event = session.query(BotEvent).filter_by(id=104803, telegram_id=str(chat_id), event_type="MESSAGE").first()
+            if not event or not _trading_loss_account_context(event.detail):
+                return
+            question, occurred = event.detail, event.created_at
+            manual = session.query(ManualReplyDelivery.source_key).filter(
+                ManualReplyDelivery.target_chat_id == str(chat_id), ManualReplyDelivery.created_at >= occurred).first()
+            if manual:
+                _log_event(chat_id, marker, "Skipped: Johanna already replied after the message")
+                logging.info("LOSS_REPLY_RECOVERY user=%s skipped_manual_reply", chat_id)
+                return
+        lang = get_user_lang(chat_id)
+        intro = ("My earlier reply about levels did not address what you told me. " if lang == "en" else
+                 "Mi respuesta anterior sobre niveles no correspondía a lo que me contaste. ")
+        answer = intro + _trading_loss_context_reply(question, lang)
+        result = await application.bot.send_message(chat_id=chat_id, text=answer)
+        _log_event(chat_id, marker, f"Correction sent; message_id={result.message_id}")
+        _append_ai_exchange(chat_id, question, answer, assistant_source="ai")
+        logging.info("LOSS_REPLY_RECOVERY user=%s correction_delivered message_id=%s", chat_id, result.message_id)
+        await application.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Respuesta corregida enviada al usuario {chat_id}. Se atendió su comentario sobre pérdidas, sin promoción ni solicitud de depósito.")
+    except Exception:
+        logging.exception("LOSS_REPLY_RECOVERY failed")
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
     if application.job_queue and not application.job_queue.get_jobs_by_name("VIP_CHANNEL_WATCH"):
@@ -18018,6 +18085,7 @@ async def post_init_app(application):
     await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
     await _repair_antonio_premium_invite_once(application)
     await _recover_elias_stockity_id_once(application)
+    await _recover_loss_context_reply_once(application)
     # NO cerrar/ocultar el tema General en cada redeploy: Telegram genera mensajes
     # de servicio visibles ("cerró/ocultó el tema"). El estado del tema persiste
     # en Telegram; la privacidad diaria la mantiene cleanup_vip_membership_service_message,
