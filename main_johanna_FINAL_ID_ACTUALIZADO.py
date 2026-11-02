@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.11-20261030-PREMIUM-INVITE-RECOVERY"
+BOT_VERSION = "v7.11.12-20261101-PROMO-SECOND-BROKER-ID"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -3271,6 +3271,42 @@ def _repair_inconsistent_stage(chat_id: int):
         )
         return STAGE_PRE, True
     return stage, False
+
+
+def _active_member_stockity_id_entry(chat_id, candidate):
+    """An existing level does not block an enrolled, unvalidated Stockity account."""
+    part = _premium100_participant(chat_id) or {}
+    account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+    return bool(re.fullmatch(r"[0-9]{6,12}", candidate or "")
+                and part.get("status") in {"ENTERED", "ID_SUBMITTED"}
+                and not account.get("id_validated")
+                and not account.get("trading_id")
+                and not int(account.get("validated_deposit_count") or 0)
+                and (not account.get("pending_trading_id") or account.get("pending_trading_id") == candidate))
+
+
+async def _receive_active_member_stockity_id(context, chat_id, candidate):
+    if not _active_member_stockity_id_entry(chat_id, candidate):
+        return False
+    account = _broker_get(chat_id, BROKER_STOCKITY, create=False) or {}
+    already_pending = account.get("pending_trading_id") == candidate
+    if not already_pending and not _premium100_attach_stockity_id(chat_id, candidate):
+        return False
+    lang = get_user_lang(chat_id)
+    await context.bot.send_message(chat_id=chat_id, text=(
+        "✅ Your Stockity ID was received and is pending validation. Your existing account remains unchanged. Do not deposit until I confirm validation."
+        if lang == "en" else
+        "✅ Tu ID de Stockity fue recibido y está pendiente de validación. Tu cuenta anterior se conserva. No deposites hasta que confirme la validación."
+    ))
+    if not already_pending:
+        await context.bot.send_message(chat_id=ADMIN_ID,
+            text=f"🆔 ID PENDIENTE · STOCKITY\nUsuario: {chat_id}\nID trading: {candidate}\nRegistro promocional · cuenta anterior conservada",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_broker_validate:{chat_id}:STOCKITY")],
+                [InlineKeyboardButton("❌ ID ERRADO", callback_data=f"admin_broker_reject:{chat_id}:STOCKITY")],
+                [InlineKeyboardButton("👤 GESTIONAR", callback_data=f"admin_user_open:{chat_id}")],
+            ]))
+    return True
 
 
 def _record_submitted_trading_id(chat_id: int, text_value: str, context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -15806,6 +15842,9 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
         vip_now = _vip_get_state(chat_id, create=False) or {}
         active_level = vip_now.get("level") or VIP_LEVEL_NONE
         candidate = _extract_candidate_trading_id(texto)
+        if stage_now == STAGE_DEPOSITED and active_level != VIP_LEVEL_NONE:
+            if await _receive_active_member_stockity_id(context, chat_id, candidate):
+                return
         explicit_new_account = any(x in _norm(texto) for x in (
             "otra cuenta", "nueva cuenta", "otro broker", "nuevo broker", "otro id", "nuevo id",
             "second account", "new account", "another account", "new broker", "another broker", "new id",
@@ -16352,6 +16391,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Si coincide con un ID ya validado, se reconoce; si es diferente, se pide contexto
     # antes de crear cualquier pending_trading_id. PRE/POST conservan el flujo anterior.
     bare_candidate = (texto or "").strip()
+    if stage_for_upgrade == STAGE_DEPOSITED and level_for_upgrade != VIP_LEVEL_NONE:
+        if await _receive_active_member_stockity_id(context, chat_id, bare_candidate):
+            return
     if stage_for_upgrade == STAGE_DEPOSITED and level_for_upgrade != VIP_LEVEL_NONE and re.fullmatch(r"\d{6,12}", bare_candidate):
         validated_ids = {
             str(state.get("trading_id") or "").strip()
@@ -17941,6 +17983,26 @@ async def _repair_antonio_premium_invite_once(application):
         logging.exception("PREMIUM_INVITE_RECOVERY user=%s failed; recovery not marked complete", chat_id)
 
 
+async def _recover_elias_stockity_id_once(application):
+    """Recover only the explicitly authorized blocked submission; never approve it."""
+    chat_id, candidate = 6947283232, "185507522"
+    marker = "STOCKITY_ID_RECOVERY_20261101"
+    try:
+        with Session() as session:
+            if session.query(BotEvent.id).filter_by(telegram_id=str(chat_id), event_type=marker).first():
+                return
+            submitted = session.query(BotEvent.id).filter_by(telegram_id=str(chat_id), event_type="MESSAGE", detail=candidate).first()
+        if not submitted or not _active_member_stockity_id_entry(chat_id, candidate):
+            return
+        from types import SimpleNamespace
+        context = SimpleNamespace(bot=application.bot)
+        if await _receive_active_member_stockity_id(context, chat_id, candidate):
+            _log_event(chat_id, marker, "Stockity ID pending admin review; existing Binomo account preserved")
+            logging.info("STOCKITY_ID_RECOVERY user=%s pending_admin_review id=%s", chat_id, candidate)
+    except Exception:
+        logging.exception("STOCKITY_ID_RECOVERY failed; recovery not marked complete")
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
     if application.job_queue and not application.job_queue.get_jobs_by_name("VIP_CHANNEL_WATCH"):
@@ -17955,6 +18017,7 @@ async def post_init_app(application):
     # reemplazamos para el BOT el enlace histórico por uno propio con solicitud.
     await _vip_ensure_request_link(application.bot, "signals_premium", notify_admin=True)
     await _repair_antonio_premium_invite_once(application)
+    await _recover_elias_stockity_id_once(application)
     # NO cerrar/ocultar el tema General en cada redeploy: Telegram genera mensajes
     # de servicio visibles ("cerró/ocultó el tema"). El estado del tema persiste
     # en Telegram; la privacidad diaria la mantiene cleanup_vip_membership_service_message,
