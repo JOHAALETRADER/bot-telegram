@@ -57,7 +57,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.13-20261102-LOSS-CONTEXT"
+BOT_VERSION = "v7.11.14-20261108-ID-BROKER-RECOVERY"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -7681,14 +7681,24 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         _broker_seed_legacy_if_matching(chat_id, broker, trading_id)
         try:
             with Session() as session:
+                pending = session.get(BrokerFlowState, str(chat_id), with_for_update=True)
+                if not pending or (pending.pending_trading_id or "").strip() != trading_id:
+                    session.rollback()
+                    await q.message.reply_text(
+                        "Ese ID ya no está pendiente de selección. Revisa el último aviso del bot."
+                        if lang == "es" else "That ID no longer needs a broker selection. Check the latest bot message."
+                    )
+                    return
                 row = session.get(BrokerAccountState, _broker_key(chat_id, broker))
                 if not row:
                     row = BrokerAccountState(account_key=_broker_key(chat_id, broker), telegram_id=str(chat_id), broker=broker)
                     session.add(row)
                 already_valid = (row.trading_id or "").strip() == trading_id and bool(row.id_validated)
                 row.pending_trading_id = None if already_valid else trading_id
-                row.updated_at = utcnow_naive(); session.commit()
-            _broker_flow_set(chat_id, pending_trading_id="")
+                row.updated_at = utcnow_naive()
+                pending.pending_trading_id = ""
+                pending.updated_at = row.updated_at
+                session.commit()
             _log_event(chat_id, "ID_SUBMITTED", f"BROKER={broker} | ID={trading_id}")
             _tracking_fire_event(chat_id, "ID_SUBMITTED", f"BROKER={broker} | ID={trading_id}")
         except Exception:
@@ -8309,6 +8319,35 @@ async def admin_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     _admin_review_bind(context, query)
     data = query.data or ""
+
+    recovered = re.fullmatch(r"admin_user_yersevid_broker:(BINOMO|STOCKITY)", data)
+    if recovered:
+        cid, trading_id, broker = 7617507986, "185139618", recovered.group(1)
+        moved = False
+        with Session() as session:
+            flow = session.get(BrokerFlowState, str(cid), with_for_update=True)
+            if flow and (flow.pending_trading_id or "").strip() == trading_id:
+                rows = session.query(BrokerAccountState).filter_by(telegram_id=str(cid)).all()
+                target = next((r for r in rows if r.broker == broker), None)
+                if not (target and (target.trading_id or target.pending_trading_id or target.id_validated)) and not any(
+                    trading_id in (r.trading_id, r.pending_trading_id) for r in rows
+                ):
+                    if target is None:
+                        target = BrokerAccountState(account_key=_broker_key(cid, broker), telegram_id=str(cid), broker=broker)
+                        session.add(target)
+                    target.pending_trading_id = trading_id
+                    target.updated_at = utcnow_naive()
+                    flow.pending_trading_id = ""
+                    flow.updated_at = target.updated_at
+                    session.commit()
+                    moved = True
+        if moved:
+            detail = f"BROKER={broker} | ID={trading_id}"
+            _log_event(cid, "ID_SUBMITTED", detail)
+            _tracking_fire_event(cid, "ID_SUBMITTED", detail)
+        await _show_admin_user(context, cid, "🆔 Broker asociado. El ID sigue pendiente de validación." if moved else
+                               "ℹ️ El pendiente cambió o ya existe una cuenta vinculada. Revisa el estado actual.")
+        return
 
     progress = re.fullmatch(r"admin_user_access_progress:(\d+)", data)
     if progress:
@@ -12273,7 +12312,13 @@ def _clean_ai_text_after_operations(text_value: str, resolved_topics=None) -> st
                 "ya me registre", "me registre", "ya estoy registrado", "ya estoy registrada",
                 "ya hice el registro", "ya realice el registro",
             }
-            if id_action or pure_registered:
+            split_id_intro = re.fullmatch(
+                r"(?:(?:hola|buen(?:os dias|as tardes|as noches)|hi|hello|good (?:morning|afternoon|evening))[\s,.!:]+)?"
+                r"(?:este es mi id|aqui esta mi id|te (?:envio|mando|paso) mi id|"
+                r"this is my id|here is my id|here's my id|i(?: am|'m) sending my id)[\s.:!]*",
+                norm,
+            )
+            if id_action or pure_registered or split_id_intro:
                 if tail:
                     kept.append(tail)
                 continue
@@ -12304,6 +12349,13 @@ def _clean_ai_text_after_operations(text_value: str, resolved_topics=None) -> st
                 continue
 
         kept.append(unit)
+
+    # A greeting left behind by a resolved ID introduction needs no second reply.
+    if "ID_SUBMIT" in topics and len(kept) < len(units) and all(
+        re.fullmatch(r"(?:hola|buenos dias|buenas tardes|buenas noches|hi|hello|good morning|good afternoon|good evening)[\s,.!:]*", _norm(line))
+        for line in kept
+    ):
+        return ""
 
     # Deduplica sin alterar el orden natural.
     cleaned = []
@@ -12350,6 +12402,12 @@ def _prune_pending_ai_after_operation(
 
     if not changed:
         return (pending.get("text") or "").strip()
+
+    if "ID_SUBMIT" in topics and all(
+        re.fullmatch(r"(?:hola|buenos dias|buenas tardes|buenas noches|hi|hello|good morning|good afternoon|good evening)[\s,.!:]*", _norm(line))
+        for line in cleaned_messages
+    ):
+        cleaned_messages = []
 
     _cancel_ai_job(context, chat_id)
     if not cleaned_messages:
@@ -18070,6 +18128,46 @@ async def _recover_loss_context_reply_once(application):
         logging.exception("LOSS_REPLY_RECOVERY failed")
 
 
+async def _recover_yersevid_id_once(application):
+    cid, tid = 7617507986, "185139618"
+    marker = "ID_BROKER_RECOVERY_20261108"
+    try:
+        with Session() as session:
+            if session.query(BotEvent.id).filter_by(telegram_id=str(cid), event_type=marker).first():
+                return
+        accounts = _broker_rows(cid)
+        if any(r.get("id_validated") and r.get("trading_id") == tid for r in accounts):
+            logging.info("ID_BROKER_RECOVERY already_validated")
+            return
+        broker = next((r["broker"] for r in accounts if r.get("pending_trading_id") == tid), None)
+        awaiting = not broker and _broker_flow_get(cid).get("pending_trading_id") == tid
+        if not broker and not awaiting:
+            logging.warning("ID_BROKER_RECOVERY no_matching_pending")
+            return
+        if broker:
+            keys = [
+                [InlineKeyboardButton("✅ VALIDAR ID", callback_data=f"admin_broker_validate:{cid}:{broker}")],
+                [InlineKeyboardButton("❌ ID ERRADO", callback_data=f"admin_broker_reject:{cid}:{broker}")],
+            ]
+            note = f"Broker: {_broker_label(broker)}. Pendiente de validar."
+        else:
+            keys = [[InlineKeyboardButton("🟡 Es Binomo", callback_data="admin_user_yersevid_broker:BINOMO"),
+                     InlineKeyboardButton("🔵 Es Stockity", callback_data="admin_user_yersevid_broker:STOCKITY")]]
+            note = "Falta el broker. Si ya lo verificaste, selecciónalo aquí para abrir la validación."
+        keys.append([InlineKeyboardButton("👤 Gestionar usuario", callback_data=f"admin_user_open:{cid}")])
+        await application.bot.send_message(chat_id=ADMIN_ID, text=f"🆔 ID RECUPERADO · Yersevid\nID de trading: {tid}\n{note}",
+                                           reply_markup=InlineKeyboardMarkup(keys))
+        _log_event(cid, marker, "ADMIN_SENT_PENDING_BROKER" if awaiting else "ADMIN_SENT_VALIDATION")
+        logging.info("ID_BROKER_RECOVERY admin_sent awaiting_broker=%s", awaiting)
+        if awaiting and _broker_flow_get(cid).get("pending_trading_id") == tid:
+            lang = get_user_lang(cid)
+            await application.bot.send_message(chat_id=cid, text=_id_pending_review_message(lang),
+                                               reply_markup=_broker_selection_keyboard("id", lang))
+            logging.info("ID_BROKER_RECOVERY user_selector_sent")
+    except Exception:
+        logging.exception("ID_BROKER_RECOVERY failed")
+
+
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
     if application.job_queue and not application.job_queue.get_jobs_by_name("VIP_CHANNEL_WATCH"):
@@ -18086,6 +18184,7 @@ async def post_init_app(application):
     await _repair_antonio_premium_invite_once(application)
     await _recover_elias_stockity_id_once(application)
     await _recover_loss_context_reply_once(application)
+    await _recover_yersevid_id_once(application)
     # NO cerrar/ocultar el tema General en cada redeploy: Telegram genera mensajes
     # de servicio visibles ("cerró/ocultó el tema"). El estado del tema persiste
     # en Telegram; la privacidad diaria la mantiene cleanup_vip_membership_service_message,
