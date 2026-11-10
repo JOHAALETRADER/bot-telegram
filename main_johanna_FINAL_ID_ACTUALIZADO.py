@@ -785,6 +785,7 @@ CANAL_ES = "https://t.me/JohaaleTrader_es"
 CANAL_EN = "https://t.me/JohaaleTrader_en"
 ENLACE_REFERIDO  = "https://binomo.com?a=95604cd745da&t=0&sa=JTTRADERS"
 ENLACE_REFERIDO_STOCKITY = "https://stockity-r3.com/?a=95604cd745da&t=0&ac=JOHAALETRADER"
+ENLACE_REFERIDO_EXNOVA = "https://exnova.com/lp/start-trading/?aff=838919&aff_model=revenue&afftrack=JOHAALETRADER"
 
 # === NIVELES Y ACCESOS VIP ===
 VIP_LEVEL_NONE = "NONE"
@@ -1009,7 +1010,8 @@ def _vip_next_level(level: str, total_cents: int):
 
 BROKER_BINOMO = "BINOMO"
 BROKER_STOCKITY = "STOCKITY"
-BROKERS = (BROKER_BINOMO, BROKER_STOCKITY)
+BROKER_EXNOVA = "EXNOVA"
+BROKERS = (BROKER_BINOMO, BROKER_STOCKITY, BROKER_EXNOVA)
 UPGRADE_ACCUM_MAX_DEPOSITS = 3
 UPGRADE_ACCUM_WINDOW_DAYS = 30
 UPGRADE_PROOF_MAX_HOURS = 72
@@ -1021,6 +1023,8 @@ def _broker_norm(value: str) -> str:
 
 
 def _broker_label(broker: str) -> str:
+    if _broker_norm(broker) == BROKER_EXNOVA:
+        return "Exnova"
     return "Stockity" if _broker_norm(broker) == BROKER_STOCKITY else "Binomo"
 
 
@@ -1823,6 +1827,7 @@ def _broker_selection_keyboard(kind: str, lang: str = "es") -> InlineKeyboardMar
         # Colores visuales según marca: Binomo amarillo, Stockity azul.
         InlineKeyboardButton("🟡 BINOMO", callback_data=f"{prefix}:BINOMO"),
         InlineKeyboardButton("🔵 STOCKITY", callback_data=f"{prefix}:STOCKITY"),
+        InlineKeyboardButton("🟠 EXNOVA", callback_data=f"{prefix}:EXNOVA"),
     ]]
     # Paso operativo: no mostramos salidas hasta que el usuario identifique el broker.
     return InlineKeyboardMarkup(rows)
@@ -1849,6 +1854,8 @@ def _max_level(a: str, b: str) -> str:
 
 def _broker_seed_legacy_if_matching(chat_id: int, broker: str, trading_id: str):
     """Si el ID coincide con el único ID legado, migra su nivel sin perderlo."""
+    if _broker_norm(broker) == BROKER_EXNOVA:
+        return
     state = _broker_get(chat_id, broker, create=True)
     if not state or state.get("trading_id") or state.get("pending_trading_id"):
         return
@@ -1879,6 +1886,8 @@ def _broker_seed_legacy_if_matching(chat_id: int, broker: str, trading_id: str):
 def _broker_bind_legacy_validated_id(chat_id: int, broker: str) -> bool:
     """Asocia un ID ya validado de versiones previas al broker elegido por el usuario."""
     broker = _broker_norm(broker)
+    if broker == BROKER_EXNOVA:
+        return False
     saved_id = _get_saved_trading_id(chat_id)
     if not broker or not re.fullmatch(r"\d{6,12}", saved_id or ""):
         return False
@@ -1921,7 +1930,7 @@ def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
             "• Up to the first 3 validated deposits on the SAME broker/account may accumulate during 30 days from the first validated deposit.\n"
             "• To accumulate subsequent deposits, send each proof within 72 hours of that deposit. This check does not apply to the first deposit.\n"
             "• After the 3rd deposit or when the 30-day window ends, the next upgrade requires ONE deposit that by itself reaches the full minimum of the target level.\n"
-            "• Binomo and Stockity are calculated separately. Only deposits reported and validated in this chat count."
+            "• Binomo, Stockity and Exnova are calculated separately. Only deposits reported and validated in this chat count."
         )
     title = (
         f"📈 UPGRADE JT TRADERS TEAMS · HACIA {_vip_level_label(target, lang).upper()}"
@@ -1934,7 +1943,7 @@ def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
         "• Puedes acumular hasta los primeros 3 depósitos validados de una MISMA cuenta/broker durante 30 días desde el primero.\n"
         "• Para acumular los depósitos posteriores, envía cada comprobante dentro de las 72 horas posteriores a ese depósito. Esta comprobación no aplica al primer depósito.\n"
         "• Después del tercer depósito o al vencer los 30 días, el siguiente upgrade requiere UN depósito que por sí solo alcance el mínimo completo del nivel objetivo.\n"
-        "• Binomo y Stockity se calculan por separado. Solo cuentan depósitos reportados y validados en este chat."
+        "• Binomo, Stockity y Exnova se calculan por separado. Solo cuentan depósitos reportados y validados en este chat."
     )
 
 
@@ -2706,7 +2715,10 @@ BINOMO 👇
 {ENLACE_REFERIDO}
 
 STOCKITY 👇
-{ENLACE_REFERIDO_STOCKITY}"""
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 GATILLO_ID_ERRADO_EN = f"""❌ Your ID was not linked correctly.
 
@@ -2720,7 +2732,10 @@ BINOMO 👇
 {ENLACE_REFERIDO}
 
 STOCKITY 👇
-{ENLACE_REFERIDO_STOCKITY}"""
+{ENLACE_REFERIDO_STOCKITY}
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 # Mensajes Serie B (post-validación) — mismos tiempos internos, sin mencionar cuánto tiempo pasó
 MENSAJE_B_1H_ES = """✅ Tu ID ya quedó validado y ya diste el paso más importante.
@@ -2844,11 +2859,14 @@ MENSAJE_REGISTRARME_ES = f"""Es muy sencillo. Abre tu cuenta de trading con uno 
 🔗 Binomo — opción secundaria:
 {ENLACE_REFERIDO}
 
-👉 Después de crear la cuenta, envíame tu ID de Stockity o Binomo para validar que el registro quedó correctamente vinculado ANTES de que realices cualquier depósito.
+👉 Después de crear la cuenta, envíame tu ID de Stockity, Binomo o Exnova para validar que el registro quedó correctamente vinculado ANTES de que realices cualquier depósito.
 
 💰 El acceso a mi comunidad es gratuito. Tu depósito queda en tu propia cuenta de trading y la cantidad de beneficios/herramientas depende del nivel que elijas.
 
-¡Te espero! 🚀"""
+¡Te espero! 🚀
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 MENSAJE_REGISTRARME_EN = f"""It’s very simple. Open your trading account using one of my official links:
 
@@ -2858,11 +2876,14 @@ MENSAJE_REGISTRARME_EN = f"""It’s very simple. Open your trading account using
 🔗 Binomo — secondary option:
 {ENLACE_REFERIDO}
 
-👉 After creating the account, send me your Stockity or Binomo ID so I can validate that the registration is correctly linked BEFORE you make any deposit.
+👉 After creating the account, send me your Stockity, Binomo or Exnova ID so I can validate that the registration is correctly linked BEFORE you make any deposit.
 
 💰 Access to my community is free. Your deposit stays in your own trading account, and the benefits/tools depend on the level you choose.
 
-I’ll be waiting for you! 🚀"""
+I’ll be waiting for you! 🚀
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 MENSAJE_YA_TENGO_CUENTA_ES = """Si ya tienes una cuenta, primero envíame el ID para verificar si quedó registrada correctamente con mi enlace.
 
@@ -2885,7 +2906,10 @@ Registra tu cuenta con uno de mis enlaces y envíame tu ID antes de depositar pa
 {ENLACE_REFERIDO_STOCKITY}
 
 🔗 Binomo — opción secundaria:
-{ENLACE_REFERIDO}"""
+{ENLACE_REFERIDO}
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 MENSAJE_3H_ES = f"""📈 No necesitas aprender trading sin dirección. La idea de la comunidad es que tengas una ruta, formación, señales y herramientas que te ayuden a desarrollar tu operativa con estructura.
 
@@ -2897,7 +2921,10 @@ Tu siguiente acción es simple: crea tu cuenta con mi enlace y envíame tu ID pa
 {ENLACE_REFERIDO_STOCKITY}
 
 🔗 Binomo — opción secundaria:
-{ENLACE_REFERIDO}"""
+{ENLACE_REFERIDO}
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 MENSAJE_24H_ES = f"""✨ Si estabas esperando el momento para comenzar, conviértelo en una acción concreta.
 
@@ -2911,7 +2938,10 @@ Puedes elegir el nivel que mejor se ajuste a tu capital y avanzar paso a paso co
 {ENLACE_REFERIDO_STOCKITY}
 
 🔗 Binomo — opción secundaria:
-{ENLACE_REFERIDO}"""
+{ENLACE_REFERIDO}
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 MENSAJE_48H_ES = f"""🎯 La diferencia entre seguir pensando en empezar y realmente avanzar es completar el primer paso.
 
@@ -2925,7 +2955,10 @@ Haz tu registro con mi enlace, envíame tu ID antes de depositar y déjame valid
 🔗 Binomo — opción secundaria:
 {ENLACE_REFERIDO}
 
-Cuando termines, envíame tu ID y continuamos."""
+Cuando termines, envíame tu ID y continuamos.
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 # Recordatorios (EN) — internal timing only; messages do not mention elapsed time
 MENSAJE_1H_EN = f"""🚀 If you want to get started, the first step is simpler than it looks.
@@ -2940,7 +2973,10 @@ Create your account using one of my links and send me your ID before depositing 
 {ENLACE_REFERIDO_STOCKITY}
 
 🔗 Binomo — secondary option:
-{ENLACE_REFERIDO}"""
+{ENLACE_REFERIDO}
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 MENSAJE_3H_EN = f"""📈 You do not have to learn trading without direction. The community gives you a structured path with education, signals and tools to develop your trading process.
 
@@ -2952,7 +2988,10 @@ Your next action is simple: create your account with my link and send me your ID
 {ENLACE_REFERIDO_STOCKITY}
 
 🔗 Binomo — secondary option:
-{ENLACE_REFERIDO}"""
+{ENLACE_REFERIDO}
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 MENSAJE_24H_EN = f"""✨ If you were waiting for the right moment to begin, turn that intention into a concrete action.
 
@@ -2966,7 +3005,10 @@ Choose the level that fits your capital and move forward step by step with educa
 {ENLACE_REFERIDO_STOCKITY}
 
 🔗 Binomo — secondary option:
-{ENLACE_REFERIDO}"""
+{ENLACE_REFERIDO}
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 MENSAJE_48H_EN = f"""🎯 The difference between thinking about starting and actually moving forward is completing the first step.
 
@@ -2980,7 +3022,10 @@ Register with my link, send me your ID before depositing, and let me validate yo
 🔗 Binomo — secondary option:
 {ENLACE_REFERIDO}
 
-When you finish, send me your ID and we will continue."""
+When you finish, send me your ID and we will continue.
+
+🔗 Exnova:
+{ENLACE_REFERIDO_EXNOVA}"""
 
 # Gestión de capital — texto informativo del BOTÓN del menú.
 # Las consultas libres sobre gestión/VPN siguen escalándose directamente a Johanna.
@@ -7666,7 +7711,7 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = update.effective_user.id
     lang = get_user_lang(chat_id)
 
-    m = re.fullmatch(r"broker_id_select:(BINOMO|STOCKITY)", data)
+    m = re.fullmatch(r"broker_id_select:(BINOMO|STOCKITY|EXNOVA)", data)
     if m:
         broker = m.group(1)
         flow = _broker_flow_get(chat_id)
@@ -7739,7 +7784,7 @@ async def broker_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             logging.warning("No pude avisar ID broker al admin: %s", e)
         return
 
-    m = re.fullmatch(r"broker_deposit_select:(BINOMO|STOCKITY)", data)
+    m = re.fullmatch(r"broker_deposit_select:(BINOMO|STOCKITY|EXNOVA)", data)
     if m:
         broker = m.group(1)
         state = _broker_get(chat_id, broker, create=False)
@@ -8228,7 +8273,7 @@ async def admin_broker_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await q.answer()
     _admin_review_bind(context, q)
     data = q.data or ""
-    m = re.fullmatch(r"admin_broker_(validate|validate_confirm|reject|reject_confirm|deposit|timely|late|deposit_confirm):(\d+):(BINOMO|STOCKITY)", data)
+    m = re.fullmatch(r"admin_broker_(validate|validate_confirm|reject|reject_confirm|deposit|timely|late|deposit_confirm):(\d+):(BINOMO|STOCKITY|EXNOVA)", data)
     if not m:
         return
     action, raw_id, broker = m.groups()
@@ -9831,7 +9876,7 @@ async def _direct_id_entry(update, context, lang: str):
         await _direct_id_prompt(message, BROKER_STOCKITY, lang)
         return
     rows = _broker_rows(chat_id)
-    known = [row.get("broker") for row in rows if row.get("broker") in {BROKER_BINOMO, BROKER_STOCKITY}
+    known = [row.get("broker") for row in rows if row.get("broker") in {BROKER_BINOMO, BROKER_STOCKITY, BROKER_EXNOVA}
              and (row.get("trading_id") or row.get("pending_trading_id"))]
     if len(set(known)) == 1:
         broker = known[0]
@@ -9843,6 +9888,7 @@ async def _direct_id_entry(update, context, lang: str):
                              reply_markup=InlineKeyboardMarkup([[
                                  InlineKeyboardButton("🟡 BINOMO", callback_data="direct_id_broker:BINOMO"),
                                  InlineKeyboardButton("🔵 STOCKITY", callback_data="direct_id_broker:STOCKITY"),
+                                 InlineKeyboardButton("🟠 EXNOVA", callback_data="direct_id_broker:EXNOVA"),
                              ]]))
 
 
@@ -9865,7 +9911,7 @@ async def _direct_id_receive(update, context) -> bool:
         await _direct_id_entry(update, context, lang)
         return True
     broker = context.user_data.get("direct_id_broker")
-    if broker not in {BROKER_BINOMO, BROKER_STOCKITY}:
+    if broker not in {BROKER_BINOMO, BROKER_STOCKITY, BROKER_EXNOVA}:
         return False  # Existing ID-first handler still works if the session was lost.
     _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="ID recibido por enlace directo")
     trading_id = _record_submitted_trading_id(chat_id, text, context)
@@ -10229,7 +10275,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _direct_id_entry(update, context, lang)
         _sync_menu_campaign_for_stage(chat_id, lang, context)
         return
-    if q.data in {"direct_id_broker:BINOMO", "direct_id_broker:STOCKITY"}:
+    if q.data in {"direct_id_broker:BINOMO", "direct_id_broker:STOCKITY", "direct_id_broker:EXNOVA"}:
         context.user_data["direct_id_entry"] = True
         lang = get_user_lang(chat_id)
         if _active_member_level(chat_id) != VIP_LEVEL_NONE or _has_pending_id_review(chat_id) or _strict_validated_id_state(chat_id):
@@ -10533,7 +10579,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _open_callback_panel(context, q, msg, member_space_keyboard(chat_id, lang))
             return
         stockity_url, binomo_url = _referral_links_for_user(chat_id)
-        target_url = stockity_url if target == BROKER_STOCKITY else binomo_url
+        target_url = ENLACE_REFERIDO_EXNOVA if target == BROKER_EXNOVA else (stockity_url if target == BROKER_STOCKITY else binomo_url)
         broker_label = _broker_label(target)
         if lang == "es":
             msg = (
@@ -10642,13 +10688,13 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (
                 "Perfecto ✅\n"
                 "Para poder validarlo necesito que me envíes el **ID en texto** (solo el número).\n"
-                "📌 Ábrelo en Stockity o Binomo, cópialo y pégalo aquí 👇"
+                "📌 Ábrelo en Stockity, Binomo o Exnova, cópialo y pégalo aquí 👇"
             )
             if lang == "es" else
             (
                 "Perfect ✅\n"
                 "To validate it, I need you to send me the **ID as text** (numbers only).\n"
-                "📌 Open your Stockity or Binomo profile, copy the ID and paste it here 👇"
+                "📌 Open your Stockity, Binomo or Exnova profile, copy the ID and paste it here 👇"
             )
         )
         await q.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
@@ -10741,9 +10787,9 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting_deposit_proof"] = True
         else:
             msg = (
-                "Antes de revisar el depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo o Stockity para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
+                "Antes de revisar el depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo, Stockity o Exnova para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
                 if lang == "es" else
-                "Before I review the deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo or Stockity ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
+                "Before I review the deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo, Stockity or Exnova ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
             )
             context.user_data.pop("awaiting_deposit_proof", None)
         await q.message.reply_text(msg)
@@ -11568,15 +11614,17 @@ IDENTIDAD Y PRINCIPIO DE RESPUESTA
 REGISTRO Y ACCESO
 - El acceso a la comunidad JT TRADERS TEAMS es GRATUITO. No existe una membresía adicional que se pague a Johanna.
 - El usuario deposita/invierte en SU PROPIA cuenta de trading. Ese capital sigue en su cuenta.
-- El requisito para entrar a la comunidad es que la cuenta de Binomo o Stockity quede registrada correctamente con uno de los enlaces oficiales de Johanna y que el ID sea validado ANTES del depósito.
-- Stockity es la opción principal y Binomo la opción secundaria cuando corresponda mostrar ambos enlaces.
+- El requisito para entrar a la comunidad es que la cuenta de Binomo, Stockity o Exnova quede registrada correctamente con uno de los enlaces oficiales de Johanna y que el ID sea validado ANTES del depósito.
+- Stockity es la opción principal y Binomo la opción secundaria. Exnova también está disponible con su enlace oficial. Si la persona pide un broker concreto, muestra su enlace. Para un registro general, incluye los tres.
 - Cuando debas mostrar enlaces usa este formato, sin Markdown oculto:
   🔗 Stockity — opción principal:
   {ENLACE_REFERIDO_STOCKITY}
 
   🔗 Binomo — opción secundaria:
   {ENLACE_REFERIDO}
-- En inglés usa "🔗 Stockity — primary option:" y "🔗 Binomo — secondary option:".
+  🔗 Exnova:
+  {ENLACE_REFERIDO_EXNOVA}
+- En inglés usa "🔗 Stockity — primary option:", "🔗 Binomo — secondary option:" y "🔗 Exnova:".
 - Nunca confirmes por tu cuenta que un ID, afiliación, depósito o acceso quedó validado; eso depende del sistema/validación de Johanna.
 - Cuando la persona pregunte de forma natural “¿qué me toca?”, “¿qué hago ahora?”, “¿cómo sigo?”, “¿por dónde empiezo?” o equivalente, interpreta primero que está preguntando por el SIGUIENTE PASO del flujo, no automáticamente por beneficios, nivel o promociones. Usa el ESTADO OPERATIVO REAL: PRE → registro correcto + envío/validación de ID antes de depositar; POST → ID validado, corresponde depósito en esa misma cuenta + comprobante; DEPOSITED → no reinicies registro/ID, continúa desde su nivel/acceso real.
 - Si en esa pregunta de siguiente paso aparece un monto, puedes mencionar DESPUÉS del paso operativo qué nivel correspondería a ese capital, pero no conviertas el monto en una explicación de bonos ni en una lista de beneficios. Para los detalles del nivel existe el botón de niveles.
@@ -13329,7 +13377,7 @@ def _immediate_block(intent: str, lang: str):
     if intent == "LIVE":
         return LIVE_HORARIOS_ES if lang == "es" else LIVE_HORARIOS_EN
     if intent == "ID":
-        return respuesta_id_es() if lang == "es" else "🆔 Open your Stockity or Binomo profile/settings and copy the ID / User ID number."
+        return respuesta_id_es() if lang == "es" else "🆔 Open your Stockity, Binomo or Exnova profile/settings and copy the ID / User ID number."
     if intent == "REGISTRO":
         return MENSAJE_REGISTRARME_ES if lang == "es" else MENSAJE_REGISTRARME_EN
     if intent == "YA_TENGO_CUENTA":
@@ -13341,14 +13389,14 @@ def _immediate_block(intent: str, lang: str):
     if intent == "BOT_IA":
         return respuesta_bot_ia_es() if lang == "es" else respuesta_bot_ia_en()
     if intent == "NEXT_STEP":
-        return respuesta_next_step_es() if lang == "es" else "✅ The next step is to validate your Stockity or Binomo ID before depositing. Send me the ID as text (numbers only)."
+        return respuesta_next_step_es() if lang == "es" else "✅ The next step is to validate your Stockity, Binomo or Exnova ID before depositing. Send me the ID as text (numbers only)."
     if intent == "WHERE_SEND_ID":
         return respuesta_where_send_id_es() if lang == "es" else "Yes ✅ Send your ID right here (numbers only) and I will leave it for validation."
     if intent == "YA_REGISTRE":
         return (
-            "✅ Perfecto. Envíame tu ID de Stockity o Binomo por aquí mismo (solo el número) y lo dejo en validación."
+            "✅ Perfecto. Envíame tu ID de Stockity, Binomo o Exnova por aquí mismo (solo el número) y lo dejo en validación."
             if lang == "es" else
-            "✅ Perfect. Send your Stockity or Binomo ID here (numbers only) and I will leave it for validation."
+            "✅ Perfect. Send your Stockity, Binomo or Exnova ID here (numbers only) and I will leave it for validation."
         )
     if intent == "DEP_LATER":
         return (
@@ -13484,7 +13532,7 @@ def bono_requiere_guia(texto: str) -> bool:
 
 def respuesta_id_es() -> str:
     return (
-        "🆔 ¿Dónde encuentro mi ID de Stockity o Binomo?\n\n"
+        "🆔 ¿Dónde encuentro mi ID de Stockity, Binomo o Exnova?\n\n"
         "1) Entra a tu cuenta (app o web).\n"
         "2) Ve a tu perfil / ajustes (icono de usuario).\n"
         "3) Busca el campo ID o User ID y cópialo.\n\n"
@@ -13496,7 +13544,7 @@ def respuesta_next_step_es() -> str:
     return (
         "✅ Perfecto. El **siguiente paso** es validar tu **ID** para confirmar que tu registro quedó bien "
         "**antes de que deposites**.\n\n"
-        "📌 Envíame aquí tu **ID de Stockity o Binomo** (solo el número) y lo dejo en validación 👇"
+        "📌 Envíame aquí tu **ID de Stockity, Binomo o Exnova** (solo el número) y lo dejo en validación 👇"
     )
 
 def respuesta_where_send_id_es() -> str:
@@ -13582,7 +13630,8 @@ def _organize_ai_registration_links(answer: str, lang: str) -> str:
 
     has_stockity = ENLACE_REFERIDO_STOCKITY in value
     has_binomo = ENLACE_REFERIDO in value
-    if not (has_stockity or has_binomo):
+    has_exnova = ENLACE_REFERIDO_EXNOVA in value
+    if not (has_stockity or has_binomo or has_exnova):
         return value
 
     # Convierte cualquier [texto](URL) generado por IA a URL normal.
@@ -13599,6 +13648,9 @@ def _organize_ai_registration_links(answer: str, lang: str) -> str:
             value,
         )
 
+    if has_exnova:
+        value = re.sub(r"\[[^\]\n]{1,140}\]\(\s*" + re.escape(ENLACE_REFERIDO_EXNOVA) + r"\s*\)", ENLACE_REFERIDO_EXNOVA, value)
+
     # Retira las líneas viejas que contienen esos links para reconstruirlas con aire.
     clean_lines = []
     for line in value.splitlines():
@@ -13608,6 +13660,11 @@ def _organize_ai_registration_links(answer: str, lang: str) -> str:
         if has_stockity and ENLACE_REFERIDO_STOCKITY in line:
             continue
         if has_binomo and ENLACE_REFERIDO in line:
+            continue
+        if has_exnova and ENLACE_REFERIDO_EXNOVA in line:
+            continue
+
+        if has_exnova and len(stripped) <= 110 and "exnova" in normalized and (":" in stripped or stripped.startswith(("-", "•", "🔗")) or "registro" in normalized or "register" in normalized):
             continue
 
         # Limpia etiquetas cortas tipo "- Stockity: Registro..." que quedarían solas.
@@ -13634,6 +13691,9 @@ def _organize_ai_registration_links(answer: str, lang: str) -> str:
     if has_binomo:
         label = "🔗 Binomo — secondary option:" if lang == "en" else "🔗 Binomo — opción secundaria:"
         blocks.append(f"{label}\n{ENLACE_REFERIDO}")
+
+    if has_exnova:
+        blocks.append(f"🔗 Exnova:\n{ENLACE_REFERIDO_EXNOVA}")
 
     links_block = "\n\n".join(blocks)
     return f"{body}\n\n{links_block}".strip() if body else links_block
@@ -14420,16 +14480,16 @@ def _id_validation_guidance(question: str, chat_id: int, lang: str = "es") -> st
     has_id = bool(re.search(r"\bid\b", t))
     check = any(x in t for x in ("valid", "verific", "confirm", "check"))
     registered = any(x in t for x in ("quedo bien registr", "quedo correctamente registr", "registro quedo bien", "bien el registro", "registered correctly", "registration is correct"))
-    if not ((has_id and check) or (registered and ("stockity" in t or "binomo" in t)) or any(x in t for x in ("pudo validar", "pudiste validar", "did you validate", "have you validated"))):
+    if not ((has_id and check) or (registered and ("stockity" in t or "binomo" in t or "exnova" in t or "xnova" in t)) or any(x in t for x in ("pudo validar", "pudiste validar", "did you validate", "have you validated"))):
         return ""
     # Las preguntas combinadas sobre otros temas conservan el motor conversacional.
     if any(x in t for x in ("cuanto", "cuantos", "how much", "senal", "signal", "curso", "course", "bono", "bonus", "upgrade", "retiro", "withdraw")):
         return ""
-    broker = BROKER_STOCKITY if "stockity" in t else (BROKER_BINOMO if "binomo" in t else None)
+    broker = BROKER_EXNOVA if ("exnova" in t or "xnova" in t) else (BROKER_STOCKITY if "stockity" in t else (BROKER_BINOMO if "binomo" in t else None))
     accounts = [_broker_get(chat_id, broker, create=False) or {}] if broker else _broker_rows(chat_id)
     validated = [a for a in accounts if a.get("id_validated") and str(a.get("trading_id") or "").strip()]
     pending = [a for a in accounts if str(a.get("pending_trading_id") or "").strip()]
-    label = " Stockity" if broker == BROKER_STOCKITY else (" Binomo" if broker == BROKER_BINOMO else "")
+    label = " "+_broker_label(broker) if broker else ""
     if validated:
         return (f"Your{label} ID is already validated ✅ You do not need to register or send it again." if lang == "en" else f"Tu ID{label} ya está validado ✅ No necesitas registrarte ni enviarlo nuevamente.")
     if pending:
@@ -14906,9 +14966,9 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                 )
             elif stage == STAGE_PRE:
                 decision_lines.append(
-                    "NEXT STEP (PRE): first explain that they must register a Binomo or Stockity account with my official link and send the ID for validation BEFORE depositing. Include the official registration links because they are the necessary next action, unless the message says they are already registered with me. If they already have an account registered with me, ask them to send that ID for validation. Do not jump to deposit."
+                    "NEXT STEP (PRE): first explain that they must register a Binomo, Stockity or Exnova account with my official link and send the ID for validation BEFORE depositing. Include the official registration links because they are the necessary next action, unless the message says they are already registered with me. If they already have an account registered with me, ask them to send that ID for validation. Do not jump to deposit."
                     if lang == "en" else
-                    "SIGUIENTE PASO (PRE): primero explica que debe registrar una cuenta de Binomo o Stockity con mi enlace oficial y enviarme el ID para validarlo ANTES de depositar. Incluye los enlaces oficiales porque son la acción necesaria, salvo que el mensaje diga que ya tiene una cuenta registrada conmigo. Si ya tiene una cuenta registrada conmigo, debe enviarme ese ID para validarlo. No saltes al depósito."
+                    "SIGUIENTE PASO (PRE): primero explica que debe registrar una cuenta de Binomo, Stockity o Exnova con mi enlace oficial y enviarme el ID para validarlo ANTES de depositar. Incluye los enlaces oficiales porque son la acción necesaria, salvo que el mensaje diga que ya tiene una cuenta registrada conmigo. Si ya tiene una cuenta registrada conmigo, debe enviarme ese ID para validarlo. No saltes al depósito."
                 )
             elif stage == STAGE_POST:
                 decision_lines.append(
@@ -16017,9 +16077,9 @@ async def _handle_multi_question(update: Update, context: ContextTypes.DEFAULT_T
                     handled_operational.append("SENALES")
         else:
             block = (
-                "💳 Antes de revisar tu depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo o Stockity para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
+                "💳 Antes de revisar tu depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo, Stockity o Exnova para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
                 if lang == "es" else
-                "💳 Before I review your deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo or Stockity ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
+                "💳 Before I review your deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo, Stockity or Exnova ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
             )
             if _signals_channel_request(texto):
                 block += (
@@ -16195,9 +16255,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not caption:
             qtxt = (
-                "📩 Recibido. ¿Esta imagen es tu ID de Stockity/Binomo, tu comprobante de depósito/activación o era otra cosa?"
+                "📩 Recibido. ¿Esta imagen es tu ID de Stockity/Binomo/Exnova, tu comprobante de depósito/activación o era otra cosa?"
                 if lang == "es" else
-                "📩 Received. Is this image your Stockity/Binomo ID, your deposit/activation proof, or something else?"
+                "📩 Received. Is this image your Stockity/Binomo/Exnova ID, your deposit/activation proof, or something else?"
             )
             kb = InlineKeyboardMarkup([
                 [
@@ -16629,9 +16689,9 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             msg = (
-                "Antes de revisar tu depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo o Stockity para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
+                "Antes de revisar tu depósito necesito confirmar algo: ¿ya validaste conmigo el ID de tu cuenta de trading? Si todavía no, envíame primero tu ID de Binomo, Stockity o Exnova para validarlo. Si ya quedó validado conmigo, entonces envíame el comprobante de tu depósito."
                 if lang == "es" else
-                "Before I review your deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo or Stockity ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
+                "Before I review your deposit, I need to confirm one thing: have you already validated your trading-account ID with me? If not, send me your Binomo, Stockity or Exnova ID first so I can validate it. If it has already been validated with me, then send me your deposit proof."
             )
             if _signals_channel_request(texto):
                 msg += (
