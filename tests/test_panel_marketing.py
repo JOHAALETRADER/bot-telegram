@@ -15,7 +15,14 @@ class MarketingTests(unittest.IsolatedAsyncioTestCase):
  def test_public_pages_are_separate_and_do_not_expose_download_or_manual(self):
   for lang in ('es','en'):
    self.assertLessEqual(len(public.brief(lang)),1024)
-   self.assertIn('230',public.brief(lang));self.assertIn('14',public.brief(lang))
+   self.assertIn('230',public.brief(lang))
+   self.assertIn('Windows',public.brief(lang).replace('WINDOWS','Windows'))
+   self.assertNotIn('14',public.brief(lang))
+   self.assertNotIn('USD15',public.brief(lang));self.assertNotIn('USD20',public.brief(lang))
+   self.assertNotIn('licen',public.brief(lang).lower());self.assertNotIn('Johanna',public.brief(lang))
+   self.assertNotEqual(public.brief(lang),public.details(lang))
+   self.assertIn('14',public.details(lang));self.assertIn('USD15',public.details(lang));self.assertIn('USD20',public.details(lang))
+   self.assertLessEqual(len(public.details(lang).encode('utf-16-le'))//2,1024)
    self.assertNotEqual(public.INFO_URLS[lang],restricted.GUIDE_URLS[lang])
    buttons=[b for row in public.keyboard(lang).inline_keyboard for b in row]
    self.assertEqual(buttons[0].url,public.INFO_URLS[lang])
@@ -44,6 +51,7 @@ class MarketingTests(unittest.IsolatedAsyncioTestCase):
      bot=SimpleNamespace(send_photo=AsyncMock(),send_message=AsyncMock())
      await public.send_info(bot,123,lang)
      bot.send_photo.assert_awaited_once();bot.send_message.assert_not_awaited()
+     self.assertEqual(bot.send_photo.call_args.kwargs['caption'],public.details(lang))
      bot.send_photo=AsyncMock(side_effect=RuntimeError('image failure'))
      await public.send_info(bot,123,lang)
      bot.send_message.assert_awaited_once()

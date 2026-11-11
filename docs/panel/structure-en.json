@@ -756,31 +756,27 @@
     {
       "tag": "p",
       "children": [
-        "The visual interface I personally use during my trading sessions and live broadcasts is a private tool intended exclusively for internal use."
+        "The interface I personally use during trading sessions and live broadcasts is private. Your usual Telegram channels and benefits continue according to your membership level."
       ]
     },
     {
       "tag": "p",
       "children": [
-        "It requires programming, installation, configuration, maintenance, and technical updates."
+        "You can also access the new downloadable Windows signals panel. I first validate your broker ID; you can then deposit from USD230 into your own trading account, and I enable panel access once I validate your deposit."
       ]
     },
     {
       "tag": "p",
       "children": [
-        "For this reason, community members do not need to install or configure this interface."
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "The trading signals corresponding to each membership level are delivered directly through Telegram, using the signal channels and automated systems included in each level."
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "This allows you to access trading signals easily, quickly, and conveniently from your smartphone, computer, or any device compatible with Telegram."
+        {
+          "tag": "a",
+          "attrs": {
+            "href": "/JOHAALETRADER--Discover-the-signals-panel-11-11"
+          },
+          "children": [
+            "🖥 Discover the signals panel: features and access conditions"
+          ]
+        }
       ]
     },
     {
@@ -867,146 +863,6 @@
         {
           "tag": "br"
         }
-      ]
-    },
-    {
-      "tag": "hr"
-    },
-    {
-      "tag": "figure",
-      "children": [
-        {
-          "tag": "img",
-          "attrs": {
-            "src": "https://raw.githubusercontent.com/JOHAALETRADER/bot-telegram/main/docs/panel/panel-reference.png"
-          }
-        }
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "Reference image of the panel; version and displayed data may vary."
-      ]
-    },
-    {
-      "tag": "h3",
-      "attrs": {
-        "id": "JOHAALETRADER-Signals-Panel-·-Premium-+-Panel"
-      },
-      "children": [
-        "JOHAALETRADER Signals Panel · Premium + Panel"
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "A Windows desktop application bringing together signals, alerts, a trading journal, results tracking, and risk/capital-management tools. It does not place trades or receive your funds; you decide and trade in your broker account."
-      ]
-    },
-    {
-      "tag": "h3",
-      "attrs": {
-        "id": "Telegram-Premium-and-the-panel:-what-changes?"
-      },
-      "children": [
-        "Telegram Premium and the panel: what changes?"
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "Regular Premium starts at USD200 in your own trading account and keeps its existing benefits and channels. Premium + Panel starts at USD230 in one Exnova, Binomo or Stockity account, after Johanna validates both the broker ID and the deposit. It is an additional Premium benefit, not a separate community tier. The USD230 stays in your trading account and does not pay for the panel license."
-      ]
-    },
-    {
-      "tag": "h3",
-      "attrs": {
-        "id": "Panel-exclusive-benefits"
-      },
-      "children": [
-        "Panel-exclusive benefits"
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "Exnova signals are delivered exclusively in the panel, never through Telegram. Sunday Advance Premium Software lists of currency pairs and Crypto IDX for Binomo and Stockity are also panel-only, when Johanna prepares and confirms them. The usual Monday–Saturday Telegram deliveries continue unchanged. The panel also lets you keep a personal journal and track your results."
-      ]
-    },
-    {
-      "tag": "h3",
-      "attrs": {
-        "id": "A-complete-14-day-trial"
-      },
-      "children": [
-        "A complete 14-day trial"
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "The initial trial lasts 14 days and enables all three brokers. It begins with the first approval of panel access; reinstalling or validating another broker does not restart it. Your registration broker does not restrict your later license choice, and you do not need a USD230 deposit at each broker."
-      ]
-    },
-    {
-      "tag": "h3",
-      "attrs": {
-        "id": "Monthly-license-after-the-trial"
-      },
-      "children": [
-        "Monthly license after the trial"
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "Exnova only: USD15/month or COP50,000. Exnova + Binomo + Stockity: USD20/month or COP65,000. Choose your plan when paying; all three are optional. Your trading deposit is separate from this monthly license."
-      ]
-    },
-    {
-      "tag": "h3",
-      "attrs": {
-        "id": "Expiry-and-reconnection"
-      },
-      "children": [
-        "Expiry and reconnection"
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "There are 3 grace days after expiry. Afterwards the signals interface is locked and only offers access to the payment portal; your history is preserved. When applicable, reconnection adds USD8: Exnova total USD23 / COP76,000; all three USD28 / COP92,500. Overdue monthly fees do not accumulate."
-      ]
-    },
-    {
-      "tag": "h3",
-      "attrs": {
-        "id": "How-delivery-works"
-      },
-      "children": [
-        "How delivery works"
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "Register using the official bot links. Johanna checks your ID and deposit; only after both validations and the USD230 minimum are met does the bot deliver the download access, image and installation manual. Your panel account requires approval by Johanna. This page is informational: reading it does not activate a license or provide credentials. The application runs on Windows computers, not phones or Mac."
-      ]
-    },
-    {
-      "tag": "h3",
-      "attrs": {
-        "id": "Interested?"
-      },
-      "children": [
-        "Interested?"
-      ]
-    },
-    {
-      "tag": "p",
-      "children": [
-        "Return to the registration bot and use its registration options or contact Johanna. If you already have Premium with USD200, ask about validating the additional USD30 in the same account to qualify for the panel benefit. Signals do not guarantee results; apply your risk management."
       ]
     }
   ],

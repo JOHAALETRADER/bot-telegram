@@ -12,20 +12,45 @@ def label(lang):
 def brief(lang):
     if lang == 'en':
         return (
-            '🖥 PREMIUM + PANEL · from USD230 in ONE broker account, with ID and deposit validated by Johanna. '
-            'Your deposit stays in your account; it is separate from the license.\n'
-            'Windows panel with signals, alerts, a journal and risk-management tools. Exnova signals and Sunday '
-            'Advance Premium Software lists for Binomo/Stockity are panel-exclusive; Telegram benefits continue.\n'
-            '14-day trial with all three brokers. Afterwards: Exnova USD15/month (COP50,000), or all three USD20 '
-            '(COP65,000). Three grace days; reconnection adds USD8 when applicable. See the panel button for details.'
+            '🖥 PREMIUM + DOWNLOADABLE WINDOWS SIGNALS PANEL\n'
+            'Includes signals, alerts, results tracking, a trading journal and risk/capital-management tools, '
+            'plus Sunday Advance Premium Software lists of currency pairs and Crypto IDX, exclusively in the panel.\n'
+            'First, I validate your broker ID. Then you can deposit from USD230 directly into your own trading '
+            'account; once I validate the deposit, I enable access to your panel. Your usual Premium benefits continue.'
         )
     return (
-        '🖥 PREMIUM + PANEL · desde USD230 en UNA cuenta de broker, con ID y depósito validados por Johanna. '
-        'Tu depósito queda en tu cuenta y es independiente de la licencia.\n'
-        'Panel Windows con señales, alertas, bitácora y gestión de riesgo. Exnova y las listas de domingo del '
-        'Software Premium Anticipado para Binomo/Stockity son exclusivas del panel; Telegram sigue igual.\n'
-        'Prueba de 14 días con los tres brokers. Después: Exnova USD15/mes (COP50.000) o tres brokers USD20 '
-        '(COP65.000). Tres días de gracia; reconexión adicional USD8 cuando corresponda. Más detalles en el botón del panel.'
+        '🖥 PREMIUM + PANEL DE SEÑALES DESCARGABLE EN WINDOWS\n'
+        'Incluye señales, alertas, control de resultados, bitácora y gestión de riesgo y capital; además, listas '
+        'de pares de divisas y Crypto IDX del Software Premium Anticipado también los domingos, solo en el panel.\n'
+        'Primero valido tu ID del broker. Después puedes depositar a partir de USD230 directamente en tu propia '
+        'cuenta de trading; una vez que valide tu depósito, habilito el acceso al panel. Conservas los beneficios habituales de Premium.'
+    )
+
+def details(lang):
+    if lang == 'en':
+        return (
+            '🖥 DISCOVER THE JOHAALETRADER SIGNALS PANEL\n'
+            'A Windows application with signals, alerts, a journal, results tracking and risk-management tools. '
+            'Exnova signals are panel-exclusive. Sunday currency-pair and Crypto IDX lists for Binomo/Stockity '
+            'are also panel-only, when I prepare and confirm them.\n'
+            'After I validate your ID and then your qualifying USD230 deposit in one broker account, '
+            'I can approve your panel access. Your trading deposit stays in your account.\n'
+            'The initial 14-day trial enables all three brokers. Afterwards, choose Exnova only: USD15/month '
+            '(COP50,000), or all three: USD20/month (COP65,000). There are 3 grace days after expiry; '
+            'then only the payment portal remains accessible. Reconnection adds USD8 when applicable.\n'
+            'Read the full explanation below. The installation manual is delivered separately after validation.'
+        )
+    return (
+        '🖥 CONOCE EL PANEL DE SEÑALES JOHAALETRADER\n'
+        'Aplicación Windows con señales, alertas, bitácora, control de resultados y gestión de riesgo. '
+        'Exnova es exclusivo del panel. Las listas de domingo de pares de divisas y Crypto IDX para '
+        'Binomo/Stockity también van solo al panel, cuando las preparo y confirmo.\n'
+        'Tras validar tu ID y después tu depósito desde USD230 en una misma cuenta de broker, puedo '
+        'aprobar tu acceso al panel. Tu depósito permanece en tu cuenta de trading.\n'
+        'Prueba inicial de 14 días con los tres brokers. Después eliges: Exnova USD15/mes (COP50.000) '
+        'o los tres USD20/mes (COP65.000). Hay 3 días de gracia tras vencer; después solo queda el acceso '
+        'al portal de pago. Reconexión adicional de USD8 cuando corresponda.\n'
+        'Abajo tienes la explicación completa. El manual de instalación se entrega aparte, tras las validaciones.'
     )
 
 def keyboard(lang):
@@ -36,7 +61,7 @@ def keyboard(lang):
     ])
 
 async def send_info(bot, chat_id, lang):
-    text = brief(lang)
+    text = details(lang)
     if PHOTO_PATH.is_file():
         try:
             with PHOTO_PATH.open('rb') as photo:
