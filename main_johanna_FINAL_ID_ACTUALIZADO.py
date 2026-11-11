@@ -1,5 +1,6 @@
 import logging
 import panel_delivery
+import panel_marketing
 import asyncio
 import re
 import json
@@ -106,8 +107,8 @@ BOT_VERSION = "v7.11.14-20261108-ID-BROKER-RECOVERY"
 # v7.10.45: promo lookup inmediato ampliado, guard factual Premium y espera IA máxima de 4 min.
 # v7.10.27: conserva los flujos operativos de v7.10.26 y corrige
 # enrutamiento contextual de IA, primer depósito y accesos VIP secuenciales.
-TELEGRAPH_LEVELS_URL = "https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-09-18"
-TELEGRAPH_LEVELS_URL_EN = "https://telegra.ph/JT-TRADERS-TEAMS-MEMBERSHIP-LEVELS-10-14"
+TELEGRAPH_LEVELS_URL = 'https://telegra.ph/NIVELES-JT-TRADERS-TEAMS-11-11'
+TELEGRAPH_LEVELS_URL_EN = 'https://telegra.ph/JT-TRADERS-TEAMS-MEMBERSHIP-LEVELS-11-11'
 
 def _levels_url(lang: str = "es") -> str:
     return TELEGRAPH_LEVELS_URL_EN if lang == "en" else TELEGRAPH_LEVELS_URL
@@ -5974,7 +5975,10 @@ Desde USD 500 · nivel máximo dentro de mi comunidad.
 🤖 IA CRYPTO IDX 24/7 + bot IA de pares de divisas 24/7.
 🎥 Acompañamiento, mentorías privadas y preparación para cuentas de fondeo.""",
         }
-    return texts.get(level, "")
+    text = texts.get(level, "")
+    if level in {VIP_LEVEL_PREMIUM, VIP_LEVEL_PRESTIGE}:
+        text += "\n\n" + panel_marketing.brief(lang)
+    return text
 
 
 def _member_space_text(chat_id: int, lang: str = "es") -> str:
@@ -6334,6 +6338,7 @@ def levels_keyboard(lang: str = "es", chat_id: int = None) -> InlineKeyboardMark
     upgrade_label = "ℹ️ View upgrade conditions" if lang == "en" else "ℹ️ Ver condiciones de upgrade"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, url=_levels_url(lang))],
+        [InlineKeyboardButton(panel_marketing.label(lang), callback_data="panel_info")],
         [InlineKeyboardButton(upgrade_label, callback_data="upgrade_conditions")],
         *support_rows(lang, chat_id),
     ])
@@ -10309,6 +10314,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     _touch_user_activity(chat_id)
 
+    if q.data == "panel_info":
+        await panel_marketing.send_info(context.bot, chat_id, get_user_lang(chat_id))
+        return
+
     if q.data == "member_signals_panel":
         lang = get_user_lang(chat_id)
         if not _panel_delivery_eligible(chat_id):
@@ -10706,7 +10715,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         texto = _personalize_referral_links(respuesta_niveles_es(), chat_id)
         active_level = _active_member_level(chat_id)
         if active_level != VIP_LEVEL_NONE:
-            rows = []
+            rows = [
+                [InlineKeyboardButton(panel_marketing.label("es"), callback_data="panel_info")],
+                [InlineKeyboardButton("📄 Ver estructura completa", url=_levels_url("es"))],
+            ]
             next_level = _next_member_level(active_level)
             if next_level != VIP_LEVEL_NONE:
                 rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{next_level}")])
@@ -10722,7 +10734,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         texto = _personalize_referral_links(respuesta_niveles_en(), chat_id)
         active_level = _active_member_level(chat_id)
         if active_level != VIP_LEVEL_NONE:
-            rows = []
+            rows = [
+                [InlineKeyboardButton(panel_marketing.label("en"), callback_data="panel_info")],
+                [InlineKeyboardButton("📄 Full structure", url=_levels_url("en"))],
+            ]
             next_level = _next_member_level(active_level)
             if next_level != VIP_LEVEL_NONE:
                 rows.append([InlineKeyboardButton("⬆️ UPGRADE", callback_data=f"upgrade_conditions:{next_level}")])
@@ -13520,7 +13535,7 @@ def respuesta_niveles_es() -> str:
         "🤖 Añade bot IA de pares de divisas 24/7.\n"
         "👩‍🏫 Mentorías privadas, acompañamiento cercano y preparación para cuentas de fondeo.\n\n"
         "📌 El nivel pertenece a mi comunidad JT TRADERS TEAMS y depende del capital que mantengas en tu propia cuenta de trading."
-    )
+    ) + "\n\n" + panel_marketing.brief("es")
 
 
 def respuesta_niveles_en() -> str:
@@ -13541,7 +13556,7 @@ def respuesta_niveles_en() -> str:
         "🤖 Adds a 24/7 currency-pair AI bot.\n"
         "👩‍🏫 Private mentoring, closer guidance and funded-account preparation.\n\n"
         "📌 The level belongs to my JT TRADERS TEAMS community and depends on the capital you keep in your own trading account."
-    )
+    ) + "\n\n" + panel_marketing.brief("en")
 
 def respuesta_bono_es() -> str:
     cfg = _promo_get_config()
@@ -14845,6 +14860,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                     amount_usd = None
 
         knowledge_text = (JOHA_KNOWLEDGE or "").strip()
+        knowledge_text += "\n\nCURRENT SEPARATE MEMBER PANEL / PANEL ACTUAL PARA MIEMBROS:\n" + panel_marketing.brief(lang) + "\n" + panel_marketing.INFO_URLS["en" if lang == "en" else "es"]
         section_titles = [
             "IDENTIDAD Y PRINCIPIO DE RESPUESTA",
             "REGISTRO Y ACCESO",
@@ -15491,6 +15507,11 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
                             "La interfaz visual que muestro en mis lives es una herramienta privada de uso interno, por eso no la entrego ni la instalo a los miembros de la comunidad. "
                             "Requeriría descarga, instalación, activación/configuración y actualizaciones en computador y quedaría ligada principalmente a un solo equipo. Las señales incluidas en los distintos niveles son las mismas señales operativas que muestro en los lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles. Por Telegram recibes esas mismas señales desde cualquier dispositivo y cualquier lugar, por eso resulta mucho más práctico."
                         )
+                panel_block += (
+                    " This refers only to the private live-session interface. A separate JOHAALETRADER signals panel for members is now available.\n\n"
+                    if lang == "en" else
+                    " Esto se refiere solo a la interfaz privada del live. Ahora sí está disponible un panel de señales JOHAALETRADER independiente para miembros.\n\n"
+                ) + panel_marketing.brief(lang) + "\n" + panel_marketing.INFO_URLS["en" if lang == "en" else "es"]
                 if multi_pending:
                     # No borrar las demás respuestas del paquete: quitamos únicamente
                     # párrafos que intentaron responder MAL sobre la interfaz/señales del live.
