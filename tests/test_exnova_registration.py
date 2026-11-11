@@ -4,6 +4,7 @@ Only selected AST definitions are loaded. Importing the production entry point
 would initialize its database and Telegram application, which these tests avoid.
 """
 import ast
+import sys
 import asyncio
 import copy
 import logging
@@ -24,9 +25,11 @@ ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'main.py'
 if not SOURCE.exists():SOURCE=ROOT/'main_johanna_FINAL_ID_ACTUALIZADO.py'
 ORIGINAL=ROOT/'main.original.py'
+sys.path.insert(0,str(ROOT))
+import panel_delivery
 URL='https://exnova.com/lp/start-trading/?aff=838919&aff_model=revenue&afftrack=JOHAALETRADER'
 FUNCTIONS={
- 'utcnow_naive','_usd','_norm','_broker_norm','_broker_label','_broker_key','_broker_get',
+ '_panel_delivery_eligible','_panel_delivery_notify','utcnow_naive','_usd','_norm','_broker_norm','_broker_label','_broker_key','_broker_get',
  '_broker_rows','_broker_validated_brokers','_broker_flow_get','_broker_flow_set',
  '_broker_selection_keyboard','_broker_upgrade_window_open','_max_level','_vip_level_for_total_cents',
  '_broker_preview_deposit','_broker_seed_legacy_if_matching','_broker_bind_legacy_validated_id',
@@ -50,7 +53,7 @@ def load(path):
  body=[]
  for node in ast.parse(path.read_text()).body:
   if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in FUNCTIONS:body.append(node)
-  elif isinstance(node,ast.ClassDef) and node.name in {'Usuario','BrokerAccountState','BrokerFlowState','VIPAccessState'}:body.append(node)
+  elif isinstance(node,ast.ClassDef) and node.name in {'Usuario','BrokerAccountState','BrokerFlowState','VIPAccessState','PanelOnboardingState'}:body.append(node)
   elif isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id in CONSTANTS for t in node.targets):body.append(node)
  exec(compile(ast.Module(body=body,type_ignores=[]),str(path),'exec'),env)
  engine=create_engine('sqlite:///:memory:')
@@ -182,7 +185,11 @@ class RegistrationTests(unittest.IsolatedAsyncioTestCase):
     for text in ('No links',f"Register\n{old['ENLACE_REFERIDO']}",f"[Stockity]({old['ENLACE_REFERIDO_STOCKITY']})\n[Binomo]({old['ENLACE_REFERIDO']})"):
      self.assertEqual(self.e['_organize_ai_registration_links'](text,lang),old['_organize_ai_registration_links'](text,lang))
    a={n.name:ast.dump(n,include_attributes=False) for n in ast.parse(ORIGINAL.read_text()).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
-   b={n.name:ast.dump(n,include_attributes=False) for n in ast.parse(SOURCE.read_text()).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
+   candidate=ast.parse(SOURCE.read_text())
+   for node in candidate.body:
+    if isinstance(node,ast.AsyncFunctionDef) and node.name=='_admin_apply_broker_deposit':
+     node.body=[stmt for stmt in node.body if not (isinstance(stmt,ast.Expr) and isinstance(stmt.value,ast.Await) and isinstance(stmt.value.value,ast.Call) and isinstance(stmt.value.value.func,ast.Name) and stmt.value.value.func.id=='_panel_delivery_notify')]
+   b={n.name:ast.dump(n,include_attributes=False) for n in candidate.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
    names=[name for name in a if name.startswith('_premium100_') or name in {'_admin_apply_broker_deposit','_vip_send_next_or_welcome','_broker_preview_deposit','_referral_links_for_user'}]
    for name in names:self.assertEqual(a[name],b[name],name)
   finally:engine.dispose()

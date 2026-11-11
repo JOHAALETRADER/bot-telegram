@@ -1,4 +1,5 @@
 import logging
+import panel_delivery
 import asyncio
 import re
 import json
@@ -384,6 +385,13 @@ class BrokerAccountState(Base):
     first_validated_deposit_at  = Column(DateTime, nullable=True)
     level                       = Column(String, default="NONE", index=True)
     updated_at                  = Column(DateTime, default=utcnow_naive, index=True)
+
+
+class PanelOnboardingState(Base):
+    """Receipt for the independent panel welcome; does not grant a licence."""
+    __tablename__ = "panel_onboarding_state"
+    telegram_id = Column(String, primary_key=True)
+    delivered_at = Column(DateTime, nullable=True)
 
 
 class BrokerFlowState(Base):
@@ -6230,6 +6238,34 @@ async def _close_callback_panel(context, q, chat_id: int, lang: str):
     )
 
 
+def _panel_delivery_eligible(chat_id: int) -> bool:
+    return panel_delivery.qualifies(_broker_rows(chat_id))
+
+
+async def _panel_delivery_notify(context, chat_id: int, lang: str, *, requested=False):
+    if not _panel_delivery_eligible(chat_id):
+        return False
+    try:
+        if not requested:
+            with Session() as session:
+                receipt = session.get(PanelOnboardingState, str(chat_id))
+                if receipt and receipt.delivered_at:
+                    return True
+        await panel_delivery.send_package(context.bot, chat_id, lang)
+        with Session() as session:
+            receipt = session.get(PanelOnboardingState, str(chat_id))
+            if not receipt:
+                receipt = PanelOnboardingState(telegram_id=str(chat_id)); session.add(receipt)
+            receipt.delivered_at = utcnow_naive()
+            session.commit()
+        _log_event(chat_id, "PANEL_ONBOARDING_DELIVERED", "USD230 eligibility checked; portal licence remains independent")
+        return True
+    except Exception:
+        # A guide/photo/Telegram failure must never undo a validated VIP deposit.
+        logging.exception("PANEL_ONBOARDING_FAILED user=%s; available again from My JT space", chat_id)
+        return False
+
+
 def member_space_keyboard(chat_id: int, lang: str = "es") -> InlineKeyboardMarkup:
     """Menú reducido y dinámico para miembros con nivel activo."""
     level = _active_member_level(chat_id)
@@ -6254,6 +6290,9 @@ def member_space_keyboard(chat_id: int, lang: str = "es") -> InlineKeyboardMarku
             f"🔄 AÑADIR {missing_label} COMO SEGUNDA OPCIÓN"
         )
         rows.append([InlineKeyboardButton(second_label, callback_data=f"member_add_broker:{missing_broker}")])
+
+    if _panel_delivery_eligible(chat_id):
+        rows.append([InlineKeyboardButton("🖥 MY SIGNALS PANEL" if lang == "en" else "🖥 MI PANEL DE SEÑALES", callback_data="member_signals_panel")])
 
     rows.extend([
         [InlineKeyboardButton(capital_label, callback_data="member_capital")],
@@ -8215,6 +8254,8 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
             reply_markup=_vip_access_keyboard(new_global, lang, keys=new_keys),
             disable_web_page_preview=True,
         )
+
+    await _panel_delivery_notify(context, chat_id, lang)
 
     admin_result = (
         f"✅ DEPÓSITO CONFIRMADO · {_broker_label(broker).upper()}\n\n"
@@ -10267,6 +10308,19 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await q.answer()
     _touch_user_activity(chat_id)
+
+    if q.data == "member_signals_panel":
+        lang = get_user_lang(chat_id)
+        if not _panel_delivery_eligible(chat_id):
+            await q.message.reply_text(
+                "Panel delivery requires Johanna to validate your broker ID and a qualifying USD230 deposit in the same trading account."
+                if lang == "en" else
+                "La entrega del panel requiere que Johanna valide tu ID y un depósito válido de USD230 en una misma cuenta de trading."
+            )
+            return
+        if not await _panel_delivery_notify(context, chat_id, lang, requested=True):
+            await q.message.reply_text("Could not send the guide. Please try again or contact Johanna." if lang == "en" else "No se pudo enviar la guía. Vuelve a intentarlo o consulta con Johanna.")
+        return
 
     if q.data in {"direct_id_lang:es", "direct_id_lang:en"}:
         lang = q.data.rsplit(":", 1)[1]
@@ -18415,6 +18469,7 @@ if __name__ == "__main__":
 
     logging.info("Bot corriendo…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 
 

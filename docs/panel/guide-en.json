@@ -1,0 +1,264 @@
+{
+  "title": "JOHAALETRADER · Panel installation and access guide",
+  "content": [
+    {
+      "tag": "figure",
+      "children": [
+        {
+          "tag": "img",
+          "attrs": {
+            "src": "https://raw.githubusercontent.com/JOHAALETRADER/bot-telegram/main/docs/panel/panel-reference.png"
+          }
+        },
+        {
+          "tag": "figcaption",
+          "children": [
+            "Reference view of the JOHAALETRADER panel (0.76.18)."
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "Welcome to your JOHAALETRADER panel"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Your panel brings together signals, results tracking, a trading journal and capital management tools. Access is personal and depends on the brokers enabled for your account."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "1. Who can receive it"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Standard Premium requires a validated USD200 deposit in your own trading account and includes the usual community benefits. Premium with the panel requires a validated deposit of at least USD230 in one Exnova, Binomo or Stockity account registered through Johanna’s official link. This money stays in your trading account; it is not a payment to Johanna or the panel subscription fee."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Johanna must validate your registration ID first, then your deposit proof. Sending proof or creating an account does not activate access. Deposits from different brokers are not combined for this requirement."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "2. Your account and 14-day trial"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Once you qualify, the bot will display the panel options. Open “My panel access” and create an account with your name, email and a password of at least 12 characters if you do not have one. Use the same account for the portal and the desktop application."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "If your account is pending, send Johanna the email you registered with so she can link and approve your access. Never send your password or security codes."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "The 14-day trial starts when your panel access is first approved. Check the exact expiry in “Mi cuenta” (My account). Downloading, reinstalling, changing computers or reopening a link does not restart the trial."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "3. Download from your portal"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "On a Windows computer connected to the Internet, press “Download panel” in the bot. This opens your personal portal. If you need to sign in, open “Mi cuenta”, enter your account details and return to the portal."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Confirm your access is active, then download the installer published by Johanna. The guide is informational; downloading and receiving signals require an authorized account."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "If the download is blocked or no installer is available, check your account status and contact support. You do not need to find development files on GitHub."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "4. Install on Windows"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Wait for the .exe download to finish. Open your Downloads folder and run the JOHAALETRADER installer. Follow the setup wizard until installation is complete, then open the application using the shortcut created."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "If Windows or your antivirus blocks the file, send support a screenshot of the warning and the file name and version. Do not disable your antivirus or install files sent by unknown people."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "The .exe is for Windows computers, not Android, iPhone or Mac."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "5. Sign in for the first time"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Press “Sign in / check access again” or “Sign in” in the panel. Enter the same email and password used for the portal, not your broker password."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Check that your access is active and the enabled brokers are correct. “Remember my access on this computer” is optional and should only be used on your personal computer."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "If access is pending, expired or blocked, check “Mi cuenta” in the portal. Reinstalling does not change your account status."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "6. Use the panel"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "In “My session”, configure your capital and sequence before starting. Select the broker and signal source available for your account. Keep the Internet connected to receive available signals."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Record the actual result of each sequence: won, won M1, won M2 or lost. Use “Undo result” to correct an entry. You can add emotions and notes, and review your results and history."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "The panel supports trading and record keeping; it does not deposit money or place trades for you. The internal WIN indicator uses JOHAALETRADER’s own calculation and is not a guarantee of profit or a statistical win rate."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "7. Monthly fees, grace and reconnection"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "After the trial, the panel license is paid monthly. Exnova only: USD15/month or COP50,000. Exnova + Binomo + Stockity: USD20/month or COP65,000. Select your agreed plan and check the displayed amount before paying."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "You have three grace days after expiry. After that, if you have not renewed, the signals interface and tools are locked and only the option to open the payment portal remains. Your personal history is preserved."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "When reconnection applies, USD8 is added: Exnova totals USD23 or COP76,000; all three brokers total USD28 or COP92,500. These are Johanna’s listed prices for each currency, not automatic exchange-rate conversions."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "The USD230 trading deposit that qualifies you for the panel is separate from the monthly license. Paying the license does not replace registration and deposit validation."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "8. Renew or report a payment"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Open “My panel access” and enter your portal. Check your plan, expiry and amount. Use only the payment methods and instructions shown there or confirmed by Johanna."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "For manually reviewed payments, use “Reportar pago” in the portal and keep your receipt and payment reference. A report does not approve itself; Johanna must verify it. Do not pay again while a report is pending without checking first."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "After confirmation, check access again in the desktop panel. Never share your account, password, card details or security codes."
+      ]
+    },
+    {
+      "tag": "h3",
+      "children": [
+        "9. Updates and support"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Download published updates from your portal. Close the application before running the new installer. Updating does not renew or restart your license."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "For help, return to the registration bot and select “I have a question”, or open Support in your portal. Provide your account email, panel version and a description of the issue. Screenshots must not contain passwords, codes or complete card details."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Published November 10, 2026. The image is a reference view; details may vary by version."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        {
+          "tag": "a",
+          "attrs": {
+            "href": "https://panel-api-production-1509.up.railway.app/portal"
+          },
+          "children": [
+            "Open my portal"
+          ]
+        }
+      ]
+    }
+  ]
+}
