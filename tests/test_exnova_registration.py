@@ -50,7 +50,7 @@ CONSTANTS={'ENLACE_REFERIDO','ENLACE_REFERIDO_STOCKITY','ENLACE_REFERIDO_EXNOVA'
 CONSTANTS.update(f'MENSAJE_{hour}_{lang}' for hour in ('1H','3H','24H','48H') for lang in ('ES','EN'))
 
 def load(path):
- env=dict(globals(),Base=declarative_base(),_PANEL_LAUNCH=None,_panel_launch_admin_notice=AsyncMock())
+ env=dict(globals(),Base=declarative_base(),_PANEL_LAUNCH=None,_panel_launch_admin_notice=AsyncMock(),_panel_bridge_sync=AsyncMock(return_value={'state':'queued'}))
  body=[]
  for node in ast.parse(path.read_text()).body:
   if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in FUNCTIONS:body.append(node)

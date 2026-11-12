@@ -4,7 +4,7 @@ from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 MIN_DEPOSIT_CENTS = 23000
 PORTAL_URL = 'https://panel-api-production-1509.up.railway.app/portal'
-ACCOUNT_URL = 'https://panel-api-production-1509.up.railway.app/account'
+ACCOUNT_URL = 'https://panel-api-production-1509.up.railway.app/account#telegram-link'
 GUIDE_URLS = {
  'es': 'https://telegra.ph/JOHAALETRADER--Guía-de-instalación-y-acceso-al-panel-11-11',
  'en': 'https://telegra.ph/JOHAALETRADER--Panel-installation-and-access-guide-11-11',
@@ -38,8 +38,8 @@ def welcome(lang):
             '🖥 YOUR JOHAALETRADER PANEL\n\n'
             'Your broker ID and the qualifying deposit under your panel access conditions have been validated. '
             'Your Premium community benefits continue as usual.\n\n'
-            'Open My panel access and create your account if needed. If it is pending, send Johanna '
-            'the email you registered with so she can link and approve your access. '
+            'Open My panel access and create your account if needed. Sign in and tap Link my Telegram; '
+            'confirm the account inside this bot. Your validated access will synchronize automatically. '
             'The 14-day trial starts with the first panel approval; check its expiry in My account.\n\n'
             'After the trial: Exnova USD15/month (COP50,000); all three brokers USD20/month (COP65,000). '
             'Three grace days; reconnection, when applicable, adds USD8. '
@@ -50,8 +50,8 @@ def welcome(lang):
         '🖥 TU PANEL JOHAALETRADER\n\n'
         'Tu ID del broker y el depósito correspondiente a tu condición de acceso ya están validados. '
         'Conservas tus beneficios habituales de Premium.\n\n'
-        'Abre Mi acceso al panel y crea tu cuenta si aún no la tienes. Si aparece pendiente, envía '
-        'a Johanna el correo registrado para vincular y aprobar tu acceso. '
+        'Abre Mi acceso al panel y crea tu cuenta si aún no la tienes. Inicia sesión, pulsa Vincular mi Telegram '
+        'y confirma tu cuenta dentro de este bot. Tu acceso validado se sincroniza automáticamente. '
         'La prueba de 14 días comienza con la primera aprobación del panel; consulta su vencimiento en Mi cuenta.\n\n'
         'Después: Exnova USD15/mes (COP50.000); tres brokers USD20/mes (COP65.000). '
         'Tres días de gracia; cuando corresponda, reconexión adicional de USD8. '

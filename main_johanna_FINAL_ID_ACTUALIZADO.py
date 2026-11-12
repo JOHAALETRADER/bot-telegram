@@ -2,6 +2,7 @@ import logging
 import panel_delivery
 import panel_marketing
 import panel_launch
+import registration_bridge
 import asyncio
 import re
 import json
@@ -504,6 +505,13 @@ try:
     logging.info("PANEL_LAUNCH_READY policy=%s", panel_launch.POLICY)
 except Exception:
     logging.exception("PANEL_LAUNCH_INIT_FAILED: panel delivery blocked; existing VIP flows remain available")
+
+_REGISTRATION_BRIDGE = None
+try:
+    _REGISTRATION_BRIDGE = registration_bridge.Client(engine, Session, os.getenv("REGISTRATION_BRIDGE_SECRET", ""), ADMIN_ID)
+except Exception:
+    logging.exception("PANEL_REGISTRATION_BRIDGE_INIT_FAILED: existing VIP flows preserved")
+
 
 # === CÓDIGOS PROMOCIONALES DINÁMICOS ===
 PROMO_CONFIG_KEY = "ACTIVE"
@@ -6254,6 +6262,59 @@ def _panel_delivery_eligible(chat_id: int) -> bool:
     return bool(_PANEL_LAUNCH and _PANEL_LAUNCH.eligible(chat_id, _broker_rows(chat_id)))
 
 
+async def _panel_bridge_sync(context, chat_id, force=False):
+    if not _REGISTRATION_BRIDGE or not _REGISTRATION_BRIDGE.enabled:
+        return {"state": "bridge_not_configured"}
+    try:
+        return await _REGISTRATION_BRIDGE.sync(_PANEL_LAUNCH, chat_id, _broker_rows(chat_id), force=force)
+    except registration_bridge.BridgeError as exc:
+        logging.warning("PANEL_REGISTRATION_SYNC_PENDING code=%s", exc.code)
+        return {"state": "queued"}
+    except Exception:
+        logging.exception("PANEL_REGISTRATION_SYNC_PENDING: package and VIP access preserved")
+        return {"state": "queued"}
+
+
+async def registration_bridge_job(context):
+    if _REGISTRATION_BRIDGE:
+        await _REGISTRATION_BRIDGE.job(context, _PANEL_LAUNCH, _broker_rows, logging, language=get_user_lang)
+
+
+async def registration_bridge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not update.effective_chat or update.effective_chat.type != "private":
+        return
+    data = q.data or ""
+    if data.startswith("registration_pay_") and q.from_user.id != ADMIN_ID:
+        await q.answer("Solo administración.", show_alert=True)
+        return
+    await q.answer()
+    if not _REGISTRATION_BRIDGE or not _REGISTRATION_BRIDGE.enabled:
+        await q.message.reply_text("La conexión con el panel aún no está disponible. Puedes usar el portal y consultar conmigo.")
+        return
+    try:
+        if data.startswith("registration_link_confirm:"):
+            uid = q.from_user.id
+            await _REGISTRATION_BRIDGE.api("/registration-bridge/link/confirm", {"telegram_id": str(uid), "claim_id": data.split(":", 1)[1]})
+            result = await _panel_bridge_sync(context, uid, force=True)
+            en = get_user_lang(uid) == "en"
+            active = result.get("user", {}).get("state") == "active"
+            text = ("Your panel account is linked. " if en else "Tu cuenta del panel quedó vinculada. ")
+            text += (("Your access is active; check its expiry in the portal." if en else "Tu acceso está activo; consulta el vencimiento en el portal.") if active else ("Your validated access will synchronize automatically. If validations are still pending, complete them first." if en else "Tu acceso validado se sincronizará automáticamente. Si aún faltan validaciones, complétalas primero."))
+            await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🖥 My portal" if en else "🖥 Mi portal", url=registration_bridge.PORTAL)]]))
+        else:
+            result = await _REGISTRATION_BRIDGE.api("/registration-bridge/reports/review", {"id": data.split(":", 1)[1], "approve": data.startswith("registration_pay_yes:"), "reviewer_id": str(ADMIN_ID)})
+            text = ("✅ Pago confirmado. Vencimiento: " + registration_bridge.Client.expiry(result.get("user", {}).get("expires_at")) if result.get("status") == "verified" else "Reporte rechazado. No se renovó el acceso.")
+            await q.message.reply_text(text)
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    except registration_bridge.BridgeError as exc:
+        explanations={"link_expired":"El enlace venció. Genera uno nuevo desde Mi cuenta en el portal.","account_already_linked":"Esa cuenta o ese Telegram ya está vinculado. Consulta conmigo; no se reemplazó ninguna cuenta.","payment_price_mismatch":"El monto reportado no coincide con el plan y el estado actual. Revisa si corresponde mensualidad o reconexión; no se renovó el acceso.","duplicate_payment":"Esa referencia ya fue utilizada. No se renovó nuevamente.","approval_required":"Primero debe completarse la validación de ID y depósito para esta cuenta.","bridge_unavailable":"No se pudo conectar. Puedes volver a intentarlo; no se duplicará la renovación."}
+        await q.message.reply_text(explanations.get(exc.code, "No se pudo completar la solicitud. Revisa los datos o intenta nuevamente. Código: " + exc.code))
+
+
 async def _panel_admin_confirmation(context, chat_id: int, delivered_at):
     # A failed admin notification must not undo or duplicate a delivered package.
     try:
@@ -6267,7 +6328,7 @@ async def _panel_admin_confirmation(context, chat_id: int, delivered_at):
             text=(f"✅ PAQUETE DEL PANEL ENVIADO\n\nUsuario: {name}\nTelegram ID: {chat_id}\n"
                   "Se enviaron el acceso al portal de descarga y la guía en su idioma.\n"
                   "La confirmación corresponde al envío por Telegram; no acredita descarga ni instalación.\n"
-                  "La aprobación de la cuenta del panel sigue siendo independiente."),
+                  "La vinculación y activación de la cuenta se sincronizan con el portal cuando el usuario vincula su cuenta."),
         )
         _PANEL_LAUNCH.notice_sent(chat_id, delivered_at)
     except Exception:
@@ -6277,6 +6338,7 @@ async def _panel_admin_confirmation(context, chat_id: int, delivered_at):
 async def _panel_delivery_notify(context, chat_id: int, lang: str, *, requested=False):
     if not _panel_delivery_eligible(chat_id):
         return False
+    await _panel_bridge_sync(context, chat_id)
     try:
         previous_delivery = None
         if not requested:
@@ -10115,7 +10177,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # v7.10.88: cada /start queda persistido; el ADMIN recibe solo cortes agregados.
     # detail conserva el deep-link/origen para auditoría sin alterar el tracking existente.
-    _log_event(chat_id, "BOT_START", start_param or "normal")
+    _log_event(chat_id, "BOT_START", "panel_link" if start_param.startswith("panel_link_") else (start_param or "normal"))
+
+    if start_param.startswith("panel_link_"):
+        if not _REGISTRATION_BRIDGE or not _REGISTRATION_BRIDGE.enabled:
+            await update.effective_message.reply_text("La vinculación aún no está disponible. Consulta conmigo.")
+            return
+        try:
+            claimed = await _REGISTRATION_BRIDGE.api("/registration-bridge/link/claim", {"token": start_param[len("panel_link_"):], "telegram_id": str(chat_id)})
+            en = lang == "en"
+            text = (("Confirm this is your panel account: " if en else "Confirma que esta es tu cuenta del panel: ") + claimed["account_name"] + " · " + claimed["email_hint"])
+            await update.effective_message.reply_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Link my account" if en else "✅ Vincular mi cuenta", callback_data="registration_link_confirm:" + claimed["claim_id"])]]))
+        except registration_bridge.BridgeError:
+            await update.effective_message.reply_text("This link is unavailable or expired. Generate a new one from My account in the portal." if lang == "en" else "El enlace no está disponible o venció. Genera uno nuevo desde Mi cuenta en el portal.")
+        return
 
     # Dedicated public panel entry: never grants access or resets registration.
     if start_param in {"panel", "panel_en"}:
@@ -18418,6 +18493,10 @@ async def _recover_yersevid_id_once(application):
 
 async def post_init_app(application):
     logging.info("✅ Iniciando %s", BOT_VERSION)
+    if _REGISTRATION_BRIDGE and _REGISTRATION_BRIDGE.enabled and application.job_queue and not application.job_queue.get_jobs_by_name("PANEL_REGISTRATION_BRIDGE"):
+        application.job_queue.run_repeating(registration_bridge_job, interval=30, first=15, name="PANEL_REGISTRATION_BRIDGE", job_kwargs={"max_instances": 1, "coalesce": True})
+        logging.info("PANEL_REGISTRATION_BRIDGE_READY: durable sync and payment notices enabled")
+
     if application.job_queue and not application.job_queue.get_jobs_by_name("VIP_CHANNEL_WATCH"):
         application.job_queue.run_repeating(vip_channel_watch_job, interval=300, first=10, name="VIP_CHANNEL_WATCH", job_kwargs={"max_instances": 1, "coalesce": True})
     _cleanup_non_private_artifacts()
@@ -18569,6 +18648,7 @@ if __name__ == "__main__":
     # Panel privado del ADMIN (antes de cualquier callback general).
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel_"))
     app.add_handler(CallbackQueryHandler(admin_user_callback, pattern="^(?:admin_user_|admin_review_)"))
+    app.add_handler(CallbackQueryHandler(registration_bridge_callback, pattern=r"^(?:registration_link_confirm|registration_pay_yes|registration_pay_no):[0-9a-f]{20}$"))
     app.add_handler(CallbackQueryHandler(panel_launch_review_callback, pattern=r"^panel_launch_(?:yes|no):[0-9a-f]{20}$"))
     app.add_handler(CallbackQueryHandler(admin_broker_callback, pattern="^admin_broker_"))
     app.add_handler(CallbackQueryHandler(broker_user_callback, pattern="^broker_(?:id|deposit)_select:"))

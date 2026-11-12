@@ -70,10 +70,12 @@ class AuditTests(unittest.IsolatedAsyncioTestCase):
   if not before.exists():self.skipTest('Local baseline only')
   def defs(path):return {n.name:n for n in ast.parse(path.read_text()).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
   old,new=defs(before),defs(SOURCE)
-  start=copy.deepcopy(new['start']);start.body=[n for n in start.body if not (isinstance(n,ast.If) and 'start_param in' in ast.unparse(n.test) and "'panel_en'" in ast.unparse(n.test))]
+  start=copy.deepcopy(new['start']);start.body=[n for n in start.body if not (isinstance(n,ast.If) and (('start_param in' in ast.unparse(n.test) and "'panel_en'" in ast.unparse(n.test)) or "start_param.startswith('panel_link_')"==ast.unparse(n.test)))]
+  for n in ast.walk(start):
+   if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='_log_event' and len(n.args)>2 and isinstance(n.args[1],ast.Constant) and n.args[1].value=='BOT_START':n.args[2]=ast.parse("start_param or 'normal'",mode='eval').body
   self.assertEqual(ast.dump(start),ast.dump(old['start']))
   for name in old:
-   if name not in {'start','_panel_delivery_notify','panel_launch_review_callback'}:self.assertEqual(ast.dump(old[name]),ast.dump(new[name]),name)
+   if name not in {'start','_panel_delivery_notify','_panel_admin_confirmation','panel_launch_review_callback','post_init_app'}:self.assertEqual(ast.dump(old[name]),ast.dump(new[name]),name)
  async def test_non_owner_cannot_approve_a_panel_ticket(self):
   node=next(n for n in ast.parse(SOURCE.read_text()).body if isinstance(n,ast.AsyncFunctionDef) and n.name=='panel_launch_review_callback')
   self.e['_PANEL_LAUNCH']=Mock();self.e['_PANEL_LAUNCH'].review=Mock()
