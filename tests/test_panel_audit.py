@@ -49,7 +49,7 @@ class AuditTests(unittest.IsolatedAsyncioTestCase):
   fake=SimpleNamespace(send_info=AsyncMock())
   self.e.update(panel_marketing=fake,_touch_user_activity=Mock(),set_user_lang=Mock())
   exec(compile(ast.Module(body=[node],type_ignores=[]),'<real start>','exec'),self.e)
-  for uid,lang,stage,args,expected in [(123,'es','PRE',['panel'],'es'),(124,'en','DEPOSITED',['panel'],'en'),(125,'es','POST',['panel_en'],'en')]:
+  for uid,lang,stage,args,expected in [(123,'es','PRE',['panel'],'es'),(124,'en','DEPOSITED',['panel'],'es'),(125,'es','POST',['panel_en'],'en'),(126,'en','PRE',['panel_en'],'en')]:
    if uid!=123:
     with self.e['Session']() as s:s.add(self.e['Usuario'](telegram_id=str(uid),nombre='Member',lang=lang,stage=stage));s.commit()
    self.e['get_user_lang']=lambda _, value=lang:value
@@ -57,6 +57,7 @@ class AuditTests(unittest.IsolatedAsyncioTestCase):
    update=SimpleNamespace(effective_chat=SimpleNamespace(id=uid,type='private'),effective_user=SimpleNamespace(id=uid,full_name='Member',language_code='es'),effective_message=SimpleNamespace(reply_text=AsyncMock()))
    await self.e['start'](update,self.context)
    self.assertEqual(fake.send_info.call_args.args,(self.bot,uid,expected))
+   if expected!=lang:self.e['set_user_lang'].assert_called_with(uid,'Member',expected)
    with self.e['Session']() as s:self.assertEqual(s.query(self.e['Usuario']).filter_by(telegram_id=str(uid)).one().stage,stage)
    self.e['_sync_menu_campaign_for_stage'].assert_not_called()
  async def test_direct_panel_start_refuses_groups(self):

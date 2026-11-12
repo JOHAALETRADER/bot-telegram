@@ -10194,7 +10194,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Dedicated public panel entry: never grants access or resets registration.
     if start_param in {"panel", "panel_en"}:
-        panel_lang = "en" if start_param == "panel_en" else (lang if direct_id_language_configured else "es")
+        panel_lang = "en" if start_param == "panel_en" else "es"
         if panel_lang != lang:
             set_user_lang(chat_id, nombre, panel_lang)
         await panel_marketing.send_info(context.bot, chat_id, panel_lang)
