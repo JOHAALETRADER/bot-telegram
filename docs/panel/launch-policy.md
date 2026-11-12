@@ -11,3 +11,7 @@ The first successful startup snapshots existing Premium/Prestige members from pe
 Owner operation: validate the broker deposit using the existing flow, then use the additional panel date/ID confirmation card. `/panelpendientes` restores pending cards after message loss or restart. Users can retry package delivery from My JT Space after a Telegram delivery error.
 
 Rollback scope: source changes only; never delete snapshot/review tables or alter pre-existing VIP data. The previous source revision can be restored, but its historical USD230 delivery gate does not implement the launch policy.
+
+Delivery audit: successful member package sends trigger a separate owner confirmation. An owner-notice failure never repeats the member package or changes the deposit; the notice can retry on the next delivery check. The receipt means Telegram accepted the package, not that the member downloaded or installed it.
+
+Public panel entry: https://t.me/JOHAALETRADER_bot?start=panel (Spanish default; preserves an existing language), and https://t.me/JOHAALETRADER_bot?start=panel_en (English). These entries display public information and a registration button, never grant access or reset registration.

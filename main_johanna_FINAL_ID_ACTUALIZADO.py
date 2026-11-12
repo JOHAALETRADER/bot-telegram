@@ -6254,22 +6254,47 @@ def _panel_delivery_eligible(chat_id: int) -> bool:
     return bool(_PANEL_LAUNCH and _PANEL_LAUNCH.eligible(chat_id, _broker_rows(chat_id)))
 
 
+async def _panel_admin_confirmation(context, chat_id: int, delivered_at):
+    # A failed admin notification must not undo or duplicate a delivered package.
+    try:
+        if not _PANEL_LAUNCH or not _PANEL_LAUNCH.notice_needed(chat_id, delivered_at):
+            return
+        with Session() as session:
+            user = session.query(Usuario).filter_by(telegram_id=str(chat_id)).first()
+            name = (user.nombre if user else None) or str(chat_id)
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(f"✅ PAQUETE DEL PANEL ENVIADO\n\nUsuario: {name}\nTelegram ID: {chat_id}\n"
+                  "Se enviaron el acceso al portal de descarga y la guía en su idioma.\n"
+                  "La confirmación corresponde al envío por Telegram; no acredita descarga ni instalación.\n"
+                  "La aprobación de la cuenta del panel sigue siendo independiente."),
+        )
+        _PANEL_LAUNCH.notice_sent(chat_id, delivered_at)
+    except Exception:
+        logging.exception("PANEL_ADMIN_CONFIRMATION_FAILED user=%s; delivered package preserved", chat_id)
+
+
 async def _panel_delivery_notify(context, chat_id: int, lang: str, *, requested=False):
     if not _panel_delivery_eligible(chat_id):
         return False
     try:
+        previous_delivery = None
         if not requested:
             with Session() as session:
                 receipt = session.get(PanelOnboardingState, str(chat_id))
-                if receipt and receipt.delivered_at:
-                    return True
+                previous_delivery = receipt.delivered_at if receipt else None
+            if previous_delivery:
+                await _panel_admin_confirmation(context, chat_id, previous_delivery)
+                return True
         await panel_delivery.send_package(context.bot, chat_id, lang)
         with Session() as session:
             receipt = session.get(PanelOnboardingState, str(chat_id))
             if not receipt:
                 receipt = PanelOnboardingState(telegram_id=str(chat_id)); session.add(receipt)
-            receipt.delivered_at = utcnow_naive()
+            delivered_at = utcnow_naive()
+            receipt.delivered_at = delivered_at
             session.commit()
+        await _panel_admin_confirmation(context, chat_id, delivered_at)
         _log_event(chat_id, "PANEL_ONBOARDING_DELIVERED", "Launch policy eligibility checked; portal licence remains independent")
         return True
     except Exception:
@@ -8340,7 +8365,9 @@ async def panel_launch_review_callback(update: Update, context: ContextTypes.DEF
     result, message = _PANEL_LAUNCH.review(ticket, approved, ADMIN_ID, _broker_rows(uid))
     if result and approved and result["status"] == "APPROVED":
         delivered = await _panel_delivery_notify(context, uid, get_user_lang(uid))
-        if not delivered:
+        if delivered:
+            message += " Paquete enviado por Telegram o envío anterior confirmado."
+        else:
             message += " La entrega falló; el usuario puede reintentar desde Mi espacio → Mi panel."
     await q.message.reply_text(message)
     if result and result["status"] != "PENDING":
@@ -10089,6 +10116,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # v7.10.88: cada /start queda persistido; el ADMIN recibe solo cortes agregados.
     # detail conserva el deep-link/origen para auditoría sin alterar el tracking existente.
     _log_event(chat_id, "BOT_START", start_param or "normal")
+
+    # Dedicated public panel entry: never grants access or resets registration.
+    if start_param in {"panel", "panel_en"}:
+        panel_lang = "en" if start_param == "panel_en" else (lang if direct_id_language_configured else "es")
+        if panel_lang != lang:
+            set_user_lang(chat_id, nombre, panel_lang)
+        await panel_marketing.send_info(context.bot, chat_id, panel_lang)
+        _log_event(chat_id, "PANEL_INFO_START", panel_lang)
+        return
 
     # Direct ID validation: preserve stored language, attribution and all account history.
     if start_param == "validar_id":

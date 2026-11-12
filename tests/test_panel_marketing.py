@@ -25,7 +25,7 @@ class MarketingTests(unittest.IsolatedAsyncioTestCase):
    self.assertLessEqual(len(public.details(lang).encode('utf-16-le'))//2,1024)
    self.assertNotEqual(public.INFO_URLS[lang],restricted.GUIDE_URLS[lang])
    buttons=[b for row in public.keyboard(lang).inline_keyboard for b in row]
-   self.assertEqual(buttons[0].url,public.INFO_URLS[lang])
+   self.assertEqual(next(b.url for b in buttons if b.url),public.INFO_URLS[lang])
    self.assertFalse(any(b.url in (restricted.PORTAL_URL,restricted.ACCOUNT_URL,restricted.GUIDE_URLS[lang]) for b in buttons))
  def test_levels_show_public_button_for_both_languages(self):
   node=next(n for n in TREE.body if isinstance(n,ast.FunctionDef) and n.name=='levels_keyboard')
@@ -55,6 +55,6 @@ class MarketingTests(unittest.IsolatedAsyncioTestCase):
      bot.send_photo=AsyncMock(side_effect=RuntimeError('image failure'))
      await public.send_info(bot,123,lang)
      bot.send_message.assert_awaited_once()
-     self.assertEqual(bot.send_message.call_args.kwargs['reply_markup'].inline_keyboard[0][0].url,public.INFO_URLS[lang])
+     self.assertEqual(next(b.url for row in bot.send_message.call_args.kwargs['reply_markup'].inline_keyboard for b in row if b.url),public.INFO_URLS[lang])
    finally:public.PHOTO_PATH=old
 if __name__=='__main__':unittest.main()

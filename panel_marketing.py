@@ -56,6 +56,7 @@ def details(lang):
 def keyboard(lang):
     en = lang == 'en'
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton('📝 I want to register' if en else '📝 Quiero registrarme', callback_data='registrarme')],
         [InlineKeyboardButton('📖 What it includes and how it works' if en else '📖 Qué incluye y cómo funciona', url=INFO_URLS['en' if en else 'es'])],
         [InlineKeyboardButton('🎁 Benefits, levels and plans' if en else '🎁 Beneficios, niveles y planes', callback_data='levels_plans_en' if en else 'niveles_planes')],
     ])

@@ -30,7 +30,7 @@ import panel_delivery
 import panel_launch
 URL='https://exnova.com/lp/start-trading/?aff=838919&aff_model=revenue&afftrack=JOHAALETRADER'
 FUNCTIONS={
- '_panel_delivery_eligible','_panel_delivery_notify','utcnow_naive','_usd','_norm','_broker_norm','_broker_label','_broker_key','_broker_get',
+ '_panel_admin_confirmation','_panel_delivery_eligible','_panel_delivery_notify','utcnow_naive','_usd','_norm','_broker_norm','_broker_label','_broker_key','_broker_get',
  '_broker_rows','_broker_validated_brokers','_broker_flow_get','_broker_flow_set',
  '_broker_selection_keyboard','_broker_upgrade_window_open','_max_level','_vip_level_for_total_cents',
  '_broker_preview_deposit','_broker_seed_legacy_if_matching','_broker_bind_legacy_validated_id',

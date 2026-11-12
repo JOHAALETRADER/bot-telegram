@@ -37,6 +37,12 @@ class Deposit(Base):
     reviewer_id=Column(String)
     __table_args__=(UniqueConstraint('telegram_id','broker','sequence',name='uq_panel_launch_deposit'),)
 
+class DeliveryNotice(Base):
+    __tablename__='panel_delivery_admin_notice'
+    telegram_id=Column(String,primary_key=True)
+    notified_delivery_at=Column(DateTime,nullable=False)
+    notified_at=Column(DateTime,nullable=False)
+
 class Store:
     def __init__(self,engine,Session,VIP,Broker,Receipt):
         self.Session=Session; self.ready=False
@@ -50,6 +56,16 @@ class Store:
                 for uid in cohort|set(delivered):s.add(Member(telegram_id=uid,existing=int(uid in cohort),granted_at=delivered.get(uid)))
                 s.add(Policy(key=POLICY,activated_at=now()));s.commit()
         self.ready=True
+    def notice_needed(self,uid,delivered_at):
+        with self.Session() as s:
+            r=s.get(DeliveryNotice,str(uid))
+            return not r or r.notified_delivery_at < delivered_at
+    def notice_sent(self,uid,delivered_at):
+        with self.Session() as s:
+            r=s.get(DeliveryNotice,str(uid))
+            if not r:r=DeliveryNotice(telegram_id=str(uid));s.add(r)
+            if not r.notified_delivery_at or r.notified_delivery_at < delivered_at:
+                r.notified_delivery_at=delivered_at;r.notified_at=now();s.commit()
     def existing(self,uid):
         with self.Session() as s:
             m=s.get(Member,str(uid));return bool(m and m.existing)
@@ -59,6 +75,7 @@ class Store:
             m=s.get(Member,str(uid))
             if not m or not m.granted_at:return False
             event=s.get(Deposit,m.grant_ticket) if m.grant_ticket else None
+            if m.grant_ticket and (not event or event.status!='APPROVED'):return False
             return any(valid_account(a) and (not event or (a['broker']==event.broker and str(a['trading_id'])==event.trading_id)) for a in accounts)
     def record(self,s,uid,broker,row,preview):
         """Called inside the deposit transaction/savepoint, after ID/duplicate checks."""
