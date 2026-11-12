@@ -1,5 +1,9 @@
 {
+  "path": "JOHAALETRADER--Guía-de-instalación-y-acceso-al-panel-11-11",
+  "url": "https://telegra.ph/JOHAALETRADER--Guía-de-instalación-y-acceso-al-panel-11-11",
   "title": "JOHAALETRADER · Guía de instalación y acceso al panel",
+  "description": "",
+  "author_name": "JOHAALETRADER · JT TRADERS TEAMS",
   "content": [
     {
       "tag": "figure",
@@ -20,6 +24,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "Bienvenida-a-tu-panel-JOHAALETRADER"
+      },
       "children": [
         "Bienvenida a tu panel JOHAALETRADER"
       ]
@@ -32,24 +39,48 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "1.-Telegram-Premium-y-panel-con-licencia:-qué-cambia"
+      },
       "children": [
-        "1. Quién puede recibirlo"
+        "1. Telegram Premium y panel con licencia: qué cambia"
       ]
     },
     {
       "tag": "p",
       "children": [
-        "Premium normal: depósito validado de USD200 en tu propia cuenta de trading, con los beneficios habituales de la comunidad. Premium con panel: depósito validado de al menos USD230 en una misma cuenta de Exnova, Binomo o Stockity registrada con el enlace oficial de Johanna. Los USD230 permanecen en tu cuenta de trading; no son un pago a Johanna ni la mensualidad del panel."
+        "Telegram Premium: conservas tus canales, formación y beneficios habituales. Las listas del Software Premium anticipado de Binomo y Stockity continúan publicándose de lunes a sábado en los canales de Telegram como hasta ahora. La licencia del panel es un servicio adicional; su vencimiento no elimina tus beneficios Premium de Telegram."
       ]
     },
     {
       "tag": "p",
       "children": [
-        "Johanna debe validar primero tu ID de registro y después el comprobante del depósito. Enviar un comprobante o crear una cuenta no activa el acceso por sí solo. No se suman depósitos de distintos brokers para cumplir este requisito."
+        "Panel con licencia: reúne las señales disponibles para tu plan en una interfaz de trabajo, con alertas de entrada, registro de resultados, historial personal, bitácora y herramientas de gestión de capital. Te permite organizar y dar seguimiento a tu operativa desde el computador."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Exnova es exclusivo del panel: sus señales no se publican en los canales de Telegram. Están disponibles dentro del panel para las cuentas habilitadas con acceso a Exnova."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Domingos exclusivos del panel: señales del Software Premium anticipado de pares de divisas y Crypto IDX para Binomo y Stockity, dentro del plan de los tres brokers. Las señales se reciben únicamente en el panel; no se publican en ningún canal de Telegram. Las publicaciones habituales de Telegram de lunes a sábado continúan igual."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "El plan Exnova cuesta USD15 al mes o COP50.000. El plan Exnova + Binomo + Stockity cuesta USD20 al mes o COP65.000. El contenido de Binomo y Stockity corresponde al plan de tres brokers; no está incluido en la licencia de solo Exnova."
       ]
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "2.-Tu-cuenta-y-los-14-días-de-prueba"
+      },
       "children": [
         "2. Tu cuenta y los 14 días de prueba"
       ]
@@ -57,7 +88,7 @@
     {
       "tag": "p",
       "children": [
-        "Cuando cumplas el requisito, el bot te mostrará las opciones del panel. Abre «Mi acceso al panel» y crea tu cuenta con nombre, correo y contraseña de al menos 12 caracteres, si todavía no tienes una. Conserva el mismo correo para entrar en el portal y en el programa."
+        "Ya recibiste las opciones del panel después de la validación de tu ID y depósito. Abre «Mi acceso al panel» y crea tu cuenta con nombre, correo y contraseña de al menos 12 caracteres, si todavía no tienes una. Conserva el mismo correo para entrar en el portal y en el programa."
       ]
     },
     {
@@ -69,11 +100,14 @@
     {
       "tag": "p",
       "children": [
-        "Los 14 días de prueba comienzan con la primera aprobación del acceso al panel. La fecha exacta aparece en «Mi cuenta». Descargar, reinstalar, cambiar de equipo o volver a abrir el enlace no reinicia la prueba."
+        "Los 14 días de prueba incluyen Exnova, Binomo y Stockity y comienzan con la primera aprobación del acceso al panel. Una sola validación de ingreso es suficiente; no necesitas validar un depósito en cada broker para probarlos. La fecha exacta aparece en «Mi cuenta». Descargar, reinstalar, cambiar de equipo o volver a abrir el enlace no reinicia la prueba."
       ]
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "3.-Descargar-desde-tu-portal"
+      },
       "children": [
         "3. Descargar desde tu portal"
       ]
@@ -98,6 +132,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "4.-Instalar-en-Windows"
+      },
       "children": [
         "4. Instalar en Windows"
       ]
@@ -122,6 +159,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "5.-Iniciar-sesión-por-primera-vez"
+      },
       "children": [
         "5. Iniciar sesión por primera vez"
       ]
@@ -146,6 +186,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "6.-Usar-el-panel"
+      },
       "children": [
         "6. Usar el panel"
       ]
@@ -170,6 +213,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "7.-Mensualidad,-gracia-y-reconexión"
+      },
       "children": [
         "7. Mensualidad, gracia y reconexión"
       ]
@@ -177,7 +223,7 @@
     {
       "tag": "p",
       "children": [
-        "Al terminar la prueba, la licencia del panel se paga mensualmente. Solo Exnova: USD15 al mes o COP50.000. Exnova + Binomo + Stockity: USD20 al mes o COP65.000. Selecciona el plan acordado y revisa el valor que aparece antes de pagar."
+        "Al terminar la prueba, la licencia del panel se paga mensualmente. Solo Exnova: USD15 al mes o COP50.000. Exnova + Binomo + Stockity: USD20 al mes o COP65.000. Al pagar eliges tu licencia: solo Exnova o los tres brokers. El broker con el que ingresaste no limita esa elección. Tras confirmar el pago, únicamente quedan habilitados los brokers incluidos en la licencia elegida. Revisa el valor que aparece antes de pagar."
       ]
     },
     {
@@ -195,11 +241,14 @@
     {
       "tag": "p",
       "children": [
-        "El depósito de USD230 que habilita la entrega del panel y la mensualidad de la licencia son conceptos diferentes. Pagar una mensualidad no reemplaza la validación del registro y del depósito."
+        "El depósito que habilita la entrega del panel según tu condición de acceso y la mensualidad de la licencia son conceptos diferentes. Pagar una mensualidad no reemplaza la validación del registro y del depósito."
       ]
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "8.-Cómo-renovar-o-reportar-un-pago"
+      },
       "children": [
         "8. Cómo renovar o reportar un pago"
       ]
@@ -224,6 +273,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "9.-Actualizaciones-y-ayuda"
+      },
       "children": [
         "9. Actualizaciones y ayuda"
       ]
@@ -252,13 +304,31 @@
         {
           "tag": "a",
           "attrs": {
-            "href": "https://panel-api-production-1509.up.railway.app/portal"
+            "href": "https://panel-api-production-1509.up.railway.app/portal",
+            "target": "_blank"
           },
           "children": [
             "Abrir mi portal"
           ]
         }
       ]
+    },
+    {
+      "tag": "h3",
+      "attrs": {
+        "id": "Condiciones-de-acceso-desde-el-lanzamiento"
+      },
+      "children": [
+        "Condiciones de acceso desde el lanzamiento"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Si ya eras Premium o Prestige antes del lanzamiento, puedes añadir el panel con un depósito NUEVO de al menos USD100 realizado desde el 11 de noviembre de 2026 en tu propia cuenta de trading. Notifícamelo con el comprobante para validar la fecha y el depósito; no cuentan depósitos anteriores. Si eres Básico, debes hacer upgrade a Premium + Panel hasta USD230, dentro de las reglas y ventana de acumulación vigentes, o un depósito nuevo de USD230 si ya no aplica acumular. Primero valido el ID y después se realiza el depósito. Los accesos habituales de Telegram se mantienen."
+      ]
     }
-  ]
+  ],
+  "views": 0,
+  "can_edit": true
 }

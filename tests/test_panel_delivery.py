@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock,Mock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import panel_delivery as panel
+import panel_launch
+from datetime import datetime
 from test_exnova_registration import load,SOURCE
 class PanelDeliveryTests(unittest.IsolatedAsyncioTestCase):
  def state(self,**kw):
@@ -23,7 +25,7 @@ class PanelDeliveryTests(unittest.IsolatedAsyncioTestCase):
    self.assertLessEqual(len(panel.welcome(lang)),1024)
    rows=panel.keyboard(lang).inline_keyboard
    self.assertEqual(rows[1][0].url,panel.GUIDE_URLS[lang]);self.assertEqual(rows[0][0].url,panel.PORTAL_URL)
-   self.assertIn('14',panel.welcome(lang));self.assertIn('USD230',panel.welcome(lang))
+   self.assertIn('14',panel.welcome(lang));self.assertNotIn('at least USD230 have been validated',panel.welcome(lang))
  async def test_photo_failure_falls_back_to_buttons(self):
   import tempfile
   with tempfile.TemporaryDirectory() as d:
@@ -34,6 +36,8 @@ class PanelDeliveryTests(unittest.IsolatedAsyncioTestCase):
    bot.send_message.assert_awaited_once();self.assertEqual(len(bot.send_message.call_args.kwargs['reply_markup'].inline_keyboard),3)
  async def test_delivery_is_persistent_and_requested_reopen_works(self):
   e,engine=load(SOURCE);e['_broker_rows']=lambda _: [self.state()]
+  e['_PANEL_LAUNCH']=panel_launch.Store(engine,e['Session'],e['VIPAccessState'],e['BrokerAccountState'],e['PanelOnboardingState'])
+  with e['Session']() as s:s.add(panel_launch.Member(telegram_id='123',existing=0,granted_at=datetime.utcnow()));s.commit()
   context=SimpleNamespace(bot=SimpleNamespace(send_photo=AsyncMock(),send_message=AsyncMock()))
   old=panel.send_package;panel.send_package=AsyncMock()
   try:
@@ -45,6 +49,8 @@ class PanelDeliveryTests(unittest.IsolatedAsyncioTestCase):
   finally:panel.send_package=old;engine.dispose()
  async def test_failure_never_grants_or_undoes_vip_and_is_retryable(self):
   e,engine=load(SOURCE);e['_broker_rows']=lambda _: [self.state()]
+  e['_PANEL_LAUNCH']=panel_launch.Store(engine,e['Session'],e['VIPAccessState'],e['BrokerAccountState'],e['PanelOnboardingState'])
+  with e['Session']() as s:s.add(panel_launch.Member(telegram_id='123',existing=0,granted_at=datetime.utcnow()));s.commit()
   old=panel.send_package;panel.send_package=AsyncMock(side_effect=RuntimeError('simulated failure'))
   try:
    self.assertFalse(await e['_panel_delivery_notify'](SimpleNamespace(bot=object()),123,'es'))

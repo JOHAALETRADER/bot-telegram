@@ -49,7 +49,7 @@
     {
       "tag": "p",
       "children": [
-        "Premium normal se activa desde USD200 en tu propia cuenta de trading y conserva sus beneficios y canales habituales. Premium + Panel se habilita desde USD230 en una misma cuenta de Exnova, Binomo o Stockity. Primero valido tu ID; después puedes depositar en tu propia cuenta y, una vez que valide el depósito, habilito el acceso al panel. Es un beneficio adicional de Premium, no otro nivel de la comunidad. Los USD230 permanecen en tu cuenta de trading: no son el pago de la licencia."
+        "Premium normal se activa desde USD200 en tu propia cuenta de trading y conserva sus beneficios y canales habituales. Para nuevos ingresos, Premium + Panel se habilita desde USD230 en una misma cuenta de Exnova, Binomo o Stockity. Primero valido tu ID; después puedes depositar en tu propia cuenta y, una vez que valide el depósito, habilito el acceso al panel. Es un beneficio adicional de Premium, no otro nivel de la comunidad. Los USD230 permanecen en tu cuenta de trading: no son el pago de la licencia."
       ]
     },
     {
@@ -64,7 +64,7 @@
     {
       "tag": "p",
       "children": [
-        "Las señales de Exnova se entregan exclusivamente en el panel, no por Telegram. Además, las listas del Software Premium Anticipado de pares de divisas y Crypto IDX de los domingos para Binomo y Stockity se publican solo en el panel, cuando las preparo y confirmo. Los envíos habituales de Telegram de lunes a sábado continúan igual. El panel también permite llevar tu registro personal y consultar tus resultados."
+        "Las señales de Exnova se entregan exclusivamente en el panel, no por Telegram. Además, las listas del Software Premium Anticipado de pares de divisas y Crypto IDX de los domingos para Binomo y Stockity se publican solo en el panel. Los envíos habituales de Telegram de lunes a sábado continúan igual. El panel también permite llevar tu registro personal y consultar tus resultados."
       ]
     },
     {
@@ -124,7 +124,7 @@
     {
       "tag": "p",
       "children": [
-        "Regístrate con los enlaces oficiales del bot. Primero valido tu ID; después puedes realizar el depósito en tu cuenta de trading. Solo después de validar también el depósito y de cumplir el mínimo de USD230, el bot entrega el acceso a la descarga, la imagen y el manual de instalación. La cuenta del panel requiere mi aprobación. Esta página es informativa: leerla no activa una licencia ni entrega credenciales. La aplicación funciona en Windows, no en teléfonos ni Mac."
+        "Regístrate con los enlaces oficiales del bot. Primero valido tu ID; después puedes realizar el depósito en tu cuenta de trading. Solo después de validar también el depósito y de cumplir la condición de acceso que te corresponda, el bot entrega el acceso a la descarga, la imagen y el manual de instalación. La cuenta del panel requiere mi aprobación. Esta página es informativa: leerla no activa una licencia ni entrega credenciales. La aplicación funciona en Windows, no en teléfonos ni Mac."
       ]
     },
     {
@@ -140,6 +140,21 @@
       "tag": "p",
       "children": [
         "Vuelve al bot de registros y usa sus opciones de registro o consulta conmigo. Si ya eres Premium con USD200, consulta la validación del saldo adicional de USD30 en la misma cuenta para acceder al beneficio del panel. Las señales no garantizan resultados; aplica tu gestión de riesgo."
+      ]
+    },
+    {
+      "tag": "h3",
+      "attrs": {
+        "id": "Condiciones-de-acceso-desde-el-lanzamiento"
+      },
+      "children": [
+        "Condiciones de acceso desde el lanzamiento"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Si ya eras Premium o Prestige antes del lanzamiento, puedes añadir el panel con un depósito NUEVO de al menos USD100 realizado desde el 11 de noviembre de 2026 en tu propia cuenta de trading. Notifícamelo con el comprobante para validar la fecha y el depósito; no cuentan depósitos anteriores. Si eres Básico, debes hacer upgrade a Premium + Panel hasta USD230, dentro de las reglas y ventana de acumulación vigentes, o un depósito nuevo de USD230 si ya no aplica acumular. Primero valido el ID y después se realiza el depósito. Los accesos habituales de Telegram se mantienen."
       ]
     }
   ],

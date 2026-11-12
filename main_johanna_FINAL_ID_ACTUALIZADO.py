@@ -1,6 +1,7 @@
 import logging
 import panel_delivery
 import panel_marketing
+import panel_launch
 import asyncio
 import re
 import json
@@ -496,6 +497,13 @@ class ManualReplyDelivery(Base):
 engine = create_engine(DATABASE_URL, echo=False)
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
+
+_PANEL_LAUNCH = None
+try:
+    _PANEL_LAUNCH = panel_launch.Store(engine, Session, VIPAccessState, BrokerAccountState, PanelOnboardingState)
+    logging.info("PANEL_LAUNCH_READY policy=%s", panel_launch.POLICY)
+except Exception:
+    logging.exception("PANEL_LAUNCH_INIT_FAILED: panel delivery blocked; existing VIP flows remain available")
 
 # === CÓDIGOS PROMOCIONALES DINÁMICOS ===
 PROMO_CONFIG_KEY = "ACTIVE"
@@ -1940,7 +1948,7 @@ def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
             "• To accumulate subsequent deposits, send each proof within 72 hours of that deposit. This check does not apply to the first deposit.\n"
             "• After the 3rd deposit or when the 30-day window ends, the next upgrade requires ONE deposit that by itself reaches the full minimum of the target level.\n"
             "• Binomo, Stockity and Exnova are calculated separately. Only deposits reported and validated in this chat count."
-        )
+        ) + "\n\n" + panel_launch.conditions(lang)
     title = (
         f"📈 UPGRADE JT TRADERS TEAMS · HACIA {_vip_level_label(target, lang).upper()}"
         if target != VIP_LEVEL_NONE else
@@ -1953,7 +1961,7 @@ def upgrade_conditions_text(lang: str = "es", target_level: str = None) -> str:
         "• Para acumular los depósitos posteriores, envía cada comprobante dentro de las 72 horas posteriores a ese depósito. Esta comprobación no aplica al primer depósito.\n"
         "• Después del tercer depósito o al vencer los 30 días, el siguiente upgrade requiere UN depósito que por sí solo alcance el mínimo completo del nivel objetivo.\n"
         "• Binomo, Stockity y Exnova se calculan por separado. Solo cuentan depósitos reportados y validados en este chat."
-    )
+    ) + "\n\n" + panel_launch.conditions(lang)
 
 
 def _upgrade_account_instructions_text(chat_id: int, target_level: str, lang: str = "es") -> str:
@@ -6243,7 +6251,7 @@ async def _close_callback_panel(context, q, chat_id: int, lang: str):
 
 
 def _panel_delivery_eligible(chat_id: int) -> bool:
-    return panel_delivery.qualifies(_broker_rows(chat_id))
+    return bool(_PANEL_LAUNCH and _PANEL_LAUNCH.eligible(chat_id, _broker_rows(chat_id)))
 
 
 async def _panel_delivery_notify(context, chat_id: int, lang: str, *, requested=False):
@@ -6262,7 +6270,7 @@ async def _panel_delivery_notify(context, chat_id: int, lang: str, *, requested=
                 receipt = PanelOnboardingState(telegram_id=str(chat_id)); session.add(receipt)
             receipt.delivered_at = utcnow_naive()
             session.commit()
-        _log_event(chat_id, "PANEL_ONBOARDING_DELIVERED", "USD230 eligibility checked; portal licence remains independent")
+        _log_event(chat_id, "PANEL_ONBOARDING_DELIVERED", "Launch policy eligibility checked; portal licence remains independent")
         return True
     except Exception:
         # A guide/photo/Telegram failure must never undo a validated VIP deposit.
@@ -6297,6 +6305,8 @@ def member_space_keyboard(chat_id: int, lang: str = "es") -> InlineKeyboardMarku
 
     if _panel_delivery_eligible(chat_id):
         rows.append([InlineKeyboardButton("🖥 MY SIGNALS PANEL" if lang == "en" else "🖥 MI PANEL DE SEÑALES", callback_data="member_signals_panel")])
+    else:
+        rows.append([InlineKeyboardButton("🖥 ADD THE SIGNALS PANEL" if lang == "en" else "🖥 AÑADIR EL PANEL DE SEÑALES", callback_data="panel_upgrade")])
 
     rows.extend([
         [InlineKeyboardButton(capital_label, callback_data="member_capital")],
@@ -8143,6 +8153,7 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
     if int(current.get("deposit_count") or 0) != int(preview.get("old_count") or 0):
         return False, "⚠️ El contador de depósitos cambió. Revisa nuevamente para evitar duplicados."
 
+    panel_ticket = None
     old_global_state = _vip_get_state(chat_id, create=False) or {}
     old_global = old_global_state.get("level") or VIP_LEVEL_NONE
     try:
@@ -8153,7 +8164,14 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
             row.validated_deposit_count = int(preview["new_count"])
             row.first_validated_deposit_at = preview.get("first_after") or utcnow_naive()
             row.level = preview.get("new_level") or VIP_LEVEL_NONE
-            row.updated_at = utcnow_naive(); session.commit()
+            row.updated_at = utcnow_naive()
+            if _PANEL_LAUNCH:
+                try:
+                    with session.begin_nested():
+                        panel_ticket = _PANEL_LAUNCH.record(session, chat_id, broker, row, preview)
+                except Exception:
+                    logging.exception("PANEL_LAUNCH_RECORD_FAILED user=%s; VIP deposit preserved", chat_id)
+            session.commit()
     except Exception as e:
         logging.exception("No pude aplicar depósito broker")
         return False, f"❌ No pude guardar el depósito: {e}"
@@ -8261,6 +8279,8 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
         )
 
     await _panel_delivery_notify(context, chat_id, lang)
+    if panel_ticket:
+        await _panel_launch_admin_notice(context, panel_ticket)
 
     admin_result = (
         f"✅ DEPÓSITO CONFIRMADO · {_broker_label(broker).upper()}\n\n"
@@ -8276,6 +8296,58 @@ async def _admin_apply_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_i
     else:
         admin_result += "\n\nℹ️ No hay accesos nuevos que habilitar; el nivel general se mantiene."
     return True, admin_result
+
+
+async def _panel_launch_admin_notice(context, ticket):
+    try:
+        event = _PANEL_LAUNCH.lookup(ticket) if _PANEL_LAUNCH else None
+        if event and event["status"] == "PENDING":
+            await context.bot.send_message(chat_id=ADMIN_ID, text=panel_launch.review_text(event), reply_markup=panel_launch.review_keyboard(event))
+    except Exception:
+        logging.exception("PANEL_LAUNCH_NOTICE_FAILED: retry via /panelpendientes")
+
+
+async def panel_launch_pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+        return
+    if not _PANEL_LAUNCH:
+        await update.effective_message.reply_text("La validación del panel no está disponible. Los accesos VIP se conservan.")
+        return
+    pending = _PANEL_LAUNCH.pending()
+    if not pending:
+        await update.effective_message.reply_text("No hay validaciones del panel pendientes.")
+    for event in pending:
+        await _panel_launch_admin_notice(context, event["ticket"])
+
+
+async def panel_launch_review_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not update.effective_user or update.effective_user.id != ADMIN_ID:
+        if q:
+            await q.answer("Solo administración.", show_alert=True)
+        return
+    await q.answer()
+    if not _PANEL_LAUNCH:
+        await q.message.reply_text("La validación del panel no está disponible.")
+        return
+    action, ticket = (q.data or "").split(":", 1)
+    event = _PANEL_LAUNCH.lookup(ticket)
+    if not event:
+        await q.message.reply_text("No encuentro esa validación.")
+        return
+    approved = action == "panel_launch_yes"
+    uid = int(event["telegram_id"])
+    result, message = _PANEL_LAUNCH.review(ticket, approved, ADMIN_ID, _broker_rows(uid))
+    if result and approved and result["status"] == "APPROVED":
+        delivered = await _panel_delivery_notify(context, uid, get_user_lang(uid))
+        if not delivered:
+            message += " La entrega falló; el usuario puede reintentar desde Mi espacio → Mi panel."
+    await q.message.reply_text(message)
+    if result and result["status"] != "PENDING":
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logging.warning("PANEL_LAUNCH_REVIEW: could not clear old buttons")
 
 
 async def _start_admin_broker_deposit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, broker: str):
@@ -10314,6 +10386,11 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     _touch_user_activity(chat_id)
 
+    if q.data == "panel_upgrade":
+        lang = get_user_lang(chat_id)
+        await q.message.reply_text(panel_launch.conditions(lang), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 Notify my deposit" if lang == "en" else "💬 Notificar mi depósito", callback_data="ask_here")]]))
+        return
+
     if q.data == "panel_info":
         await panel_marketing.send_info(context.bot, chat_id, get_user_lang(chat_id))
         return
@@ -10322,9 +10399,9 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_user_lang(chat_id)
         if not _panel_delivery_eligible(chat_id):
             await q.message.reply_text(
-                "Panel delivery requires Johanna to validate your broker ID and a qualifying USD230 deposit in the same trading account."
+                panel_launch.conditions("en")
                 if lang == "en" else
-                "La entrega del panel requiere que Johanna valide tu ID y un depósito válido de USD230 en una misma cuenta de trading."
+                panel_launch.conditions("es")
             )
             return
         if not await _panel_delivery_notify(context, chat_id, lang, requested=True):
@@ -18415,6 +18492,7 @@ if __name__ == "__main__":
     )
 
     # Comando /start (selector de idioma)
+    app.add_handler(CommandHandler("panelpendientes", panel_launch_pending_command))
     app.add_handler(CommandHandler("start", start))
 
     # Aviso LIVE 20 días y marketing manual 20 días.
@@ -18455,6 +18533,7 @@ if __name__ == "__main__":
     # Panel privado del ADMIN (antes de cualquier callback general).
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel_"))
     app.add_handler(CallbackQueryHandler(admin_user_callback, pattern="^(?:admin_user_|admin_review_)"))
+    app.add_handler(CallbackQueryHandler(panel_launch_review_callback, pattern=r"^panel_launch_(?:yes|no):[0-9a-f]{20}$"))
     app.add_handler(CallbackQueryHandler(admin_broker_callback, pattern="^admin_broker_"))
     app.add_handler(CallbackQueryHandler(broker_user_callback, pattern="^broker_(?:id|deposit)_select:"))
 

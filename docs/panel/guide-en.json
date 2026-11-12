@@ -1,5 +1,9 @@
 {
+  "path": "JOHAALETRADER--Panel-installation-and-access-guide-11-11",
+  "url": "https://telegra.ph/JOHAALETRADER--Panel-installation-and-access-guide-11-11",
   "title": "JOHAALETRADER · Panel installation and access guide",
+  "description": "",
+  "author_name": "JOHAALETRADER · JT TRADERS TEAMS",
   "content": [
     {
       "tag": "figure",
@@ -20,6 +24,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "Welcome-to-your-JOHAALETRADER-panel"
+      },
       "children": [
         "Welcome to your JOHAALETRADER panel"
       ]
@@ -32,24 +39,48 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "1.-Telegram-Premium-and-the-licensed-panel:-what-changes"
+      },
       "children": [
-        "1. Who can receive it"
+        "1. Telegram Premium and the licensed panel: what changes"
       ]
     },
     {
       "tag": "p",
       "children": [
-        "Standard Premium requires a validated USD200 deposit in your own trading account and includes the usual community benefits. Premium with the panel requires a validated deposit of at least USD230 in one Exnova, Binomo or Stockity account registered through Johanna’s official link. This money stays in your trading account; it is not a payment to Johanna or the panel subscription fee."
+        "Telegram Premium: you keep your usual channels, education and community benefits. The Binomo and Stockity Advance Premium Software lists continue to be published Monday through Saturday in Telegram channels as usual. The panel license is an additional service; its expiry does not remove your Telegram Premium benefits."
       ]
     },
     {
       "tag": "p",
       "children": [
-        "Johanna must validate your registration ID first, then your deposit proof. Sending proof or creating an account does not activate access. Deposits from different brokers are not combined for this requirement."
+        "Licensed panel: brings together the signals available for your plan in a desktop workspace, with entry alerts, results tracking, personal history, a trading journal and capital management tools. It helps you organize and follow your trading activity from your computer."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Exnova is exclusive to the panel: its signals are not published in Telegram channels. They are available within the panel to authorized accounts with Exnova access."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "Panel-exclusive Sundays: Advance Premium Software currency-pair and Crypto IDX signals for Binomo and Stockity, under the three-broker plan. Signals are delivered only within the panel, never to any Telegram channel. Regular Monday–Saturday Telegram publications continue unchanged."
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "The Exnova plan costs USD15/month or COP50,000. Exnova + Binomo + Stockity costs USD20/month or COP65,000. Binomo and Stockity content belongs to the three-broker plan; it is not included in the Exnova-only license."
       ]
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "2.-Your-account-and-14-day-trial"
+      },
       "children": [
         "2. Your account and 14-day trial"
       ]
@@ -57,7 +88,7 @@
     {
       "tag": "p",
       "children": [
-        "Once you qualify, the bot will display the panel options. Open “My panel access” and create an account with your name, email and a password of at least 12 characters if you do not have one. Use the same account for the portal and the desktop application."
+        "You have received the panel options after your ID and deposit were validated. Open “My panel access” and create an account with your name, email and a password of at least 12 characters if you do not have one. Use the same account for the portal and the desktop application."
       ]
     },
     {
@@ -69,11 +100,14 @@
     {
       "tag": "p",
       "children": [
-        "The 14-day trial starts when your panel access is first approved. Check the exact expiry in “Mi cuenta” (My account). Downloading, reinstalling, changing computers or reopening a link does not restart the trial."
+        "The 14-day trial includes Exnova, Binomo and Stockity and starts when your panel access is first approved. One validated registration is sufficient; you do not need to validate a deposit at each broker to try them. Check the exact expiry in “Mi cuenta” (My account). Downloading, reinstalling, changing computers or reopening a link does not restart the trial."
       ]
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "3.-Download-from-your-portal"
+      },
       "children": [
         "3. Download from your portal"
       ]
@@ -98,6 +132,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "4.-Install-on-Windows"
+      },
       "children": [
         "4. Install on Windows"
       ]
@@ -122,6 +159,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "5.-Sign-in-for-the-first-time"
+      },
       "children": [
         "5. Sign in for the first time"
       ]
@@ -146,6 +186,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "6.-Use-the-panel"
+      },
       "children": [
         "6. Use the panel"
       ]
@@ -170,6 +213,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "7.-Monthly-fees,-grace-and-reconnection"
+      },
       "children": [
         "7. Monthly fees, grace and reconnection"
       ]
@@ -177,7 +223,7 @@
     {
       "tag": "p",
       "children": [
-        "After the trial, the panel license is paid monthly. Exnova only: USD15/month or COP50,000. Exnova + Binomo + Stockity: USD20/month or COP65,000. Select your agreed plan and check the displayed amount before paying."
+        "After the trial, the panel license is paid monthly. Exnova only: USD15/month or COP50,000. Exnova + Binomo + Stockity: USD20/month or COP65,000. When paying, choose Exnova only or all three brokers. Your registration broker does not limit that choice. Once payment is confirmed, only the brokers covered by your chosen license remain enabled. Check the displayed amount before paying."
       ]
     },
     {
@@ -195,11 +241,14 @@
     {
       "tag": "p",
       "children": [
-        "The USD230 trading deposit that qualifies you for the panel is separate from the monthly license. Paying the license does not replace registration and deposit validation."
+        "The qualifying trading deposit under your panel access conditions is separate from the monthly license. Paying the license does not replace registration and deposit validation."
       ]
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "8.-Renew-or-report-a-payment"
+      },
       "children": [
         "8. Renew or report a payment"
       ]
@@ -224,6 +273,9 @@
     },
     {
       "tag": "h3",
+      "attrs": {
+        "id": "9.-Updates-and-support"
+      },
       "children": [
         "9. Updates and support"
       ]
@@ -252,13 +304,31 @@
         {
           "tag": "a",
           "attrs": {
-            "href": "https://panel-api-production-1509.up.railway.app/portal"
+            "href": "https://panel-api-production-1509.up.railway.app/portal",
+            "target": "_blank"
           },
           "children": [
             "Open my portal"
           ]
         }
       ]
+    },
+    {
+      "tag": "h3",
+      "attrs": {
+        "id": "Panel-access-conditions-from-launch"
+      },
+      "children": [
+        "Panel access conditions from launch"
+      ]
+    },
+    {
+      "tag": "p",
+      "children": [
+        "If you were already Premium or Prestige before launch, you can add the panel with a NEW deposit of at least USD100 made on or after 11 November 2026 into your own trading account. Notify me with the proof so I can validate the date and deposit; earlier deposits do not count. Basic members must upgrade to Premium + Panel up to USD230 within the existing accumulation rules/window, or make a new USD230 deposit if accumulation no longer applies. I first validate the ID, and the deposit must be made afterwards. Your usual Telegram benefits continue."
+      ]
     }
-  ]
+  ],
+  "views": 0,
+  "can_edit": true
 }

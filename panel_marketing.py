@@ -16,14 +16,14 @@ def brief(lang):
             'Includes signals, alerts, results tracking, a trading journal and risk/capital-management tools, '
             'plus Sunday Advance Premium Software lists of currency pairs and Crypto IDX, exclusively in the panel.\n'
             'First, I validate your broker ID. Then you can deposit from USD230 directly into your own trading '
-            'account; once I validate the deposit, I enable access to your panel. Your usual Premium benefits continue.'
+            'account; once I validate the deposit, I enable access to your panel. If you were already Premium or Prestige before launch, a NEW USD100 deposit from 11 November 2026 applies instead; notify me so I can validate it.'
         )
     return (
         '🖥 PREMIUM + PANEL DE SEÑALES DESCARGABLE EN WINDOWS\n'
         'Incluye señales, alertas, control de resultados, bitácora y gestión de riesgo y capital; además, listas '
         'de pares de divisas y Crypto IDX del Software Premium Anticipado también los domingos, solo en el panel.\n'
         'Primero valido tu ID del broker. Después puedes depositar a partir de USD230 directamente en tu propia '
-        'cuenta de trading; una vez que valide tu depósito, habilito el acceso al panel. Conservas los beneficios habituales de Premium.'
+        'cuenta de trading; una vez que valide tu depósito, habilito el acceso al panel. Si ya eras Premium o Prestige antes del lanzamiento, aplica un depósito NUEVO de USD100 desde el 11 de noviembre de 2026: notifícamelo para validarlo.'
     )
 
 def details(lang):
@@ -32,8 +32,8 @@ def details(lang):
             '🖥 DISCOVER THE JOHAALETRADER SIGNALS PANEL\n'
             'A Windows application with signals, alerts, a journal, results tracking and risk-management tools. '
             'Exnova signals are panel-exclusive. Sunday currency-pair and Crypto IDX lists for Binomo/Stockity '
-            'are also panel-only, when I prepare and confirm them.\n'
-            'After I validate your ID and then your qualifying USD230 deposit in one broker account, '
+            'are also panel-only.\n'
+            'New members: validated ID, then USD230 deposit. Existing Premium/Prestige: NEW USD100 deposit from 11 November 2026, reported and validated by me. '
             'I can approve your panel access. Your trading deposit stays in your account.\n'
             'The initial 14-day trial enables all three brokers. Afterwards, choose Exnova only: USD15/month '
             '(COP50,000), or all three: USD20/month (COP65,000). There are 3 grace days after expiry; '
@@ -44,8 +44,8 @@ def details(lang):
         '🖥 CONOCE EL PANEL DE SEÑALES JOHAALETRADER\n'
         'Aplicación Windows con señales, alertas, bitácora, control de resultados y gestión de riesgo. '
         'Exnova es exclusivo del panel. Las listas de domingo de pares de divisas y Crypto IDX para '
-        'Binomo/Stockity también van solo al panel, cuando las preparo y confirmo.\n'
-        'Tras validar tu ID y después tu depósito desde USD230 en una misma cuenta de broker, puedo '
+        'Binomo/Stockity también van solo al panel.\n'
+        'Nuevos: ID validado y después depósito USD230. Premium/Prestige anteriores: depósito NUEVO USD100 desde el 11/11/2026, notificado y validado conmigo. Puedo '
         'aprobar tu acceso al panel. Tu depósito permanece en tu cuenta de trading.\n'
         'Prueba inicial de 14 días con los tres brokers. Después eliges: Exnova USD15/mes (COP50.000) '
         'o los tres USD20/mes (COP65.000). Hay 3 días de gracia tras vencer; después solo queda el acceso '

@@ -36,7 +36,7 @@ def welcome(lang):
     if lang == 'en':
         return (
             '🖥 YOUR JOHAALETRADER PANEL\n\n'
-            'Your broker ID and a qualifying deposit of at least USD230 have been validated. '
+            'Your broker ID and the qualifying deposit under your panel access conditions have been validated. '
             'Your Premium community benefits continue as usual.\n\n'
             'Open My panel access and create your account if needed. If it is pending, send Johanna '
             'the email you registered with so she can link and approve your access. '
@@ -48,7 +48,7 @@ def welcome(lang):
         )
     return (
         '🖥 TU PANEL JOHAALETRADER\n\n'
-        'Tu ID del broker y un depósito válido de al menos USD230 ya están validados. '
+        'Tu ID del broker y el depósito correspondiente a tu condición de acceso ya están validados. '
         'Conservas tus beneficios habituales de Premium.\n\n'
         'Abre Mi acceso al panel y crea tu cuenta si aún no la tienes. Si aparece pendiente, envía '
         'a Johanna el correo registrado para vincular y aprobar tu acceso. '

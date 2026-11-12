@@ -27,6 +27,7 @@ if not SOURCE.exists():SOURCE=ROOT/'main_johanna_FINAL_ID_ACTUALIZADO.py'
 ORIGINAL=ROOT/'main.original.py'
 sys.path.insert(0,str(ROOT))
 import panel_delivery
+import panel_launch
 URL='https://exnova.com/lp/start-trading/?aff=838919&aff_model=revenue&afftrack=JOHAALETRADER'
 FUNCTIONS={
  '_panel_delivery_eligible','_panel_delivery_notify','utcnow_naive','_usd','_norm','_broker_norm','_broker_label','_broker_key','_broker_get',
@@ -49,7 +50,7 @@ CONSTANTS={'ENLACE_REFERIDO','ENLACE_REFERIDO_STOCKITY','ENLACE_REFERIDO_EXNOVA'
 CONSTANTS.update(f'MENSAJE_{hour}_{lang}' for hour in ('1H','3H','24H','48H') for lang in ('ES','EN'))
 
 def load(path):
- env=dict(globals(),Base=declarative_base())
+ env=dict(globals(),Base=declarative_base(),_PANEL_LAUNCH=None,_panel_launch_admin_notice=AsyncMock())
  body=[]
  for node in ast.parse(path.read_text()).body:
   if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in FUNCTIONS:body.append(node)
