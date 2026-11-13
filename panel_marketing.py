@@ -29,28 +29,26 @@ def brief(lang):
 def details(lang):
     if lang == 'en':
         return (
-            '🖥 DISCOVER THE JOHAALETRADER SIGNALS PANEL\n'
-            'A Windows application with signals, alerts, a journal, results tracking and risk-management tools. '
-            'Exnova signals are panel-exclusive. Sunday currency-pair and Crypto IDX lists for Binomo/Stockity '
-            'are also panel-only.\n'
-            'New members: validated ID, then USD230 deposit. Existing Premium/Prestige: NEW USD100 deposit from 11 November 2026, reported and validated by me. '
-            'I can approve your panel access. Your trading deposit stays in your account.\n'
-            'The initial 14-day trial enables all three brokers. Afterwards, choose Exnova only: USD15/month '
-            '(COP50,000), or all three: USD20/month (COP65,000). There are 3 grace days after expiry; '
-            'then only the payment portal remains accessible. Reconnection adds USD8 when applicable.\n'
-            'Read the full explanation below. The installation manual is delivered separately after validation.'
+            '🖥 DISCOVER THE JOHAALETRADER SIGNALS PANEL\n\n'
+            'Organize your trading in one Windows application:\n'
+            '📊 Signals and voice, sound and visual alerts to help you follow each entry.\n'
+            '🎯 Trading-plan tools and risk/capital management to prepare your decisions.\n'
+            '📒 A trading journal and results tracking to review your performance and habits.\n'
+            '✨ Exnova signals exclusively in the panel.\n'
+            '📅 Sunday Advance Premium Software lists of currency pairs and Crypto IDX, only in the panel.\n\n'
+            'Your usual Telegram benefits continue. You stay in control of every trade.\n'
+            '👇 Open “What it includes and how it works” for access conditions and full details.'
         )
     return (
-        '🖥 CONOCE EL PANEL DE SEÑALES JOHAALETRADER\n'
-        'Aplicación Windows con señales, alertas, bitácora, control de resultados y gestión de riesgo. '
-        'Exnova es exclusivo del panel. Las listas de domingo de pares de divisas y Crypto IDX para '
-        'Binomo/Stockity también van solo al panel.\n'
-        'Nuevos: ID validado y después depósito USD230. Premium/Prestige anteriores: depósito NUEVO USD100 desde el 11/11/2026, notificado y validado conmigo. Puedo '
-        'aprobar tu acceso al panel. Tu depósito permanece en tu cuenta de trading.\n'
-        'Prueba inicial de 14 días con los tres brokers. Después eliges: Exnova USD15/mes (COP50.000) '
-        'o los tres USD20/mes (COP65.000). Hay 3 días de gracia tras vencer; después solo queda el acceso '
-        'al portal de pago. Reconexión adicional de USD8 cuando corresponda.\n'
-        'Abajo tienes la explicación completa. El manual de instalación se entrega aparte, tras las validaciones.'
+        '🖥 CONOCE EL PANEL DE SEÑALES JOHAALETRADER\n\n'
+        'Organiza tu operativa en una sola aplicación para Windows:\n'
+        '📊 Señales y avisos por voz, sonido y alertas visuales para acompañar cada entrada.\n'
+        '🎯 Herramientas de plan de trading y gestión de riesgo y capital para preparar tus decisiones.\n'
+        '📒 Bitácora y control de resultados para revisar tu desempeño y tus hábitos.\n'
+        '✨ Señales de Exnova exclusivas del panel.\n'
+        '📅 Listas de divisas y Crypto IDX del Software Premium Anticipado también los domingos, solo en el panel.\n\n'
+        'Tus beneficios habituales de Telegram continúan. Tú mantienes el control de cada operación.\n'
+        '👇 En «Qué incluye y cómo funciona» encontrarás las condiciones de acceso y la información completa.'
     )
 
 def keyboard(lang):

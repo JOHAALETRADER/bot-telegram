@@ -2,8 +2,9 @@
   "path": "JOHAALETRADER--Discover-the-signals-panel-11-11",
   "url": "https://telegra.ph/JOHAALETRADER--Discover-the-signals-panel-11-11",
   "title": "JOHAALETRADER · Discover the signals panel",
-  "description": "",
+  "description": "Reference image of the panel; version and displayed data may vary.\nJOHAALETRADER Signals Panel · Premium + Panel\nA Windows desktop application bringing together signals with voice, sound and visual alerts, trading-plan tools, a journal, results tracking and risk/capital management. It helps you prepare your decisions and review your trading. It does not place trades or receive your funds; you decide and trade in your broker account.\nTelegram Premium and the panel: what changes?\nRegular Premium starts at USD200…",
   "author_name": "JOHAALETRADER · JT TRADERS TEAMS",
+  "image_url": "https://raw.githubusercontent.com/JOHAALETRADER/bot-telegram/main/docs/panel/panel-reference.png",
   "content": [
     {
       "tag": "figure",
@@ -34,7 +35,7 @@
     {
       "tag": "p",
       "children": [
-        "A Windows desktop application bringing together signals, alerts, a trading journal, results tracking, and risk/capital-management tools. It does not place trades or receive your funds; you decide and trade in your broker account."
+        "A Windows desktop application bringing together signals with voice, sound and visual alerts, trading-plan tools, a journal, results tracking and risk/capital management. It helps you prepare your decisions and review your trading. It does not place trades or receive your funds; you decide and trade in your broker account."
       ]
     },
     {
@@ -94,7 +95,7 @@
     {
       "tag": "p",
       "children": [
-        "Exnova only: USD15/month or COP50,000. Exnova + Binomo + Stockity: USD20/month or COP65,000. Choose your plan when paying; all three are optional. Your trading deposit is separate from this monthly license."
+        "Exnova only: USD15/month. Exnova + Binomo + Stockity: USD20/month. Choose your plan when paying; all three are optional. Your trading deposit is separate from this monthly license."
       ]
     },
     {
@@ -109,7 +110,7 @@
     {
       "tag": "p",
       "children": [
-        "There are 3 grace days after expiry. Afterwards the signals interface is locked and only offers access to the payment portal; your history is preserved. When applicable, reconnection adds USD8: Exnova total USD23 / COP76,000; all three USD28 / COP92,500. Overdue monthly fees do not accumulate."
+        "There are 3 grace days after expiry. Afterwards the signals interface is locked and only offers access to the payment portal; your history is preserved. When applicable, reconnection adds USD8: Exnova total USD23; all three USD28. Overdue monthly fees do not accumulate."
       ]
     },
     {
@@ -124,7 +125,7 @@
     {
       "tag": "p",
       "children": [
-        "Register using the official bot links. I first validate your ID; you can then make the deposit into your own trading account. Only after I also validate the deposit and your applicable panel access condition is met does the bot deliver the download access, image and installation manual. Your panel account requires my approval. This page is informational: reading it does not activate a license or provide credentials. The application runs on Windows computers, not phones or Mac."
+        "Register using the official bot links. I first validate your ID; you can then make the deposit into your own trading account. Only after I also validate the deposit and your applicable panel access condition is met does the bot deliver the download access, image and installation manual. Create or sign in to your portal account and link your Telegram; once my validations are complete, access synchronizes automatically. This page is informational: reading it does not activate a license or provide credentials. The application runs on Windows computers, not phones or Mac."
       ]
     },
     {
@@ -139,7 +140,7 @@
     {
       "tag": "p",
       "children": [
-        "Return to the registration bot and use its registration options or contact me. If you already have Premium with USD200, ask about validating the additional USD30 in the same account to qualify for the panel benefit. Signals do not guarantee results; apply your risk management."
+        "Return to the registration bot and use its registration options or contact me. Review the panel access conditions from launch below to find the condition that applies to you. Signals do not guarantee results; apply your risk management."
       ]
     },
     {
@@ -158,6 +159,5 @@
       ]
     }
   ],
-  "views": 0,
-  "can_edit": true
+  "views": 0
 }

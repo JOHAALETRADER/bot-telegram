@@ -2,8 +2,9 @@
   "path": "JOHAALETRADER--Conoce-el-panel-de-señales-11-11",
   "url": "https://telegra.ph/JOHAALETRADER--Conoce-el-panel-de-señales-11-11",
   "title": "JOHAALETRADER · Conoce el panel de señales",
-  "description": "",
+  "description": "Imagen de referencia del panel; la versión y los datos pueden variar.\nPanel de señales JOHAALETRADER · Premium + Panel\nUna aplicación para computadores Windows que reúne señales con avisos por voz, sonido y alertas visuales, plan de trading, bitácora, control de resultados y herramientas de gestión de riesgo y capital. Te ayuda a preparar tus decisiones y revisar tu operativa. No realiza operaciones ni recibe tu dinero; tú decides y operas en tu broker.\nTelegram Premium y el panel: ¿qué cambia?\nPremium normal…",
   "author_name": "JOHAALETRADER · JT TRADERS TEAMS",
+  "image_url": "https://raw.githubusercontent.com/JOHAALETRADER/bot-telegram/main/docs/panel/panel-reference.png",
   "content": [
     {
       "tag": "figure",
@@ -34,7 +35,7 @@
     {
       "tag": "p",
       "children": [
-        "Una aplicación para computadores Windows que reúne señales, alertas, bitácora, registro de resultados y herramientas de gestión de riesgo y capital. No realiza operaciones ni recibe tu dinero; tú decides y operas en tu broker."
+        "Una aplicación para computadores Windows que reúne señales con avisos por voz, sonido y alertas visuales, plan de trading, bitácora, control de resultados y herramientas de gestión de riesgo y capital. Te ayuda a preparar tus decisiones y revisar tu operativa. No realiza operaciones ni recibe tu dinero; tú decides y operas en tu broker."
       ]
     },
     {
@@ -94,7 +95,7 @@
     {
       "tag": "p",
       "children": [
-        "Solo Exnova: USD15 al mes o COP50.000. Exnova + Binomo + Stockity: USD20 al mes o COP65.000. Eliges el plan al pagar; no es necesario contratar los tres. El depósito del broker es independiente de esta mensualidad."
+        "Solo Exnova: USD15 al mes. Exnova + Binomo + Stockity: USD20 al mes. Eliges el plan al pagar; no es necesario contratar los tres. El depósito del broker es independiente de esta mensualidad."
       ]
     },
     {
@@ -109,7 +110,7 @@
     {
       "tag": "p",
       "children": [
-        "Hay 3 días de gracia tras el vencimiento. Después, el panel de señales queda bloqueado y solo permite ir al portal para pagar; tu historial se conserva. Cuando corresponde, la reconexión añade USD8: total Exnova USD23 / COP76.000; los tres USD28 / COP92.500. No se acumulan mensualidades vencidas."
+        "Hay 3 días de gracia tras el vencimiento. Después, el panel de señales queda bloqueado y solo permite ir al portal para pagar; tu historial se conserva. Cuando corresponde, la reconexión añade USD8: total Exnova USD23; los tres USD28. No se acumulan mensualidades vencidas."
       ]
     },
     {
@@ -124,7 +125,7 @@
     {
       "tag": "p",
       "children": [
-        "Regístrate con los enlaces oficiales del bot. Primero valido tu ID; después puedes realizar el depósito en tu cuenta de trading. Solo después de validar también el depósito y de cumplir la condición de acceso que te corresponda, el bot entrega el acceso a la descarga, la imagen y el manual de instalación. La cuenta del panel requiere mi aprobación. Esta página es informativa: leerla no activa una licencia ni entrega credenciales. La aplicación funciona en Windows, no en teléfonos ni Mac."
+        "Regístrate con los enlaces oficiales del bot. Primero valido tu ID; después puedes realizar el depósito en tu cuenta de trading. Solo después de validar también el depósito y de cumplir la condición de acceso que te corresponda, el bot entrega el acceso a la descarga, la imagen y el manual de instalación. Crea o inicia sesión en tu cuenta del portal y vincula tu Telegram; una vez completadas mis validaciones, el acceso se sincroniza automáticamente. Esta página es informativa: leerla no activa una licencia ni entrega credenciales. La aplicación funciona en Windows, no en teléfonos ni Mac."
       ]
     },
     {
@@ -139,7 +140,7 @@
     {
       "tag": "p",
       "children": [
-        "Vuelve al bot de registros y usa sus opciones de registro o consulta conmigo. Si ya eres Premium con USD200, consulta la validación del saldo adicional de USD30 en la misma cuenta para acceder al beneficio del panel. Las señales no garantizan resultados; aplica tu gestión de riesgo."
+        "Vuelve al bot de registros y usa sus opciones de registro o consulta conmigo. Revisa las condiciones de acceso desde el lanzamiento que aparecen a continuación para saber cuál te corresponde. Las señales no garantizan resultados; aplica tu gestión de riesgo."
       ]
     },
     {
@@ -158,6 +159,5 @@
       ]
     }
   ],
-  "views": 0,
-  "can_edit": true
+  "views": 9
 }

@@ -21,7 +21,12 @@ class MarketingTests(unittest.IsolatedAsyncioTestCase):
    self.assertNotIn('USD15',public.brief(lang));self.assertNotIn('USD20',public.brief(lang))
    self.assertNotIn('licen',public.brief(lang).lower());self.assertNotIn('Johanna',public.brief(lang))
    self.assertNotEqual(public.brief(lang),public.details(lang))
-   self.assertIn('14',public.details(lang));self.assertIn('USD15',public.details(lang));self.assertIn('USD20',public.details(lang))
+   for value in ('USD','COP','230','100','14','license','licencia','deposit','depósito'):
+    self.assertNotIn(value,public.details(lang))
+   for value in ('Exnova','Crypto IDX','Windows'):
+    self.assertIn(value,public.details(lang))
+   for value in (('voz','sonido','visuales','Bitácora','plan de trading','riesgo','capital') if lang=='es' else ('voice','sound','visual','journal','Trading-plan','risk','capital')):
+    self.assertIn(value,public.details(lang))
    self.assertLessEqual(len(public.details(lang).encode('utf-16-le'))//2,1024)
    self.assertNotEqual(public.INFO_URLS[lang],restricted.GUIDE_URLS[lang])
    buttons=[b for row in public.keyboard(lang).inline_keyboard for b in row]
