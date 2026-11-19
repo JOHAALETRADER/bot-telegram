@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.14-20261108-ID-BROKER-RECOVERY"
+BOT_VERSION = "v7.11.15-20261119-DEPOSIT-REVIEW-CONTEXT"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -6591,7 +6591,78 @@ def _trading_loss_context_reply(question: str, lang: str = "es") -> str:
             "cuéntame qué monto usabas por entrada y cuándo detenías la sesión para revisar lo ocurrido.")
 
 
+def _deposit_review_followup_query(question: str) -> bool:
+    """Only receipt/review follow-ups; pricing, upgrades and new payments keep their routes."""
+    t = _norm(question or "")
+    if not t or _is_hypothetical_other_person(question):
+        return False
+    if re.search(r"promo|upgrade|subir de nivel|cuanto (?:debo|necesito|falta)|cuanto cuesta|que incluye|beneficio|otra cuenta|nuevo deposito|otro deposito|deposito adicional|how much|what.+include|benefit|another account|new deposit|another deposit|additional deposit", t):
+        return False
+    if _is_short_acknowledgement(question):
+        return True
+    waiting = bool(re.search(r"espera|esperando|pendiente|aguard|waiting|await|pending", t)
+                   and re.search(r"confirm|valid|revis|acceso|entrar|ingres|senal|signal|access|approv|review", t))
+    paid = bool(re.search(r"\b(?:ya (?:realice|hice|pague|deposite|envie|mande)|i (?:already )?(?:paid|deposited|sent|made)|i have (?:paid|deposited|sent))\b", t)
+                and re.search(r"deposit|comprobante|pago|\$|usd|dolar|receipt|proof|payment|\d", t))
+    checking = bool(re.search(r"pudiste|revisaste|confirmaste|recibiste|ya esta|como va|estado|have you|did you|status", t)
+                    and re.search(r"deposit|comprobante|receipt|proof|payment", t))
+    return waiting or paid or checking
+
+
+def _pending_deposit_review_context(chat_id: int) -> dict:
+    """Read only: an actual receipt in the unconfirmed deposit cycle is required."""
+    proof = _admin_review_proof_info(chat_id)
+    if not proof.get("file_id"):
+        return {}
+    brokers = _broker_validated_brokers(chat_id)
+    broker = _broker_flow_get(chat_id).get("pending_deposit_broker")
+    if broker not in brokers:
+        broker = brokers[0] if len(brokers) == 1 else ""
+    return {"proof": proof, "broker": broker}
+
+
+def _deposit_review_followup_reply(question: str, chat_id: int, lang: str = "es") -> str:
+    if not _deposit_review_followup_query(question):
+        return ""
+    review = _pending_deposit_review_context(chat_id)
+    if not review:
+        return ""
+    broker = review["broker"]
+    if broker:
+        return (f"I received your {_broker_label(broker)} deposit proof and it is pending my review. I will confirm here once it has been validated. You do not need to register or send the ID or proof again."
+                if lang == "en" else
+                f"Recibí tu comprobante de {_broker_label(broker)} y está pendiente de mi revisión. Te confirmaré por aquí cuando el depósito quede validado. No necesitas repetir el registro ni volver a enviar el ID o el comprobante.")
+    return ("I received your proof. I still need to know which broker it belongs to before reviewing it. Select the broker below; you do not need to send the proof again."
+            if lang == "en" else
+            "Recibí tu comprobante. Para revisarlo falta identificar a qué broker corresponde. Selecciónalo abajo; no necesitas volver a enviar el comprobante.")
+
+
+def _same_pending_deposit_proof(proof: dict, photo) -> bool:
+    unique = getattr(photo, "file_unique_id", None)
+    if unique and proof.get("file_unique_id"):
+        return unique == proof["file_unique_id"]
+    return bool(proof.get("file_id") and proof["file_id"] == photo.file_id)
+
+
+def _validated_id_repeat_reply(question: str, chat_id: int, lang: str = "es") -> str:
+    candidate = (question or "").strip()
+    if not re.fullmatch(r"[0-9]{6,12}", candidate):
+        return ""
+    matched = [r for r in _broker_rows(chat_id, validated_only=True)
+               if r.get("trading_id") == candidate]
+    if not matched:
+        return ""
+    label = ", ".join(_broker_label(r["broker"]) for r in matched)
+    answer = (f"Your {label} ID is already validated ✅ You do not need to submit it again."
+              if lang == "en" else
+              f"Tu ID de {label} ya está validado ✅ No necesitas enviarlo otra vez.")
+    pending = _deposit_review_followup_reply("waiting for confirmation of my deposit", chat_id, lang)
+    return answer + ("\n\n" + pending if pending else "")
+
+
 def _ai_access_amount_query(text: str) -> bool:
+    if _deposit_review_followup_query(text):
+        return False
     if _trading_loss_account_context(text):
         return False
     t = _norm(text or "")
@@ -6672,6 +6743,9 @@ def _deposit_commitment_reply(question: str, chat_id: int, lang: str) -> str:
 
 def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es", offer_promo: bool = True) -> str:
     """Final read-only reply/CTA policy; does not enroll or change any account."""
+    review_reply = _deposit_review_followup_reply(question, chat_id, lang)
+    if review_reply:
+        return review_reply
     loss_reply = _trading_loss_context_reply(question, lang)
     if loss_reply:
         return loss_reply
@@ -6688,9 +6762,9 @@ def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es"
                    "I must review and confirm" if lang == "en" else "debo revisar y confirmar", value, flags=re.I)
     # Look at the actual final access explanation as well as the user's wording.
     # This catches model answers that identify the minimum despite unfamiliar phrasing.
-    amount_context = _ai_access_amount_query(question) or bool(
+    amount_context = not _deposit_review_followup_query(question) and (_ai_access_amount_query(question) or bool(
         re.search(r"\b50\b", value) and "premium" in _norm(value)
-        and re.search(r"minim|recomiend|recommend", _norm(value)))
+        and re.search(r"minim|recomiend|recommend", _norm(value))))
     if amount_context and offer_promo and not value.lstrip().startswith("[[PERSONAL_CHAT]]"):
         probe = question + "\nminimum deposit para ingresar"
         promo = _ai_entry_promo_answer(probe, chat_id, lang)
@@ -6764,6 +6838,9 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
+    if chat_id is not None and _deposit_review_followup_reply(question, chat_id, lang):
+        review = _pending_deposit_review_context(chat_id)
+        return None if review.get("broker") else _broker_selection_keyboard("deposit", lang)
     if _trading_loss_account_context(question) or _deposit_commitment_acknowledgement(question):
         return None
     if _premium100_question(question) or _ai_entry_promo_available(question, chat_id):
@@ -11760,16 +11837,25 @@ async def responder_a_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
+async def _render_admin_reply_control(query, text, **kwargs):
+    """Keep the original receipt intact; a media message needs a separate text prompt."""
+    if getattr(query.message, "text", None):
+        return await query.edit_message_text(text=text, **kwargs)
+    return await query.message.reply_text(text=text, **kwargs)
+
+
 async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
+        if not query or query.from_user.id != ADMIN_ID:
+            return
         await query.answer()
 
         data = query.data
         if data.startswith("responder:"):
             partes = data.split(":")
             if len(partes) != 3:
-                await query.edit_message_text("❌ Error: formato de callback inválido.")
+                await _render_admin_reply_control(query, "❌ Error: formato de callback inválido.")
                 return
 
             chat_id_str, message_id_str = partes[1], partes[2]
@@ -11778,20 +11864,20 @@ async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id = int(chat_id_str)
                 message_id = int(message_id_str)
             except ValueError:
-                await query.edit_message_text("❌ Error: ID inválido.")
+                await _render_admin_reply_control(query, "❌ Error: ID inválido.")
                 return
 
             if not _is_private_user_id(chat_id):
-                await query.edit_message_text("🛡️ Respuesta bloqueada: ese destino no es un usuario privado.")
+                await _render_admin_reply_control(query, "🛡️ Respuesta bloqueada: ese destino no es un usuario privado.")
                 return
 
             usuarios_objetivo[query.from_user.id] = chat_id
 
-            await query.edit_message_text(
+            await _render_admin_reply_control(query, 
                 text=(
                     f"✏️ <b>Ahora puedes responder al usuario.</b>\n\n"
                     f"📨 Responde a este mensaje con el texto o audio que deseas enviar.\n"
-                    f"🆔 ID del usuario: <code>{chat_id}</code>"
+                    f"🆔 Usuario (ID: {chat_id})"
                 ),
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
@@ -11809,13 +11895,15 @@ async def manejar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancelar_respuesta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         query = update.callback_query
+        if query.from_user.id != ADMIN_ID:
+            return
         admin_key = query.from_user.id
 
         if admin_key in usuarios_objetivo:
             del usuarios_objetivo[admin_key]
-            await query.edit_message_text("❌ Has cancelado la respuesta al usuario.")
+            await _render_admin_reply_control(query, "❌ Has cancelado la respuesta al usuario.")
         else:
-            await query.edit_message_text("ℹ️ No había ninguna respuesta pendiente por cancelar.")
+            await _render_admin_reply_control(query, "ℹ️ No había ninguna respuesta pendiente por cancelar.")
 
 
 
@@ -14056,18 +14144,13 @@ def _ai_answer_context_guard(answer: str, question: str, chat_id: int, lang: str
     if not (unsupported_management_commitment or unsupported_status_claim):
         return answer, False
 
-    # Si el historial no respalda ese acuerdo, es preferible una aclaración breve
-    # y humana a inventar un paso del proceso.
-    if lang == "en":
-        safe = (
-            "[[PERSONAL_CHAT]] I understand what you mean 😊 but I don’t want to assume or change what we may have already agreed about account management. "
-            "Before you register again or send an ID, message me directly and I’ll continue from the exact point we left off."
-        )
-    else:
-        safe = (
-            "[[PERSONAL_CHAT]] Entiendo lo que me dices 😊, pero no quiero asumir ni cambiar lo que podamos haber acordado sobre la gestión. "
-            "Antes de volver a registrarte o enviarme un ID, escríbeme directamente y continuamos exactamente desde el punto en que quedamos."
-        )
+    # A guard must not invent an agreement while rejecting an unsupported claim.
+    review_reply = _deposit_review_followup_reply(question, chat_id, lang)
+    if review_reply:
+        return review_reply, False
+    safe = ("[[PERSONAL_CHAT]] I need to review this point personally before confirming it. Tell me what you need me to check here."
+            if lang == "en" else
+            "[[PERSONAL_CHAT]] Necesito revisar este punto personalmente antes de confirmarlo. Cuéntame aquí qué necesitas que verifique.")
     return safe, True
 
 
@@ -14768,6 +14851,9 @@ def _copied_live_notice_answer(question: str, lang: str = "es") -> str:
 
 
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    review_reply = _deposit_review_followup_reply(question, chat_id, lang)
+    if review_reply:
+        return review_reply
     loss_reply = _trading_loss_context_reply(question, lang)
     if loss_reply:
         return loss_reply
@@ -16480,11 +16566,24 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
             _prune_pending_ai_after_operation(context, chat_id, ["DEPOSITO"], reason="comprobante de depósito recibido")
-            _log_event(chat_id, "DEPOSIT_REVIEW_PROOF", json.dumps({"file_id": update.message.photo[-1].file_id, "message_id": update.message.message_id, "telegram_id": chat_id}))
-            _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
-            _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
+            photo = update.message.photo[-1]
+            previous_proof = _admin_review_proof_info(chat_id)
+            repeated_proof = _same_pending_deposit_proof(previous_proof, photo)
             brokers = _broker_validated_brokers(chat_id)
-            if len(brokers) > 1:
+            known_broker = _broker_flow_get(chat_id).get("pending_deposit_broker") if repeated_proof else ""
+            if not repeated_proof:
+                _log_event(chat_id, "DEPOSIT_REVIEW_PROOF", json.dumps({"file_id": photo.file_id, "file_unique_id": getattr(photo, "file_unique_id", None), "message_id": update.message.message_id, "telegram_id": chat_id}))
+                _log_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
+                _tracking_fire_event(chat_id, "DEPOSIT_REPORTED", caption or "PHOTO_PROOF")
+            if repeated_proof and known_broker in brokers:
+                qtxt = (
+                    f"✅ Ya recibí este comprobante de {_broker_label(known_broker)} y sigue pendiente de mi revisión. No necesitas reenviarlo; te avisaré cuando el depósito quede validado."
+                    if lang == "es" else
+                    f"✅ I already received this {_broker_label(known_broker)} proof and it is still pending my review. You do not need to send it again; I will let you know once the deposit is validated."
+                )
+                await update.message.reply_text(_premium100_localize(qtxt, get_user_lang(chat_id)))
+                log_intent = "DEPOSIT_PROOF_DUPLICATE_PENDING"
+            elif len(brokers) > 1:
                 _broker_flow_set(chat_id, pending_deposit_broker="")
                 qtxt = (
                     "✅ Recibido. Para revisar correctamente este depósito necesito saber a cuál de tus cuentas corresponde. Elige el broker:"
@@ -16536,6 +16635,22 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     texto = update.message.text or update.message.caption or user_audio_transcript or ""
     if not texto.strip():
+        return
+
+    repeated_id_reply = _validated_id_repeat_reply(texto, chat_id, lang)
+    if repeated_id_reply:
+        _prune_pending_ai_after_operation(context, chat_id, ["ID_SUBMIT"], reason="ID ya validado reconocido")
+        await update.message.reply_text(repeated_id_reply)
+        await send_admin_auto_log(context, update, "VALIDATED_ID_ALREADY_RECORDED", repeated_id_reply)
+        return
+
+    review_reply = _deposit_review_followup_reply(texto, chat_id, lang)
+    if review_reply:
+        if _is_short_acknowledgement(texto):
+            await update.message.reply_text(review_reply, reply_markup=ai_context_keyboard(texto, lang, chat_id))
+            await send_admin_auto_log(context, update, "DEPOSIT_REVIEW_ACK", review_reply)
+        else:
+            schedule_ai_reply(update, context, texto)
         return
 
     copied_live_answer = _copied_live_notice_answer(texto, lang)
