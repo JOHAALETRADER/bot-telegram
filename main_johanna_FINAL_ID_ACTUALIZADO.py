@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.15-20261119-DEPOSIT-REVIEW-CONTEXT"
+BOT_VERSION = "v7.11.16-20261121-CONTEXTUAL-FREE-NOTE"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -6781,6 +6781,19 @@ def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es"
 
 def _clarify_free_community(answer: str, lang: str = "es") -> str:
     value = (answer or "").strip()
+    footer = ("The community is free; the deposit goes directly into your own trading account. It is not a payment to me or a subscription."
+              if lang == "en" else
+              "Toda la comunidad es gratuita; el depósito va directamente a tu propia cuenta de trading. No es un pago a mí ni una suscripción.")
+    # Inspect the substantive reply, not the canned footer itself. Module numbers
+    # or a level name alone must never introduce a discussion about deposits.
+    body = value[:-len("\n\n" + footer)].rstrip() if value.endswith("\n\n" + footer) else value
+    t = _norm(body)
+    monetary_context = bool(
+        re.search(r"\b(?:usd|usdt|cop|eur)\s*\d|[$€]\s*\d|\d[\d.,]*\s*(?:dolares?|dollars?|euros?|usd|usdt|cop|eur)(?!\w)|\d[\d.,]*\s*[$€]", t)
+        or (re.search(r"\d", t) and re.search(r"\b(?:deposit\w*|pago\w*|pagar|pagas?|precio\w*|costos?|costes?|cuesta|cuestan|tarifa\w*|cobr\w*|payment\w*|pay|pays|paid|paying|price\w*|costs?|fee\w*|subscriptions?|suscripci(?:on|ones))\b", t))
+    )
+    if not monetary_context:
+        return body
     t = _norm(value)
     if not (re.search(r"\d", t) and re.search(r"premium|prestige|basico|basic|promocion|promotion", t)):
         return value
