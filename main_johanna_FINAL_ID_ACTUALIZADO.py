@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.16-20261121-CONTEXTUAL-FREE-NOTE"
+BOT_VERSION = "v7.11.17-20261123-BROKER-BONUS-CONTEXT"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -1567,6 +1567,8 @@ def _premium100_status_text(chat_id: int, first_name: str = ""):
 
 def _premium100_question(text: str) -> bool:
     """El descuento de acceso Premium es distinto del bono de saldo del broker."""
+    if _broker_bonus_only_query(text):
+        return False
     t = _norm(text)
     premium = "premium" in t or "premiun" in t
     amount = bool(re.search(r"(?<!\d)100(?!\d)", t))
@@ -1699,6 +1701,8 @@ async def _premium100_admin_ids(context, page: int = 0):
 
 
 def _premium100_answer(question: str, chat_id: int, lang: str = "es") -> str:
+    if _broker_bonus_mention(question):
+        return ""
     for_other = _is_hypothetical_other_person(question)
     part = None if for_other else _premium100_participant(chat_id)
     if not _premium100_question(question) and not (part and _is_min_50_intent(question)):
@@ -6660,7 +6664,76 @@ def _validated_id_repeat_reply(question: str, chat_id: int, lang: str = "es") ->
     return answer + ("\n\n" + pending if pending else "")
 
 
+def _broker_bonus_mention(text: str) -> bool:
+    """Broker balance bonuses are percentages, not community access amounts."""
+    t = _norm(text or "")
+    return bool(re.search(r"\b(?:bonos?|bonus(?:es)?)\b", t) or
+                (re.search(r"(?<!\d)(?:100|70)\s*%", t) and
+                 re.search(r"deposit|broker|stockity|stokity|binomo|codigo|\bcode\b|promo", t)))
+
+
+def _broker_bonus_only_query(text: str) -> bool:
+    if not _broker_bonus_mention(text):
+        return False
+    t = _norm(text or "")
+    community = bool(re.search(r"\b(?:premium|premiun|prestige|basico|basic|niveles?|levels?|comunidad|community|vip)\b", t))
+    access_request = bool(re.search(
+        r"(?:que|cual) (?:nivel|plan)|(?:what|which) (?:level|plan)|"
+        r"que (?:incluye|beneficios)|como (?:entro|ingreso|accedo)|"
+        r"how (?:do i|can i) (?:join|access)|what.+include|"
+        r"(?:cuanto|how much|what amount).{0,60}(?:para (?:entrar|ingresar|iniciar)|to (?:join|start)|premium|prestige|basico|basic|comunidad|community)|"
+        r"(?:minimo|minimum).{0,40}(?:comunidad|community|premium|prestige|basico|basic)", t))
+    # Keep genuinely combined access + bonus questions for the normal AI flow.
+    access_offer = bool(community and re.search(r"promo|descuento|discount|cupo|slot|\$\s*100\b|\busd\s*100\b|\b100\s*(?:usd|dolares|dollars)\b", t))
+    return not (community and access_request or access_offer)
+
+
+def _broker_bonus_lookup_reply(question: str, lang: str = "es") -> str:
+    """Simple availability/code lookups use the existing dated bonus configuration."""
+    if not _broker_bonus_only_query(question):
+        return ""
+    t = _norm(question or "")
+    # Advice, account checks and conditions still need the contextual AI reply.
+    if re.search(r"recomiend|conviene|deberia|should|advis|condicion|condition|requisit|requirement|"
+                 r"volumen|turnover|rollover|retir|withdraw|ganancia|profit|gestion|manag|riesgo|risk|"
+                 r"como |how |donde |where |que pasa|what happens|liberar|release|cancel|"
+                 r"valid|\bmi id\b|\bmy id\b|enlace|\blink\b|pasos|steps|"
+                 r"cuenta (?:antigua|vieja|existente)|(?:old|existing) account|ya tengo cuenta|already have an account", t):
+        return ""
+    if any(p not in {"100", "70"} for p in re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*%", t)):
+        return ""
+    if re.search(r"no (?:quiero|deseo|uses?|usar|activar)|sin bono|without (?:a )?bonus|do not want|don't want", t):
+        return ""
+    lookup = (_is_simple_bonus_lookup(question) or bool(re.search(
+        r"\bhay\b|\bexisten?\b|\btienes\b|disponible|available|activo|active|vigente|"
+        r"is there|are there|there is|there are|do you have|puedo (?:usar|activar)|can i (?:use|activate)|"
+        r"quiero saber|dime|tell me|what (?:is|are)|which", t))
+        or bool(re.fullmatch(r"(?:el |the )?(?:bono|bonus)(?: del?| de)?\s*(?:100|70)\s*%?[ ?!.]*", t)))
+    if not lookup:
+        return ""
+    cfg = _promo_get_config()
+    expiry = _promo_parse_expiry(cfg["expires_on"])
+    if expiry and expiry < datetime.now(COLOMBIA_TZ).date():
+        return respuesta_bono_en() if lang == "en" else respuesta_bono_es()
+    first = bool(re.search(r"(?<!\d)100\s*%|primer deposito|first deposit", t))
+    subsequent = bool(re.search(r"(?<!\d)70\s*%|depositos? posteriores?|subsequent deposit|recurring deposit", t))
+    if not first and not subsequent:
+        return respuesta_bono_en() if lang == "en" else respuesta_bono_es()
+    lines = []
+    if first:
+        lines.append(f"💯 100% first-deposit bonus: {cfg['code_100']}. First deposit only, one-time use." if lang == "en" else
+                     f"💯 Bono del 100% para el primer depósito: {cfg['code_100']}. Solo primer depósito y un único uso.")
+    if subsequent:
+        lines.append(f"🔥 70% subsequent-deposit bonus: {cfg['code_70']}." if lang == "en" else
+                     f"🔥 Bono del 70% para depósitos posteriores: {cfg['code_70']}.")
+    expiry_text = _promo_expiry_display(cfg['expires_on'])
+    lines.append(f"📅 Valid through {expiry_text}." if lang == "en" else f"📅 Vigente hasta {expiry_text}.")
+    return "\n\n".join(lines)
+
+
 def _ai_access_amount_query(text: str) -> bool:
+    if _broker_bonus_only_query(text):
+        return False
     if _deposit_review_followup_query(text):
         return False
     if _trading_loss_account_context(text):
@@ -6755,6 +6828,9 @@ def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es"
     commitment = _deposit_commitment_reply(question, chat_id, lang)
     if commitment:
         return commitment
+    bonus_reply = _broker_bonus_lookup_reply(question, lang) if offer_promo else ""
+    if bonus_reply:
+        return bonus_reply
     value = (answer or "").strip()
     value = value.replace(TELEGRAPH_LEVELS_URL, _levels_url(lang)).replace(TELEGRAPH_LEVELS_URL_EN, _levels_url(lang))
     value = re.sub(r"\b(?:a|to) Johanna\b", "to me" if lang == "en" else "a mí", value, flags=re.I)
@@ -6762,7 +6838,7 @@ def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es"
                    "I must review and confirm" if lang == "en" else "debo revisar y confirmar", value, flags=re.I)
     # Look at the actual final access explanation as well as the user's wording.
     # This catches model answers that identify the minimum despite unfamiliar phrasing.
-    amount_context = not _deposit_review_followup_query(question) and (_ai_access_amount_query(question) or bool(
+    amount_context = not _broker_bonus_mention(question) and not _deposit_review_followup_query(question) and (_ai_access_amount_query(question) or bool(
         re.search(r"\b50\b", value) and "premium" in _norm(value)
         and re.search(r"minim|recomiend|recommend", _norm(value))))
     if amount_context and offer_promo and not value.lstrip().startswith("[[PERSONAL_CHAT]]"):
@@ -6826,6 +6902,8 @@ def _ai_entry_promo_available(question: str, chat_id: int) -> bool:
 
 
 def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str:
+    if _broker_bonus_mention(question):
+        return ""
     if not _ai_entry_promo_available(question, chat_id):
         return ""
     counts = _premium100_counts()
@@ -6855,6 +6933,8 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
         review = _pending_deposit_review_context(chat_id)
         return None if review.get("broker") else _broker_selection_keyboard("deposit", lang)
     if _trading_loss_account_context(question) or _deposit_commitment_acknowledgement(question):
+        return None
+    if _broker_bonus_only_query(question):
         return None
     if _premium100_question(question) or _ai_entry_promo_available(question, chat_id):
         rows = [[InlineKeyboardButton("🔵 VIEW PREMIUM" if lang == "en" else "🔵 VER NIVEL PREMIUM", callback_data=f"level_detail:{VIP_LEVEL_PREMIUM}")],
@@ -14888,6 +14968,9 @@ async def openai_answer(question: str, chat_id: int, lang: str, stage: str, alre
     id_guidance = _id_validation_guidance(question, chat_id, lang)
     if id_guidance:
         return id_guidance
+    bonus_reply = _broker_bonus_lookup_reply(question, lang)
+    if bonus_reply:
+        return bonus_reply
     promo_answer = _premium100_answer(question, chat_id, lang)
     if promo_answer:
         return promo_answer
@@ -15277,6 +15360,8 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "CHANNEL DIRECTORY FROM ACCESS CONFIG (names, descriptions and level eligibility; never invent names or imply access to an unassigned level):\n" + _ai_channel_directory(lang),
             "Signal lists from Software Premium Anticipado are delivered through Telegram, in the configured signals_premium channel. Never direct a member to install or find the private LIVE interface to receive them. For channel-location questions, give the relevant configured names, respecting the real active level; do not share invite links or claim membership without evidence. Correct any earlier contradictory answer rather than treating it as a fact.",
         ]
+        if _broker_bonus_mention(question):
+            decision_lines.append("BROKER BONUS PRIORITY: answer the requested broker balance bonus using only the current configured codes and expiry. 100% is a percentage, not USD 100 or Premium eligibility. Mention community levels, Premium100 slots or enrollment only if the user separately asks about that access. A wish to use a new account is context, not a request for a level price list. For combined questions, answer each actual question without replacing the bonus answer with an access offer.")
         if not bonus_topic and not allow_optional_recurring_bonus_offer:
             decision_lines.append(
                 "PROMO ISOLATION: Do not mention bonuses, promo codes, 70%, 100%, turnover or bonus withdrawal conditions."
@@ -16173,7 +16258,7 @@ async def delayed_ai_reply(context: ContextTypes.DEFAULT_TYPE):
         answer = _personalize_referral_links(answer, chat_id)
         answer = _ai_delivery_text(answer, question, chat_id, lang, offer_promo=not personal_review)
         button_context = question
-        if not personal_review and _ai_entry_promo_available(question + "\n" + answer, chat_id):
+        if not personal_review and not _broker_bonus_mention(question) and _ai_entry_promo_available(question + "\n" + answer, chat_id):
             button_context += "\n" + answer
         base_markup = personal_chat_keyboard(lang) if personal_review else ai_context_keyboard(button_context, lang, chat_id)
         # Para un miembro activo, si la respuesta no necesita un CTA más específico
