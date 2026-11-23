@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.17-20261123-BROKER-BONUS-CONTEXT"
+BOT_VERSION = "v7.11.18-20261123-MANUAL-WAIT-ACK"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -6814,8 +6814,50 @@ def _deposit_commitment_reply(question: str, chat_id: int, lang: str) -> str:
             "Antes de depositar, envíame aquí el ID de tu cuenta de trading y espera mi aprobación. 😊")
 
 
+def _manual_wait_ack_reply(question: str, chat_id: int, lang: str = "es") -> str:
+    """Acknowledge only an acceptance of a recent, real manual promise to follow up."""
+    raw = question or ""
+    if not raw.strip() or len(raw) > 120 or re.search(r"[0-9?¿]", raw):
+        return ""
+    words = " ".join(re.findall(r"[a-z]+", _norm(raw)))
+    if not re.fullmatch(
+        r"(?:(?:si+|sip|sipi|yapi|yap|dale|porfa|por favor|ok|okay|okey|vale|"
+        r"gracias|muchas gracias|entiendo|entendido|perfecto|listo|de acuerdo|bien|"
+        r"yes|yep|yup|sure|please|thanks|thank you|got it|understood|perfect)\s*)+", words):
+        return ""
+    # Only the latest actual assistant turn can establish this waiting context.
+    # An older manual message must not swallow a reply to a newer AI question.
+    try:
+        latest = next((item for item in reversed(_load_ai_history(chat_id))
+                       if item.get("role") == "assistant" and str(item.get("content") or "").strip()), None)
+    except Exception as exc:
+        logging.info("No pude consultar el contexto de espera manual: %s", exc)
+        return ""
+    if not latest or str(latest.get("source") or "").lower() != "manual":
+        return ""
+    try:
+        stamp = datetime.fromisoformat(str(latest.get("ts") or ""))
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
+        if not utcnow_naive() - timedelta(minutes=AI_MANUAL_CONTEXT_MINUTES) <= stamp <= utcnow_naive():
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    manual = _norm(str(latest["content"])).replace("’", "'")
+    followup = bool(re.search(r"voy a|te (?:envio|envi[ae]re|mando|mandare|aviso|avisare|confirmo|confirmare)|"
+                              r"i will|i'll|i am going to|i'm going to", manual))
+    deferred = bool(re.search(r"cuando (?:este|lo tenga|termine|tenga)|media hora|mas tarde|luego|un rato|"
+                              r"\bminutos?\b|\bhoras?\b|later|when.+ready|half an hour|\bminutes?\b", manual))
+    if not (followup and deferred):
+        return ""
+    return "Got it 😊" if lang == "en" else "De acuerdo 😊"
+
+
 def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es", offer_promo: bool = True) -> str:
     """Final read-only reply/CTA policy; does not enroll or change any account."""
+    waiting_ack = _manual_wait_ack_reply(question, chat_id, lang)
+    if waiting_ack:
+        return waiting_ack
     review_reply = _deposit_review_followup_reply(question, chat_id, lang)
     if review_reply:
         return review_reply
@@ -6929,6 +6971,8 @@ def _ai_entry_promo_answer(question: str, chat_id: int, lang: str = "es") -> str
 
 def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
     """CTA contextual: acompaña la intención actual sin sacar a la persona de la conversación."""
+    if chat_id is not None and _manual_wait_ack_reply(question, chat_id, lang):
+        return None
     if chat_id is not None and _deposit_review_followup_reply(question, chat_id, lang):
         review = _pending_deposit_review_context(chat_id)
         return None if review.get("broker") else _broker_selection_keyboard("deposit", lang)
@@ -14944,6 +14988,9 @@ def _copied_live_notice_answer(question: str, lang: str = "es") -> str:
 
 
 async def openai_answer(question: str, chat_id: int, lang: str, stage: str, already_answered=None) -> str:
+    waiting_ack = _manual_wait_ack_reply(question, chat_id, lang)
+    if waiting_ack:
+        return waiting_ack
     review_reply = _deposit_review_followup_reply(question, chat_id, lang)
     if review_reply:
         return review_reply
@@ -16758,6 +16805,10 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if _premium100_question(texto) and not _extract_candidate_trading_id(texto):
+        schedule_ai_reply(update, context, texto)
+        return
+
+    if _manual_wait_ack_reply(texto, chat_id, lang):
         schedule_ai_reply(update, context, texto)
         return
 
