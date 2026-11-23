@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.18-20261123-MANUAL-WAIT-ACK"
+BOT_VERSION = "v7.11.19-20261123-CHANNEL-WATCH-VERIFY"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -18481,22 +18481,54 @@ async def _vip_channel_watch_publish(context, key, channel_id, code, reason, *, 
     async with lock:
         previous = _vip_channel_watch_last(key)
         fingerprint = f"{channel_id}:{code}"
+        uncertain = {"NETWORK", "CHECK_FAILED", "RATE_LIMIT"}
+        previous_code = (previous or {}).get("code")
+        last_access_code = (previous or {}).get("last_access_code")
+        if previous_code and previous_code not in uncertain:
+            last_access_code = previous_code
         if previous and previous.get("fingerprint") == fingerprint and previous.get("notified"):
             return
-        if not previous and code == "OK":
-            _vip_channel_watch_store(key, {"fingerprint": fingerprint, "code": code, "notified": True})
+        if (code in uncertain and previous_code in uncertain and previous.get("notified")
+                and str(previous.get("fingerprint") or "").split(":", 1)[0] == str(channel_id)):
             return
-        same = bool(previous and previous.get("fingerprint") == fingerprint)
-        state = dict(previous) if same else {"fingerprint": fingerprint, "code": code, "notified": False, "reason": reason, "actor": actor, "stamp": (stamp or utcnow_naive()).isoformat()}
-        if not same:
+        # A failed request cannot prove that membership or permissions changed.
+        # Retain the last confirmed access status through verification outages.
+        failures = int((previous or {}).get("check_failures") or 0) + 1 if previous_code in uncertain else 1
+        state = {"fingerprint": fingerprint, "code": code, "notified": False,
+                 "reason": reason, "actor": actor, "stamp": (stamp or utcnow_naive()).isoformat(),
+                 "last_access_code": last_access_code if code in uncertain else code,
+                 "check_failures": failures if code in uncertain else 0}
+        if previous and previous.get("fingerprint") == fingerprint:
+            for field in ("reason", "actor", "stamp"):
+                if previous.get(field):
+                    state[field] = previous[field]
+        if code in uncertain and failures < 2:
             _vip_channel_watch_store(key, state)
+            logging.info("Comprobación de canal %s sin confirmar (%s); se verificará de nuevo.", key, code)
+            return
+        if code == "OK":
+            if not previous or previous_code == "OK" or (
+                previous_code in uncertain and not previous.get("notified")
+                and last_access_code in (None, "OK")
+            ):
+                state["notified"] = True
+                _vip_channel_watch_store(key, state)
+                return
+            verification_recovered = previous_code in uncertain and last_access_code in (None, "OK")
+            title = "✅ COMPROBACIÓN RESTABLECIDA" if verification_recovered else "✅ CANAL RECUPERADO"
+            if verification_recovered:
+                state["reason"] = "La consulta a Telegram vuelve a responder y el bot tiene los permisos necesarios. El aviso anterior era un fallo de verificación, no una expulsión confirmada."
+        else:
+            title = "⚠️ NO SE PUDO VERIFICAR EL CANAL" if code in uncertain else "🚨 ALERTA DE ACCESO DEL BOT"
+        _vip_channel_watch_store(key, state)
         info = VIP_ACCESS_CHANNELS[key]
         levels = ", ".join(_vip_level_label(level, "es") for level in info.get("levels", ()))
-        title = "✅ CANAL RECUPERADO" if code == "OK" else "🚨 ALERTA DE ACCESO DEL BOT"
         message = (f"{title}\n\nCanal: {info.get('name_es') or key}\nNiveles: {levels}\nChat ID: {channel_id if channel_id is not None else 'NO IDENTIFICADO'}\nBot: @{context.bot.username}\n\n{state.get('reason') or reason}\nFecha: {_admin_local_stamp(datetime.fromisoformat(state['stamp']))}")
         if state.get("actor"):
             message += "\nCambio informado por Telegram: " + state["actor"]
-        if code != "OK":
+        if code in uncertain:
+            message += "\n\nLa comprobación falló en dos revisiones consecutivas. Esto no confirma que el bot haya salido ni perdido administración. Se seguirá comprobando automáticamente."
+        elif code != "OK":
             message += "\n\nRevisa la administración y los permisos del bot en este canal. Los niveles y depósitos de los usuarios se conservan."
         try:
             await context.bot.send_message(chat_id=ADMIN_ID, text=message)
@@ -18524,7 +18556,8 @@ async def vip_channel_bot_member_update(update: Update, context: ContextTypes.DE
 
 
 async def vip_channel_watch_job(context: ContextTypes.DEFAULT_TYPE):
-    # Todos los accesos definidos en cualquier nivel; una consulta por canal.
+    # Todos los accesos definidos en cualquier nivel; una comprobación por canal.
+    from telegram.error import Forbidden, BadRequest, NetworkError
     keys = list(dict.fromkeys(key for keys in VIP_LEVEL_CHANNEL_KEYS.values() for key in keys))
     for key in keys:
         if key not in VIP_ACCESS_CHANNELS:
@@ -18532,20 +18565,25 @@ async def vip_channel_watch_job(context: ContextTypes.DEFAULT_TYPE):
         channel_id = _vip_mapped_chat_id(key)
         code, reason = "NO_CHAT_ID", "No hay un identificador de canal disponible para verificar al bot."
         if channel_id is not None:
-            try:
-                await context.bot.get_chat(channel_id)
-                member = await context.bot.get_chat_member(chat_id=channel_id, user_id=context.bot.id)
-                code, reason = _vip_channel_watch_member(member)
-            except Exception as e:
-                from telegram.error import Forbidden, BadRequest, NetworkError
-                if isinstance(e, Forbidden):
-                    code, reason = "FORBIDDEN", "Telegram rechaza el acceso del bot al canal."
-                elif isinstance(e, BadRequest):
-                    code, reason = "BAD_REQUEST", "Telegram no permite consultar este canal: " + str(e)[:300]
-                elif isinstance(e, NetworkError):
-                    code, reason = "NETWORK", "No se pudo comprobar el canal por un fallo de conexión con Telegram."
-                else:
-                    code, reason = "CHECK_FAILED", "No se pudo verificar el canal: " + str(e)[:300]
+            for attempt in range(3):
+                try:
+                    await context.bot.get_chat(channel_id)
+                    member = await context.bot.get_chat_member(chat_id=channel_id, user_id=context.bot.id)
+                    code, reason = _vip_channel_watch_member(member)
+                except Exception as e:
+                    if isinstance(e, Forbidden):
+                        code, reason = "FORBIDDEN", "Telegram rechaza el acceso del bot al canal."
+                    elif isinstance(e, BadRequest):
+                        code, reason = "BAD_REQUEST", "Telegram no permite consultar este canal: " + str(e)[:300]
+                    elif isinstance(e, NetworkError):
+                        if attempt < 2:
+                            logging.info("Reintento de comprobación de canal %s (%s/3): %s", key, attempt + 1, type(e).__name__)
+                            await asyncio.sleep(attempt + 1)
+                            continue
+                        code, reason = "NETWORK", "No se pudo comprobar el canal por un fallo de conexión con Telegram."
+                    else:
+                        code, reason = "CHECK_FAILED", "No se pudo verificar el canal: " + str(e)[:300]
+                break
         try:
             await _vip_channel_watch_publish(context, key, channel_id, code, reason)
         except Exception as e:
