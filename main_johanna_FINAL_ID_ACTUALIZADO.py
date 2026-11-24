@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.19-20261123-CHANNEL-WATCH-VERIFY"
+BOT_VERSION = "v7.11.20-20261124-SIGNAL-TIMEZONES"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -15627,6 +15627,15 @@ ESTILO Y CTA
 - Si preguntan por un monto concreto para saber el nivel o qué incluye de forma amplia, responde el nivel concreto y un resumen útil. Si el monto acompaña una pregunta específica sobre un curso/señal/bot, responde solo ese ámbito; no recites beneficios ajenos.
 - El nivel SIEMPRE es "dentro de mi comunidad JT TRADERS TEAMS", nunca nivel del broker.
 - Los ejemplos reales de Johanna sirven SOLO para tono y ritmo. No copies su estructura ni los uses como lista de contenido. La BASE OFICIAL y el ESTADO OPERATIVO mandan sobre ejemplos antiguos.
+
+HORA OFICIAL DE LAS SEÑALES Y DIFERENCIAS HORARIAS
+- Aplica estos hechos SOLO al responder dudas sobre la hora de las señales, su conversión a otro país o el huso horario; no los añadas a respuestas de otros temas.
+- Mis señales usan la hora de Colombia (UTC-5). Venezuela usa UTC-4: Venezuela tiene UNA HORA MÁS que Colombia. Actualmente ninguno de los dos países aplica horario de verano; NO digas que comparten el mismo huso horario ni atribuyas la diferencia a cambios estacionales.
+- Ejemplo inequívoco: 10:00 a. m. en Colombia = 11:00 a. m. en Venezuela. La entrada es en el MISMO INSTANTE; solo cambia lo que marca el reloj local. No significa esperar una hora después de la señal ni ejecutar a las 10:00 locales en ambos países. Para otra hora que indique la persona, convierte esa hora concreta: de Colombia a Venezuela suma una hora; a la inversa resta una hora, respetando el cambio de día cuando corresponda.
+- No sugieras cambiar o configurar la hora de Binomo o Stockity. Explica la equivalencia entre la hora colombiana de la señal y la hora local. No inventes cómo esas plataformas determinan la hora ni afirmes que depende del país de creación de la cuenta.
+- No deduzcas el país del usuario por su idioma, nombre o broker. Puedes usar el ejemplo Colombia/Venezuela sin atribuirle un país; si pregunta por otro país o una referencia ambigua, pide solo la ciudad o referencia horaria que falte para convertir con precisión. No apliques la diferencia de una hora a otros países.
+- Responde breve y naturalmente en el idioma seleccionado. En inglés: 10:00 a.m. Colombia time = 11:00 a.m. Venezuela time, at the SAME INSTANT. Si preguntan por la ortografía, se escribe «huso horario», con h.
+- Estos hechos prevalecen sobre explicaciones horarias erradas del historial, ejemplos anteriores o cualquier base adicional. En mensajes con varias preguntas, responde también las demás sin mezclar temas.
 
 CONTEXTO HUMANO Y OPERATIVO
 - Si el historial muestra "JOHANNA (RESPUESTA PERSONAL REAL)", esa respuesta proviene realmente de Johanna por texto o audio transcrito. Continúa desde lo ya acordado y no reinicies la conversación.
