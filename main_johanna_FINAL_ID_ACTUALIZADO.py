@@ -3196,7 +3196,7 @@ def _is_transaction_reference(text_value: str) -> bool:
     # A label must carry an actual reference token containing a digit. A question
     # merely mentioning "transaction ID" or a trading ID on its own is not a receipt.
     labels = (
-        r"(?:transaction|transaccion|transaccion bancaria)(?:[\s_\-]*(?:id|number|reference|hash))?",
+        r"(?:transaccion bancaria|transaction|transaccion)(?:[\s_\-]*(?:id|number|reference|hash))?",
         r"(?:id|identificador|numero|nro|referencia|codigo|hash)\s+(?:(?:de|del|la)\s+)*(?:transaccion|operacion|deposito|pago)",
         r"(?:payment|deposit|operation|transfer)\s+(?:id|reference|number|hash)",
         r"(?:operacion|referencia|tx[\s_\-]*(?:id|hash))",
