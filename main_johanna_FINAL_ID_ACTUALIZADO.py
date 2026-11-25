@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.21-20261124-PANEL-INFO"
+BOT_VERSION = "v7.11.22-20261124-TRANSACTION-ID-CONTEXT"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -3190,26 +3190,37 @@ def set_user_stage(chat_id: int, stage: str):
             session.commit()
 
 
+def _is_transaction_reference(text_value: str) -> bool:
+    """Identify payment references without treating receipt account fields as registration."""
+    t = _norm(text_value or "")
+    # A label must carry an actual reference token containing a digit. A question
+    # merely mentioning "transaction ID" or a trading ID on its own is not a receipt.
+    labels = (
+        r"(?:transaction|transaccion|transaccion bancaria)(?:[\s_\-]*(?:id|number|reference|hash))?",
+        r"(?:id|identificador|numero|nro|referencia|codigo|hash)\s+(?:(?:de|del|la)\s+)*(?:transaccion|operacion|deposito|pago)",
+        r"(?:payment|deposit|operation|transfer)\s+(?:id|reference|number|hash)",
+        r"(?:operacion|referencia|tx[\s_\-]*(?:id|hash))",
+    )
+    pattern = r"\b(?:" + "|".join(labels) + r")\b\s*(?:(?:es|is)\s+)?[\s:\"'#=\-]*([a-z0-9][a-z0-9_\-]{5,})\b"
+    return any(re.search(r"[0-9]", m.group(1)) for m in re.finditer(pattern, t))
+
+
 def _extract_candidate_trading_id(text_value: str) -> str:
-    """Extrae un ID de trading solo si el mensaje realmente parece un envío de ID."""
+    """Extract only an account ID; payment references never start registration."""
     raw = (text_value or "").strip()
-    if not raw:
+    if not raw or _is_transaction_reference(raw):
         return ""
 
-    # Caso más habitual: el usuario pega únicamente su ID.
-    if re.fullmatch(r"\d{6,12}", raw):
+    # Preserve the supported numeric range for legacy/other broker accounts.
+    # Current validated Binomo/Stockity IDs are nine digits. Never take a slice
+    # from a longer number, transaction hash, or alphanumeric reference.
+    if re.fullmatch(r"[0-9]{6,12}", raw):
         return raw
-
     normalized = _norm(raw)
-    id_context = any(k in normalized for k in (
-        "id", "identificador", "account id", "user id",
-        "stockity id", "binomo id", "mi id", "my id",
-    ))
-    if not id_context:
+    if not re.search(r"\b(?:id|identificador)\b", normalized):
         return ""
-
-    m = re.search(r"\b\d{6,12}\b", raw)
-    return m.group(0) if m else ""
+    m = re.search(r"(?<![\w])([0-9]{6,12})(?![\w])", raw)
+    return m.group(1) if m else ""
 
 
 def _get_saved_trading_id(chat_id: int) -> str:
@@ -6602,6 +6613,8 @@ def _deposit_review_followup_query(question: str) -> bool:
         return False
     if re.search(r"promo|upgrade|subir de nivel|cuanto (?:debo|necesito|falta)|cuanto cuesta|que incluye|beneficio|otra cuenta|nuevo deposito|otro deposito|deposito adicional|how much|what.+include|benefit|another account|new deposit|another deposit|additional deposit", t):
         return False
+    if _is_transaction_reference(question) and _is_deposit_report_intent(question):
+        return True
     if _is_short_acknowledgement(question):
         return True
     waiting = bool(re.search(r"espera|esperando|pendiente|aguard|waiting|await|pending", t)
@@ -13227,6 +13240,12 @@ def _is_deposit_report_intent(texto: str) -> bool:
     if any(re.search(p, t) for p in completed_patterns):
         return True
 
+    if _is_transaction_reference(texto) and not re.search(
+        r"[?¿]|\b(?:como|donde|cuando|por que|cuanto|puedo|puedes|quiero saber|necesito saber|"
+        r"voy a|no llega|no aparece|rechaz\w*|pendiente|how|where|when|why|can|could|"
+        r"will|going to|failed|rejected|pending|not received)\b", t):
+        return True
+
     # Frases históricas ya soportadas.
     return any(k in t for k in (
         "ya deposite", "ya hice el deposito", "deposito listo", "ya esta el deposito",
@@ -13583,9 +13602,8 @@ def detect_intent_es(texto: str) -> str:
     ]):
         return "NEXT_STEP"
 
-    # Si el mensaje contiene un ID (número) en cualquier parte (prioridad alta)
-    m_id = re.search(r"\b\d{6,12}\b", t)
-    if m_id:
+    # Use the same account-only parser as the multi-intent and persistence paths.
+    if _extract_candidate_trading_id(texto):
         return "ID_SUBMIT"
 
     # ---- Dónde enviar el ID / te envío el ID ----
@@ -13634,8 +13652,8 @@ def detect_intent_es(texto: str) -> str:
     if any(k in t for k in ["no me llega el correo", "no llega el correo", "no me llega email", "correo", "email"]):
         return "EMAIL"
 
-    # Si detecta un ID (solo número)
-    if re.search(r"\b\d{6,}\b", t) and ("id" in t or t.strip().isdigit()):
+    # A long transaction number cannot bypass the bounded account-ID parser.
+    if _extract_candidate_trading_id(texto):
         return "ID_SUBMIT"
 
     return "OTRO"
