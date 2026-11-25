@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.22-20261124-TRANSACTION-ID-CONTEXT"
+BOT_VERSION = "v7.11.23-20261125-OWNER-CHANNEL-RESTORE"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -2379,6 +2379,28 @@ def _vip_channel_allowed(level: str, access_key: str) -> bool:
     return bool(level in info.get("levels", ()))
 
 
+def _vip_owner_channel_authorized(chat_id: int, access_key: str) -> bool:
+    """Read an explicit owner grant for one user/channel; never assign a VIP level."""
+    if not _is_private_user_id(chat_id) or access_key not in VIP_ACCESS_CHANNELS:
+        return False
+    try:
+        with Session() as session:
+            row = (
+                session.query(BotEvent.event_type)
+                .filter(
+                    BotEvent.telegram_id == str(chat_id),
+                    BotEvent.event_type.in_(["VIP_OWNER_CHANNEL_GRANT", "VIP_OWNER_CHANNEL_REVOKE"]),
+                    BotEvent.detail == access_key,
+                )
+                .order_by(BotEvent.id.desc())
+                .first()
+            )
+        return bool(row and row[0] == "VIP_OWNER_CHANNEL_GRANT")
+    except Exception as e:
+        logging.warning("No pude comprobar autorización del propietario para %s/%s: %s", chat_id, access_key, e)
+        return False
+
+
 def _vip_access_keyboard(level: str, lang: str, keys=None) -> InlineKeyboardMarkup:
     """Entrega un solo acceso por vez y deja un respaldo para continuar si ya era miembro."""
     keys = list(keys if keys is not None else _vip_channel_keys_for_level(level))
@@ -4602,6 +4624,9 @@ async def tracking_channel_member_update(update: Update, context: ContextTypes.D
             authorized = stage == STAGE_DEPOSITED and access_key in ("vip_main", "module3")
 
         if not authorized:
+            authorized = _vip_owner_channel_authorized(chat_id, access_key)
+
+        if not authorized:
             removed = False
             remove_error = ""
             try:
@@ -4747,6 +4772,13 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
             authorized = stage == STAGE_DEPOSITED and access_key in ("vip_main", "module3")
             legacy_manual = stage == STAGE_DEPOSITED and not authorized
 
+        owner_channel_grant = False
+        if not authorized:
+            owner_channel_grant = _vip_owner_channel_authorized(chat_id, access_key)
+            if owner_channel_grant:
+                authorized = True
+                legacy_manual = False
+
         if legacy_manual:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
@@ -4821,9 +4853,14 @@ async def tracking_channel_join_request(update: Update, context: ContextTypes.DE
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=(
+                        ("✅ Tu solicitud fue aprobada. Si Telegram te muestra el botón «Unirme al canal», tócalo para completar el ingreso."
+                         if lang == "es" else
+                         "✅ Your request was approved. If Telegram shows “Join Channel”, tap it to complete the join.")
+                        if owner_channel_grant else (
                         "✅ Tu solicitud fue aprobada. Si Telegram te muestra el botón «Unirme al canal», tócalo para completar el ingreso. En cuanto Telegram confirme que ya entraste, te enviaré automáticamente el siguiente acceso."
                         if lang == "es" else
                         "✅ Your request was approved. If Telegram shows “Join Channel”, tap it to complete the join. As soon as Telegram confirms you are inside, I’ll automatically send your next access."
+                        )
                     ),
                     disable_web_page_preview=True,
                 )
