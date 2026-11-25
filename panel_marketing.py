@@ -1,5 +1,7 @@
 """Public presentation only. License/manual delivery remains in panel_delivery."""
 import logging
+import re
+import unicodedata
 from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -9,47 +11,36 @@ PHOTO_PATH = Path(__file__).resolve().parent / 'docs' / 'panel' / 'panel-referen
 def label(lang):
     return '🖥 Discover the signals panel' if lang == 'en' else '🖥 Conoce el panel de señales'
 
+def is_question(text):
+    """Recognize explicit member-panel questions without reading or changing state."""
+    value = ''.join(c for c in unicodedata.normalize('NFD', text or '') if unicodedata.category(c) != 'Mn').lower()
+    return bool(re.search(r'\bpanel(?:es|s)?\b', value)) and not bool(re.search(r'\b(?:admin|administrador|administrativo|administrator)\b', value))
+
 def brief(lang):
     if lang == 'en':
         return (
-            '🖥 PREMIUM + DOWNLOADABLE WINDOWS SIGNALS PANEL\n'
-            'Includes signals, alerts, results tracking, a trading journal and risk/capital-management tools, '
-            'plus Sunday Advance Premium Software lists of currency pairs and Crypto IDX, exclusively in the panel.\n'
-            'First, I validate your broker ID. Then you can deposit from USD230 directly into your own trading '
-            'account; once I validate the deposit, I enable access to your panel. If you were already Premium or Prestige before launch, a NEW USD100 deposit from 11 November 2026 applies instead; notify me so I can validate it.'
+            '🖥 JOHAALETRADER SIGNALS PANEL\n'
+            'Downloadable Windows software to organize your trading.\n'
+            '📡 AI Bot: currency pairs for Exnova, Binomo and Stockity; Crypto IDX for Binomo and Stockity.\n'
+            '📋 Advance Premium Software: currency-pair and Crypto IDX lists for Binomo and Stockity.\n'
+            '📊 Risk/capital management, a trading plan, results tracking, a journal and voice, sound and visual alerts.\n'
+            'Choose Exnova or all three brokers. The panel is optional, with a monthly subscription separate from my free VIP community.\n'
+            'Activation requires an account registered through my link. I first validate the ID; then you deposit into that same trading account, and I validate the deposit. This deposit is separate from the panel subscription.'
         )
     return (
-        '🖥 PREMIUM + PANEL DE SEÑALES DESCARGABLE EN WINDOWS\n'
-        'Incluye señales, alertas, control de resultados, bitácora y gestión de riesgo y capital; además, listas '
-        'de pares de divisas y Crypto IDX del Software Premium Anticipado también los domingos, solo en el panel.\n'
-        'Primero valido tu ID del broker. Después puedes depositar a partir de USD230 directamente en tu propia '
-        'cuenta de trading; una vez que valide tu depósito, habilito el acceso al panel. Si ya eras Premium o Prestige antes del lanzamiento, aplica un depósito NUEVO de USD100 desde el 11 de noviembre de 2026: notifícamelo para validarlo.'
+        '🖥 PANEL DE SEÑALES JOHAALETRADER\n'
+        'Una herramienta descargable para Windows que organiza tu operativa.\n'
+        '📡 Bot IA: pares de divisas para Exnova, Binomo y Stockity; Crypto IDX para Binomo y Stockity.\n'
+        '📋 Software Premium Anticipado: listas de divisas y Crypto IDX para Binomo y Stockity.\n'
+        '📊 Gestión de riesgo y capital, plan de trading, control de resultados, bitácora y alertas por voz, sonido y visuales.\n'
+        'Elige Exnova o los tres brokers. El panel es opcional y tiene una suscripción mensual independiente de mi comunidad VIP gratuita.\n'
+        'Para activarlo necesitas una cuenta registrada con mi enlace. Primero valido el ID; después depositas en esa misma cuenta de trading y valido el depósito. Este depósito es independiente del pago de la suscripción al panel.'
     )
 
 def details(lang):
-    if lang == 'en':
-        return (
-            '🖥 DISCOVER THE JOHAALETRADER SIGNALS PANEL\n\n'
-            'Organize your trading in one Windows application:\n'
-            '📊 Signals and voice, sound and visual alerts to help you follow each entry.\n'
-            '🎯 Trading-plan tools and risk/capital management to prepare your decisions.\n'
-            '📒 A trading journal and results tracking to review your performance and habits.\n'
-            '✨ Exnova signals exclusively in the panel.\n'
-            '📅 Sunday Advance Premium Software lists of currency pairs and Crypto IDX, only in the panel.\n\n'
-            'Your usual Telegram benefits continue. You stay in control of every trade.\n'
-            '👇 Open “What it includes and how it works” for access conditions and full details.'
-        )
-    return (
-        '🖥 CONOCE EL PANEL DE SEÑALES JOHAALETRADER\n\n'
-        'Organiza tu operativa en una sola aplicación para Windows:\n'
-        '📊 Señales y avisos por voz, sonido y alertas visuales para acompañar cada entrada.\n'
-        '🎯 Herramientas de plan de trading y gestión de riesgo y capital para preparar tus decisiones.\n'
-        '📒 Bitácora y control de resultados para revisar tu desempeño y tus hábitos.\n'
-        '✨ Señales de Exnova exclusivas del panel.\n'
-        '📅 Listas de divisas y Crypto IDX del Software Premium Anticipado también los domingos, solo en el panel.\n\n'
-        'Tus beneficios habituales de Telegram continúan. Tú mantienes el control de cada operación.\n'
-        '👇 En «Qué incluye y cómo funciona» encontrarás las condiciones de acceso y la información completa.'
-    )
+    return brief(lang) + ('\n\n👇 Open “What it includes and how it works” for access conditions and full details.'
+                          if lang == 'en' else
+                          '\n\n👇 En «Qué incluye y cómo funciona» encontrarás las condiciones de acceso y la información completa.')
 
 def keyboard(lang):
     en = lang == 'en'

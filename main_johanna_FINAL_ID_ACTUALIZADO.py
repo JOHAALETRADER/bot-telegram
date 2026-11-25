@@ -61,7 +61,7 @@ DASHBOARD_URL = (
     or "https://johaale-tracking-production.up.railway.app/dashboard"
 ).strip()
 
-BOT_VERSION = "v7.11.20-20261124-SIGNAL-TIMEZONES"
+BOT_VERSION = "v7.11.21-20261124-PANEL-INFO"
 # v7.11.03: añade únicamente botones administrativos VALIDAR ID / ID ERRADO / GESTIONAR al aviso PREMIUM100_ID_PENDING. Reutiliza los callbacks Stockity ya existentes y no altera lógica de promoción, cupos, reservas, depósitos, niveles, VIP, tracking, IA, campañas ni reportes.
 # v7.11.02: corrige de forma aislada la atribución Meta/ADS del canal: reconoce SOURCE-ADS en ChatJoinRequest aunque Telegram omita username del canal, fija ADS antes de aprobar para evitar carrera con ChatMemberUpdated y conserva ADS al enviar el alta al tracking. No altera PREMIUM100, niveles, depósitos, VIP, IA, campañas ni reportes.
 # v7.11.01: muestra el tiempo REAL restante de la reserva PREMIUM100 al volver a entrar o pulsar de nuevo; salir/reentrar nunca reinicia los 90 min. Conserva intacta toda la lógica v7.11.00.
@@ -6880,7 +6880,7 @@ def _ai_delivery_text(answer: str, question: str, chat_id: int, lang: str = "es"
                    "I must review and confirm" if lang == "en" else "debo revisar y confirmar", value, flags=re.I)
     # Look at the actual final access explanation as well as the user's wording.
     # This catches model answers that identify the minimum despite unfamiliar phrasing.
-    amount_context = not _broker_bonus_mention(question) and not _deposit_review_followup_query(question) and (_ai_access_amount_query(question) or bool(
+    amount_context = not panel_marketing.is_question(question) and not _broker_bonus_mention(question) and not _deposit_review_followup_query(question) and (_ai_access_amount_query(question) or bool(
         re.search(r"\b50\b", value) and "premium" in _norm(value)
         and re.search(r"minim|recomiend|recommend", _norm(value))))
     if amount_context and offer_promo and not value.lstrip().startswith("[[PERSONAL_CHAT]]"):
@@ -6912,6 +6912,16 @@ def _clarify_free_community(answer: str, lang: str = "es") -> str:
     )
     if not monetary_context:
         return body
+    if re.search(r"\bpanel\b", t):
+        # The trading deposit and paid panel subscription are separate concepts.
+        # Keep the existing community-only footer unchanged for all other topics.
+        complete = (("community" in t and "free" in t and "own" in t and "subscription" in t and "separate" in t)
+                    if lang == "en" else
+                    ("comunidad" in t and "gratuita" in t and "propia cuenta" in t and "suscripcion" in t and "independiente" in t))
+        note = ("My VIP community is free. The deposit goes into your own trading account; the panel has a separate monthly subscription."
+                if lang == "en" else
+                "Mi comunidad VIP es gratuita. El depósito va a tu propia cuenta de trading; el panel tiene una suscripción mensual independiente.")
+        return body if complete else body + "\n\n" + note
     t = _norm(value)
     if not (re.search(r"\d", t) and re.search(r"premium|prestige|basico|basic|promocion|promotion", t)):
         return value
@@ -6980,6 +6990,8 @@ def ai_context_keyboard(question: str, lang: str = "es", chat_id: int = None):
         return None
     if _broker_bonus_only_query(question):
         return None
+    if panel_marketing.is_question(question):
+        return InlineKeyboardMarkup([[InlineKeyboardButton(panel_marketing.label(lang), url=panel_marketing.INFO_URLS["en" if lang == "en" else "es"])]])
     if _premium100_question(question) or _ai_entry_promo_available(question, chat_id):
         rows = [[InlineKeyboardButton("🔵 VIEW PREMIUM" if lang == "en" else "🔵 VER NIVEL PREMIUM", callback_data=f"level_detail:{VIP_LEVEL_PREMIUM}")],
                 [InlineKeyboardButton("🔥 VIEW PROMOTION" if lang == "en" else "🔥 VER PROMOCIÓN", callback_data="premium100_info")]]
@@ -12165,15 +12177,13 @@ BOTS IA 24/7
 - Si la conversación inmediatamente anterior habla de bots y luego preguntan "cuando me llega una señal, ¿qué hago?", interpreta que se refiere a la alerta del bot y puedes decir brevemente "si te refieres a las alertas de los bots..." antes de explicar minuto +1 y expiración de 1 minuto.
 
 PANEL / INTERFAZ QUE JOHANNA MUESTRA EN LIVE
-- La interfaz visual/panel que Johanna utiliza en sus lives es una herramienta privada de uso interno.
-- No es lo que se instala o entrega a los miembros: entregarla implicaría descarga, instalación, activación/configuración, mantenimiento y actualizaciones en computador y quedaría ligada principalmente a un solo equipo.
-- Las señales incluidas en los distintos niveles de la comunidad corresponden a las MISMAS señales operativas que Johanna muestra en sus lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles.
-- Esas mismas señales se entregan por Telegram, lo que permite usarlas cómodamente desde celular o cualquier dispositivo y desde cualquier lugar, sin depender de instalar ni mantener esa interfaz.
-- REFERENCIA SEMÁNTICA IMPORTANTE: si alguien dice “el bot que muestras en los lives”, “el programa que usas en vivo”, “eso que se ve en tu pantalla”, “el software que muestras” o una frase equivalente, interpreta que se refiere a ESTA interfaz visual privada, aunque use la palabra “bot”, salvo que nombre de forma explícita el bot IA CRYPTO IDX 24/7 o el bot IA de pares de divisas 24/7.
-- CONTINUIDAD IMPORTANTE: si después de hablar de esa interfaz la persona dice “yo quiero las señales que tú muestras”, “quiero esas señales”, “las señales que muestras” o equivalente, entiende que sigue hablando de las señales del LIVE. Aclara que SÍ son las mismas señales que recibe por Telegram según su nivel; no presentes Telegram como un conjunto distinto de señales.
-- No presentes esta interfaz como beneficio de Premium o Prestige ni digas que se obtiene subiendo de nivel. No se entrega a usuarios.
-- SOLO explica esta diferencia si el usuario pregunta por el panel/interfaz/herramienta que ve en live, si pregunta si recibirá exactamente ese software o si hace una repregunta contextual sobre las señales que ve allí. No la metas en cada pregunta general sobre bots.
-- Cuando sí lo pregunten, incluye brevemente el motivo práctico completo: descarga/instalación/activación-configuración/actualizaciones en computador + dependencia principal de un solo equipo; Telegram permite recibir las MISMAS señales desde cualquier dispositivo y lugar, por lo que resulta más práctico.
+- Existe un PANEL DE SEÑALES JOHAALETRADER para miembros, descargable para Windows. Es opcional y tiene una suscripción mensual independiente de la comunidad VIP gratuita.
+- Bot IA: pares de divisas para Exnova, Binomo y Stockity; Crypto IDX para Binomo y Stockity. Software Premium Anticipado: listas de divisas y Crypto IDX para Binomo y Stockity.
+- Incluye gestión de riesgo y capital, plan de trading, control de resultados, bitácora y alertas por voz, sonido y visuales. Se puede elegir Exnova o los tres brokers.
+- Para activarlo se requiere cuenta registrada con mi enlace: primero valido el ID, después se deposita en esa misma cuenta y valido el depósito. El depósito no cubre la suscripción mensual.
+- La interfaz personal que muestro en los lives es distinta del panel para miembros. Solo explica esa diferencia si preguntan expresamente por ella y en una frase; nunca niegues la disponibilidad del panel para miembros ni añadas una explicación larga de instalación o mantenimiento.
+- Si preguntan por las señales del live, las señales de Telegram siguen siendo las mismas según el nivel. Exnova se entrega en el panel; las listas de divisas y Crypto IDX de los domingos para Binomo y Stockity también son exclusivas del panel.
+- Para consultas generales, presenta el panel brevemente y enlaza el Telegraph público. Explica montos y condiciones de activación solo si los preguntan, según las reglas de lanzamiento y los datos verificados; ser Premium actualmente no prueba que lo fuera antes del lanzamiento.
 
 GESTIÓN DE RIESGO Y MARTINGALA — METODOLOGÍA DE JOHANNA
 - MG1 y MG2 son opcionales. Se usan únicamente cuando la persona decide aplicar la secuencia y siempre dentro de una gestión de riesgo previamente calculada; no garantizan recuperación.
@@ -15006,7 +15016,8 @@ async def openai_answer(question: str, chat_id: int, lang: str, stage: str, alre
     clarification = _ai_brief_clarification(question, lang)
     if clarification:
         return clarification
-    bot_price_answer = _bot_access_price_answer(question, chat_id, lang)
+    member_panel_question = panel_marketing.is_question(question)
+    bot_price_answer = "" if member_panel_question else _bot_access_price_answer(question, chat_id, lang)
     if bot_price_answer:
         return bot_price_answer
     live_notice_answer = _copied_live_notice_answer(question, lang)
@@ -15018,10 +15029,10 @@ async def openai_answer(question: str, chat_id: int, lang: str, stage: str, alre
     bonus_reply = _broker_bonus_lookup_reply(question, lang)
     if bonus_reply:
         return bonus_reply
-    promo_answer = _premium100_answer(question, chat_id, lang)
+    promo_answer = "" if member_panel_question else _premium100_answer(question, chat_id, lang)
     if promo_answer:
         return promo_answer
-    entry_promo_answer = _ai_entry_promo_answer(question, chat_id, lang)
+    entry_promo_answer = "" if member_panel_question else _ai_entry_promo_answer(question, chat_id, lang)
     if entry_promo_answer:
         return entry_promo_answer
     if not (HAS_HTTPX and OPENAI_API_KEY):
@@ -15067,7 +15078,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "deposit more", "additional deposit", "another deposit", "top up", "should i deposit", "if i deposit",
         ))
         active_member = (stage == STAGE_DEPOSITED and current_active_level != VIP_LEVEL_NONE)
-        current_level_query = active_member and any(x in q_norm for x in (
+        current_level_query = active_member and not member_panel_question and any(x in q_norm for x in (
             "que nivel tengo", "qué nivel tengo", "cual es mi nivel", "cuál es mi nivel",
             "mi nivel actual", "actualmente que nivel", "actualmente qué nivel", "en que nivel estoy", "en qué nivel estoy",
             "soy premium", "soy prestige", "soy basico", "soy básico",
@@ -15079,8 +15090,8 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             "am i premium", "am i prestige", "am i basic", "i am premium", "i am prestige",
             "what level am i", "what is my level", "my current level",
         ))
-        own_level_details_query = active_member and _is_own_level_details_query(question)
-        only_signals_followup = active_member and any(x in q_norm for x in (
+        own_level_details_query = active_member and not member_panel_question and _is_own_level_details_query(question)
+        only_signals_followup = active_member and not member_panel_question and any(x in q_norm for x in (
             "solo tengo senales", "solo tengo señales", "solo son senales", "solo son señales",
             "eso es todo", "nada mas", "nada más", "que mas tengo", "qué más tengo",
             "que mas incluye mi nivel", "qué más incluye mi nivel", "que tengo en mi nivel", "qué tengo en mi nivel",
@@ -15166,7 +15177,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
         ))
         # v7.10.73: el planificador NO puede convertir por sí solo un monto/saldo contado
         # por el usuario en una consulta de ingreso. Se exige intención explícita local.
-        entry_minimum_topic = bool(_is_min_50_intent(question) or (("entry_minimum" in planner_intents) and explicit_join_wording))
+        entry_minimum_topic = not member_panel_question and bool(_is_min_50_intent(question) or (("entry_minimum" in planner_intents) and explicit_join_wording))
         if active_member and not hypothetical_other_person:
             entry_minimum_topic = bool(entry_minimum_topic and explicit_join_wording)
         if entry_minimum_topic:
@@ -15229,9 +15240,10 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
             ))
         )
         panel_topic = bool(
-            not explicit_member_ai_bot
+            (not explicit_member_ai_bot or member_panel_question)
             and (
-                ("live_panel" in planner_intents and (tool_reference or live_signal_followup or contextual_tool_followup))
+                member_panel_question
+                or ("live_panel" in planner_intents and (tool_reference or live_signal_followup or contextual_tool_followup))
                 or (live_reference and shown_tool_reference and tool_reference)
                 or live_signal_followup
             )
@@ -15277,7 +15289,7 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                     amount_usd = None
 
         knowledge_text = (JOHA_KNOWLEDGE or "").strip()
-        knowledge_text += "\n\nCURRENT SEPARATE MEMBER PANEL / PANEL ACTUAL PARA MIEMBROS:\n" + panel_marketing.brief(lang) + "\n" + panel_marketing.INFO_URLS["en" if lang == "en" else "es"]
+        knowledge_text += "\n\nCURRENT SEPARATE MEMBER PANEL / PANEL ACTUAL PARA MIEMBROS:\n" + panel_marketing.brief(lang) + "\n" + panel_marketing.INFO_URLS["en" if lang == "en" else "es"] + "\n" + panel_launch.conditions(lang)
         section_titles = [
             "IDENTIDAD Y PRINCIPIO DE RESPUESTA",
             "REGISTRO Y ACCESO",
@@ -15512,13 +15524,28 @@ REGLA CRÍTICA DE IDIOMA — ESPAÑOL:
                     if lang == "en" else
                     f"CONSULTA DE NIVEL: USD {amount_usd:g} corresponde a {_vip_level_label(prospective_level, lang)}. Responde el nivel solicitado; no lo conviertas en recomendación de bonos."
                 )
-        if panel_topic and not explicit_member_ai_bot:
+        if panel_topic:
+            panel_cohort = None
+            try:
+                if _PANEL_LAUNCH and _PANEL_LAUNCH.ready:
+                    panel_cohort = _PANEL_LAUNCH.existing(chat_id)
+            except Exception:
+                pass
             decision_lines.append(
-                (
-                    "LIVE PANEL: the visual interface shown in lives is Johanna's private internal tool and is not delivered at any level. Delivering it would require download, installation, activation/configuration and ongoing updates on a computer, mainly tying it to one device. The signals included in the community levels are the SAME operational signals shown in the lives; what varies by level is quantity, markets and available tools. Those same signals are delivered through Telegram so they can be used from any device and anywhere. If this is a follow-up like 'I want the signals you show', explicitly say they are the same signals, not a different set."
-                    if lang == "en" else
-                    "PANEL DEL LIVE: la interfaz visual que se muestra en los lives es una herramienta privada de uso interno y no se entrega en ningún nivel. Entregarla implicaría descarga, instalación, activación/configuración y actualizaciones en computador, quedando ligada principalmente a un solo equipo. Las señales incluidas en los niveles de la comunidad son las MISMAS señales operativas que se muestran en los lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles. Esas mismas señales se entregan por Telegram para usarlas desde cualquier dispositivo y lugar. Si es una repregunta como 'quiero las señales que muestras', aclara explícitamente que son las mismas señales, no un conjunto diferente."
-                )
+                "CURRENT MEMBER PANEL FACTS override old live-interface explanations and previous replies. "
+                + panel_marketing.brief(lang) + "\n" + panel_launch.conditions(lang)
+                + "\nMonthly panel subscription: Exnova USD15; Exnova + Binomo + Stockity USD20. "
+                  "Reconnection adds USD8 to the chosen month (totals USD23 / USD28), only when applicable after 3 grace days. "
+                  "Initial trial: 14 days, all three brokers, starts only after the first panel approval; it does not restart. "
+                  "USD230 is required in one qualifying account, not in each broker. "
+                + f"Existing Premium/Prestige launch cohort confirmed by stored snapshot: {panel_cohort}. "
+                  "Apply the USD100 condition personally only when this is True; a current Premium/Prestige level alone is insufficient. "
+                  "If it is unknown, describe the cases conditionally and ask me to verify, without granting access. "
+                  "For Basic accumulation use the existing same-account/broker window and actual accumulated amount, "
+                  "but the PANEL target is USD230, distinct from normal Premium USD200. "
+                  "Answer only what was asked and link the public Telegraph for full details. "
+                  "Keep the live-layout distinction to one sentence only when explicitly requested; never say the member panel is unavailable. "
+                + panel_marketing.INFO_URLS["en" if lang == "en" else "es"]
             )
         if bot_topic:
             decision_lines.append(
@@ -15582,7 +15609,7 @@ OBJETIVO PRINCIPAL
 - El bloque de conocimiento que recibes ya está filtrado por temas relevantes. NO tienes que mencionar todo lo que aparece allí: úsalo como referencia factual, no como checklist.
 - PRINCIPIO DE MISMA CATEGORÍA: si preguntan por un curso, responde sobre cursos; si preguntan por señales, responde sobre las fuentes de señales; si preguntan por bots, responde sobre bots. Solo cruza categorías cuando sea necesario para contestar correctamente o cuando la pregunta sea amplia sobre beneficios/qué incluye.
 - DIFICULTAD PARA VER UN LIVE: si el usuario no puede ver una transmisión por bloqueo de TikTok, país o disponibilidad de la plataforma, responde a esa dificultad. No lo interpretes como una solicitud del software/interfaz ni fuerces información sobre señales o niveles. No inventes plataformas alternativas, enlaces de transmisión ni disponibilidad de grabaciones que no estén confirmados en el contexto.
-- REFERENCIAS A LO QUE SE VE EN LIVE: si el usuario habla del “bot/software/programa/herramienta que muestras o usas en vivo”, resuelve primero esa referencia como la interfaz visual privada del live. NO la conviertas en un bot de Premium/Prestige ni en un beneficio por nivel, salvo que la persona nombre explícitamente CRYPTO IDX 24/7 o el bot de pares de divisas 24/7.
+- PANEL PARA MIEMBROS: ante una consulta sobre el panel, usa los hechos actuales de PRIORIDAD DE DECISIÓN. Está disponible para Windows, con suscripción opcional independiente y condiciones de registro/ID/depósito. Da un resumen y enlaza el Telegraph público; no recites toda la guía. Solo distingue la interfaz personal del live en una frase si preguntan expresamente por ella. Los bots IA incluidos en Telegram según el nivel siguen siendo un tema distinto de los planes del panel. Estas instrucciones prevalecen sobre explicaciones antiguas de interfaz privada.
 - Un monto o el nombre “Premium/Prestige/Básico” NO significa automáticamente “dime todos los beneficios”. Si la pregunta es específica, el nivel/monto solo sirve para ubicar la respuesta.
 - MONTO AISLADO ≠ NIVEL: si alguien solo cuenta “subí mi cuenta a 1000”, “mi cuenta llegó a 300”, “he operado con 300” o menciona un saldo pasado/presente sin preguntar por ingreso/nivel/depósito, NO infieras que está registrado conmigo, NO le asignes nivel y NO actives la explicación de 50/200/500. Responde al hecho humano que contó.
 - MENSAJES EMOCIONALES/EXPERIENCIA: si la persona cuenta miedo a perder, cuentas quemadas, frustración o ganas de renunciar, responde primero a ESO de forma humana y breve. No conviertas el relato en una venta ni metas mínimo 50/Premium 200 salvo que lo pregunte explícitamente.
@@ -15869,90 +15896,41 @@ EJEMPLOS REALES RECIENTES DE CÓMO RESPONDE JOHANNA:
             answer = _trim_generic_ai_closer(answer, lang)
             answer = _clean_ai_plain_text_format(answer)
 
-        # v7.10.56 / v7.10.72 — GUARDIAS DURAS POST-GENERACIÓN.
-        # La interfaz del LIVE es privada y la explicación no puede hacer parecer
-        # que Telegram entrega señales distintas a las que se muestran en los lives.
-        if panel_topic and not explicit_member_ai_bot:
+        # A general panel inquiry must not resurrect the obsolete private-live explanation.
+        # Specific access/price questions remain contextual; their facts are supplied above.
+        if panel_topic:
             panel_norm = _norm(answer or "")
-            panel_has_private_fact = any(x in panel_norm for x in (
-                "uso interno", "uso personal", "interfaz privada", "private internal", "private tool", "internal use"
+            detail_query = bool(re.search(
+                r"deposit|activ|upgrade|\bid\b|cuanto|precio|costo|cuesta|pago|pagar|mensual|suscrip|reconex|prueba|"
+                r"how much|price|cost|payment|pay|monthly|subscription|reconnect|trial|install|instal|descarg|download|"
+                r"\b(?:100|230)\b", q_norm))
+            obsolete_claim = any(x in panel_norm for x in (
+                "no la entrego", "no lo entrego", "no la instalo", "no se entrega a usuarios",
+                "no se entrega en ningun nivel", "por eso resulta mucho mas practico",
+                "i don't deliver", "i do not deliver", "not delivered at any level",
+                "don't deliver or install", "which is much more practical",
             ))
-            panel_has_telegram_fact = "telegram" in panel_norm
-            panel_has_same_signals_fact = any(x in panel_norm for x in (
-                "mismas senales", "misma senal", "same operational signals", "same signals"
-            ))
-            panel_has_install_fact = any(x in panel_norm for x in (
-                "instalacion", "instalar", "descarga", "download", "installation", "install"
-            ))
-            panel_has_setup_update_fact = any(x in panel_norm for x in (
-                "configuracion", "activacion", "actualizacion", "mantenimiento",
-                "configuration", "activation", "update", "maintenance"
-            ))
-            panel_has_single_device_fact = any(x in panel_norm for x in (
-                "un solo equipo", "un equipo", "single device", "one device", "one computer"
-            ))
-            panel_has_any_device_fact = any(x in panel_norm for x in (
-                "cualquier dispositivo", "any device"
-            ))
-            panel_has_anywhere_fact = any(x in panel_norm for x in (
-                "cualquier lugar", "desde cualquier lugar", "wherever", "anywhere"
-            ))
-            panel_wrong_level = any(x in panel_norm for x in (
-                "parte de mis herramientas en la comunidad", "incluida en prestige", "incluido en prestige",
-                "acceso por estar en prestige", "part of my community tools", "included with prestige",
-                "access because you are prestige"
-            ))
-            panel_incomplete = not all((
-                panel_has_private_fact,
-                panel_has_telegram_fact,
-                panel_has_same_signals_fact,
-                panel_has_install_fact,
-                panel_has_setup_update_fact,
-                panel_has_single_device_fact,
-                panel_has_any_device_fact,
-                panel_has_anywhere_fact,
-            ))
-            if panel_incomplete or panel_wrong_level:
-                if lang == "en":
-                    if live_signal_followup:
-                        panel_block = (
-                            "Yes. The signals included in the different levels of my community are the same operational signals I show during my live sessions; what changes by level is the quantity, markets and available tools. "
-                            "What I don't deliver is the visual interface itself, because it would require download, installation, activation/configuration and ongoing updates on a computer and would mainly be tied to one device. Through Telegram you receive those same signals from any device and anywhere, which is much more practical."
-                        )
-                    else:
-                        panel_block = (
-                            "The visual interface I show during my live sessions is a private internal tool, so I don't deliver or install it for community members. "
-                            "It would require download, installation, activation/configuration and ongoing updates on a computer and would mainly be tied to one device. The signals included in the different community levels are the same operational signals I show in the lives; what changes by level is the quantity, markets and available tools. Through Telegram you receive those same signals from any device and anywhere, which is much more practical."
-                        )
-                else:
-                    if live_signal_followup:
-                        panel_block = (
-                            "Sí. Las señales incluidas en los distintos niveles de mi comunidad son las mismas señales operativas que muestro en mis lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles. "
-                            "Lo que no entrego es la interfaz visual como tal, porque requeriría descarga, instalación, activación/configuración y actualizaciones en computador y quedaría ligada principalmente a un solo equipo. Por Telegram recibes esas mismas señales desde cualquier dispositivo y cualquier lugar, por eso resulta mucho más práctico."
-                        )
-                    else:
-                        panel_block = (
-                            "La interfaz visual que muestro en mis lives es una herramienta privada de uso interno, por eso no la entrego ni la instalo a los miembros de la comunidad. "
-                            "Requeriría descarga, instalación, activación/configuración y actualizaciones en computador y quedaría ligada principalmente a un solo equipo. Las señales incluidas en los distintos niveles son las mismas señales operativas que muestro en los lives; lo que cambia según el nivel es la cantidad, los mercados y las herramientas disponibles. Por Telegram recibes esas mismas señales desde cualquier dispositivo y cualquier lugar, por eso resulta mucho más práctico."
-                        )
-                panel_block += (
-                    " This refers only to the private live-session interface. A separate JOHAALETRADER signals panel for members is now available.\n\n"
-                    if lang == "en" else
-                    " Esto se refiere solo a la interfaz privada del live. Ahora sí está disponible un panel de señales JOHAALETRADER independiente para miembros.\n\n"
-                ) + panel_marketing.brief(lang) + "\n" + panel_marketing.INFO_URLS["en" if lang == "en" else "es"]
+            if obsolete_claim or not detail_query:
+                panel_block = panel_marketing.brief(lang) + "\n\n" + panel_marketing.INFO_URLS["en" if lang == "en" else "es"]
+                if live_signal_followup:
+                    panel_block = (("You receive the same live-session signals through Telegram according to your level.\n\n"
+                                    if lang == "en" else
+                                    "Recibes las mismas señales del live por Telegram según tu nivel.\n\n") + panel_block)
+                elif live_reference and shown_tool_reference:
+                    panel_block = (("My personal live-session interface is separate from the member panel.\n\n"
+                                    if lang == "en" else
+                                    "Mi interfaz personal del live es distinta del panel para miembros.\n\n") + panel_block)
                 if multi_pending:
-                    # No borrar las demás respuestas del paquete: quitamos únicamente
-                    # párrafos que intentaron responder MAL sobre la interfaz/señales del live.
                     kept_parts = []
                     for part in re.split(r"\n\s*\n+", answer or ""):
                         pn = _norm(part)
-                        live_specific = any(x in pn for x in (
+                        panel_specific = any(x in pn for x in (
                             "en vivo", "en los vivos", "live session", "during live", "on live",
                             "interfaz", "panel", "programa que muestro", "software que muestro",
                             "herramienta que muestro", "bot que muestro", "on screen",
                             "senales que muestro", "signals i show", "signals you show",
                         ))
-                        if part.strip() and not live_specific:
+                        if part.strip() and not panel_specific:
                             kept_parts.append(part.strip())
                     answer = panel_block + (("\n\n" + "\n\n".join(kept_parts)) if kept_parts else "")
                 else:

@@ -15,17 +15,17 @@ class MarketingTests(unittest.IsolatedAsyncioTestCase):
  def test_public_pages_are_separate_and_do_not_expose_download_or_manual(self):
   for lang in ('es','en'):
    self.assertLessEqual(len(public.brief(lang)),1024)
-   self.assertIn('230',public.brief(lang))
+   self.assertNotIn('230',public.brief(lang))
    self.assertIn('Windows',public.brief(lang).replace('WINDOWS','Windows'))
    self.assertNotIn('14',public.brief(lang))
    self.assertNotIn('USD15',public.brief(lang));self.assertNotIn('USD20',public.brief(lang))
    self.assertNotIn('licen',public.brief(lang).lower());self.assertNotIn('Johanna',public.brief(lang))
    self.assertNotEqual(public.brief(lang),public.details(lang))
-   for value in ('USD','COP','230','100','14','license','licencia','deposit','depósito'):
+   for value in ('USD','COP','230','100','14','license','licencia'):
     self.assertNotIn(value,public.details(lang))
-   for value in ('Exnova','Crypto IDX','Windows'):
+   for value in ('Exnova','Binomo','Stockity','Crypto IDX','Windows'):
     self.assertIn(value,public.details(lang))
-   for value in (('voz','sonido','visuales','Bitácora','plan de trading','riesgo','capital') if lang=='es' else ('voice','sound','visual','journal','Trading-plan','risk','capital')):
+   for value in (('Bot IA','voz','sonido','visuales','bitácora','plan de trading','riesgo','capital','suscripción mensual','Primero valido el ID') if lang=='es' else ('AI Bot','voice','sound','visual','journal','trading plan','Risk','capital','monthly subscription','I first validate the ID')):
     self.assertIn(value,public.details(lang))
    self.assertLessEqual(len(public.details(lang).encode('utf-16-le'))//2,1024)
    self.assertNotEqual(public.INFO_URLS[lang],restricted.GUIDE_URLS[lang])
